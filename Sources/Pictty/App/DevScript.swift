@@ -42,6 +42,8 @@ enum DevScript {
         case "hud": c.toggleHUD(nil)
         case "compare": c.toggleCompare(nil)
         case "add": c.compareNext()
+        case "comparewith": if let i = n.first { c.compare(with: Int(i)) }
+        case "layoutset": if let l = CompareLayout(rawValue: text) { c.prefs.compareLayout = l }
         case "layout": c.cycleCompareLayout(nil)
         case "blink": c.blink(nil)
         case "background": c.cycleBackground(nil)

@@ -1032,6 +1032,14 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         fitWindowToPicture(animated: true)
     }
 
+    /// Compares the current picture with the one at `index` (the screenshot and video script).
+    func compare(with index: Int) {
+        guard model.items.indices.contains(index), index != model.index else { return }
+        if model.isComparing { model.endCompare() }
+        model.beginCompare(with: index)
+        refreshCurrent(animated: true)
+    }
+
     /// D: start comparing with the next picture, or add the next one to the comparison.
     func compareNext() { model.isComparing ? addNextToComparison() : toggleCompare(nil) }
 
