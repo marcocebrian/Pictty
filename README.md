@@ -154,4 +154,4 @@ Pictty is free and open source: © 2026 Marco Cebrián Muiño, released under th
 
 ---
 
-<p align="center"><a href="https://www.noxdrop.com/pictty.html">Pictty on noxdrop.com</a> · <a href="https://www.noxdrop.com">More apps by Marco Cebrián Muiño</a></p>
+<p align="center"><a href="https://www.noxdrop.com/pictty.html">Pictty on noxdrop.com</a> · <a href="https://www.noxdrop.com">More apps by Marco Cebrián Muiño</a></p> 
