@@ -19,6 +19,25 @@ Pictty always draws your picture with the best possible algorithm: the GPU while
 
 ---
 
+## Nothing between you and the picture
+
+<p align="center">
+  <img src="https://www.noxdrop.com/img/pictty/clean-v3.webp" width="820" alt="The Pictty window showing one picture and nothing else: the toolbar, file pill and filmstrip have stepped aside.">
+</p>
+
+In Best Fit the window takes the shape of the picture. The toolbar, the file pill and the filmstrip float over it in Liquid Glass while you move the pointer, and step aside when you stop. What stays is the picture.
+
+## Four ways to compare
+
+<table>
+  <tr>
+    <td align="center" width="25%"><img src="https://www.noxdrop.com/img/pictty/grid-v3.webp" alt="Four photos in a grid, pan and zoom in sync."><br><b>Side by side, grid</b><br>Up to four, pan and zoom in sync</td>
+    <td align="center" width="25%"><img src="https://www.noxdrop.com/img/pictty/stacked-v3.webp" alt="Two photos stacked top and bottom."><br><b>Stacked</b><br>One above the other</td>
+    <td align="center" width="25%"><img src="https://www.noxdrop.com/img/pictty/wipe-v3.webp" alt="A wipe line between the original portrait and a small copy."><br><b>Wipe</b><br>Drag the line between two versions</td>
+    <td align="center" width="25%"><img src="https://www.noxdrop.com/img/pictty/blink-v3.webp" alt="Blink showing the second of two versions."><br><b>Blink</b><br>Press B to flip; changes jump out</td>
+  </tr>
+</table>
+
 ## Features
 
 - **High-quality preview first**: a preview made for your screen with the best algorithms, turning seamlessly into the full-resolution picture when the zoom needs it.
