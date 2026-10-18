@@ -41,6 +41,7 @@ enum DevScript {
         case "shortcuts": c.toggleShortcuts(nil)
         case "hud": c.toggleHUD(nil)
         case "compare": c.toggleCompare(nil)
+        case "add": c.compareNext()
         case "layout": c.cycleCompareLayout(nil)
         case "blink": c.blink(nil)
         case "background": c.cycleBackground(nil)

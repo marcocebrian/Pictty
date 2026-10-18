@@ -1032,6 +1032,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         fitWindowToPicture(animated: true)
     }
 
+    /// D: start comparing with the next picture, or add the next one to the comparison.
+    func compareNext() { model.isComparing ? addNextToComparison() : toggleCompare(nil) }
+
     private func addNextToComparison() {
         guard !model.items.isEmpty else { return }
         if model.paneCount >= ViewerModel.maxPanes {
@@ -1265,7 +1268,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         case "i", "I": toggleInspector(nil)
         case "t", "T": toggleFilmstrip(nil)
         case "s", "S": toggleSlideshow(nil)
-        case "d", "D": model.isComparing ? addNextToComparison() : toggleCompare(nil)
+        case "d", "D": compareNext()
         case "b", "B": blink(nil)
         case "l", "L": cycleCompareLayout(nil)
         case "p": toggleSyncPan(nil)

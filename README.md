@@ -4,7 +4,7 @@
 
 <h1 align="center">Pictty</h1>
 
-<p align="center"><b>The picture viewer for Mac with a better engine.</b><br>
+<p align="center"><b>The good-looking native technical image viewer.</b><br>
 When the picture stops moving, Pictty draws what is on your screen again, pixel for pixel.</p>
 
 <p align="center">
