@@ -4,7 +4,7 @@
 
 <h1 align="center">Pictty</h1>
 
-<p align="center"><b>The good-looking native technical image viewer.</b><br>
+<p align="center"><b>The good-looking MacOS native technical image viewer.</b><br>
 Pictty always draws your picture with the best possible algorithm: the GPU while it moves, Lanczos in linear light the moment it rests.</p>
 
 <p align="center">
