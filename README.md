@@ -8,14 +8,14 @@
 Pictty always draws your picture with the best possible algorithm: the GPU while it moves, Lanczos in linear light the moment it rests.</p>
 
 <p align="center">
-  <a href="https://www.noxdrop.com/pictty.html#preview"><img src="https://www.noxdrop.com/img/pictty/tour-v2.webp" width="800" alt="Pictty in action: the pixel loupe gliding over a motorcycle engine, the information panel with its histogram, and browsing with the filmstrip. Click for the full one-minute video."></a>
+  <a href="https://www.noxdrop.com/pictty.html#preview"><img src="https://www.noxdrop.com/img/pictty/tour-v3.webp" width="800" alt="Pictty in action: the pixel loupe on a motorcycle engine, the information panel with its histogram, and a wipe comparison. Click for the full one-minute video."></a>
 </p>
 
 <p align="center">
   <a href="https://www.noxdrop.com/pictty.html"><img src="https://www.noxdrop.com/img/pictty/download-button.svg" width="300" alt="Download Pictty for Mac"></a>
 </p>
 
-<p align="center">macOS 15 or later · Apple silicon · notarized by Apple · <a href="https://www.noxdrop.com/pictty.html">noxdrop.com/pictty</a></p>
+<p align="center">Free and open source (GPL-3.0) · macOS 15+ · Liquid Glass · <a href="https://www.noxdrop.com/pictty.html">noxdrop.com/pictty</a></p>
 
 ---
 
@@ -148,11 +148,9 @@ tools/release.sh      # Developer ID signing, notarisation, and the DMG
 | `Resources` | Info.plist and the Spanish translation |
 | `tools` | Icon, translation, string-coverage and release scripts |
 
-## Copyright
+## Licence
 
-© 2026 Marco Cebrián Muiño. All rights reserved.
-
-The source code is published so that anyone can read it. Publishing it grants no licence to copy, modify or redistribute it, or to distribute builds of the app. See the [terms](https://www.noxdrop.com/picttyterms.html).
+Pictty is free and open source: © 2026 Marco Cebrián Muiño, released under the [GNU General Public License v3.0](LICENSE). You may use, study, change and share it; anything you distribute that is built from it must be released under the same licence, with its source.
 
 ---
 
