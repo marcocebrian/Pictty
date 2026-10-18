@@ -70,6 +70,9 @@ enum DevScript {
         case "closeaux": NSApp.windows.filter { $0 !== c.window && $0.isVisible }.forEach { $0.close() }
         case "reveal": c.revealChrome()
         case "focus": c.window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        case "state":
+            print("state items=\(c.model.items.count) folder=\(c.model.folderURL?.path ?? "-") sheet=\(c.window?.attachedSheet != nil) sandbox=\(FolderAccess.isSandboxed) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") zoom=\(c.model.zoomLabel)")
+            fflush(stdout)
         case "quit": NSApp.terminate(nil)
         default: break
         }

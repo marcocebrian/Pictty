@@ -172,6 +172,7 @@ struct SettingsView: View {
                     Toggle("", isOn: $prefs.loopFolder).toggleStyle(.switch).labelsHidden()
                 }
             }
+            if FolderAccess.isSandboxed { FolderAccessRows() }
             Group_ {
                 Row("Slideshow interval", L("%ld seconds per picture (S)", Int(prefs.slideshowInterval)), "play.rectangle") {
                     Slider(value: $prefs.slideshowInterval, in: 1...30, step: 1).frame(width: 170)
@@ -207,6 +208,28 @@ struct SettingsView: View {
             InsidePicttyView()
         case .about:
             AboutView(compact: true)
+        }
+    }
+}
+
+/// The App Store build only: lets the user allow the home folder or the whole disk up front, so
+/// opening a picture from a new folder never stops to ask.
+private struct FolderAccessRows: View {
+    @State private var refresh = 0
+
+    var body: some View {
+        let _ = refresh
+        Group_ {
+            Row("Folder access", FolderAccess.isAllowed(FolderAccess.disk) ? "Pictty can open every folder on this disk"
+                : FolderAccess.isAllowed(FolderAccess.home) ? "Pictty can open every folder in your home folder"
+                : "macOS asks once for each new folder; allow more here", "lock.open") {
+                HStack(spacing: 8) {
+                    Button(L("Home Folder…")) { FolderAccess.allow(FolderAccess.home) { refresh += 1 } }
+                        .disabled(FolderAccess.isAllowed(FolderAccess.home))
+                    Button(L("Whole Disk…")) { FolderAccess.allow(FolderAccess.disk) { refresh += 1 } }
+                        .disabled(FolderAccess.isAllowed(FolderAccess.disk))
+                }
+            }
         }
     }
 }

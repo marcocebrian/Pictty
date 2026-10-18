@@ -88,7 +88,11 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let container = DropContainerView()
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.black.cgColor
-        container.onDrop = { [weak self] urls in self?.open(urls: urls) }
+        container.onDrop = { [weak self] urls in
+            // A dropped folder comes with the user's permission; keep it.
+            for url in urls where (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { FolderAccess.remember(url) }
+            self?.open(urls: urls)
+        }
 
         let glass = NSVisualEffectView(frame: container.bounds)
         glass.autoresizingMask = [.width, .height]
@@ -356,16 +360,27 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     func open(urls: [URL]) {
         guard let first = urls.first?.standardizedFileURL.resolvingSymlinksInPath() else { return }
+        FolderAccess.restore(for: first)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: first.path, isDirectory: &isDirectory) else {
             showToast(L("Not found: %@", first.lastPathComponent), symbol: "questionmark.folder", tone: .warning)
             return
         }
         if isDirectory.boolValue {
-            loadFolder(first, selecting: nil)
+            guard FolderAccess.needsPermission(first) else { return loadFolder(first, selecting: nil) }
+            FolderAccess.ask(for: first, on: window) { [weak self] allowed in
+                if allowed { self?.loadFolder(first, selecting: nil) }
+            }
         } else if ImageFormats.isSupported(first) {
             NSDocumentController.shared.noteNewRecentDocumentURL(first)
-            loadFolder(first.deletingLastPathComponent(), selecting: first)
+            let folder = first.deletingLastPathComponent()
+            // In the sandbox the picture shows at once; the rest of its folder follows the user's permission.
+            loadFolder(folder, selecting: first)
+            if FolderAccess.needsPermission(folder) {
+                FolderAccess.ask(for: folder, on: window) { [weak self] allowed in
+                    if allowed { self?.loadFolder(folder, selecting: first) }
+                }
+            }
         } else {
             showToast("Not a picture Pictty can open", symbol: "nosign", tone: .warning)
         }
@@ -1208,6 +1223,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         panel.allowedContentTypes = ImageFormats.typeIdentifiers.compactMap { UTType($0) } + [.folder]
         panel.prompt = L("Open")
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        FolderAccess.remember(url)
         open(urls: [url])
     }
 
@@ -1218,6 +1234,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         panel.prompt = L("Open Folder")
         panel.message = L("Choose a folder of pictures")
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        FolderAccess.remember(url)
         loadFolder(url, selecting: nil)
     }
 
