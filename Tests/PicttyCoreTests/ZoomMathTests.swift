@@ -33,6 +33,17 @@ final class ZoomMathTests: XCTestCase {
         XCTAssertEqual(s, CGSize(width: 1000, height: 500))
     }
 
+    func testBestFitWindowAtZoom() {
+        let image = CGSize(width: 800, height: 400), visible = CGSize(width: 1000, height: 1000)
+        let minimum = CGSize(width: 400, height: 300)
+        XCTAssertEqual(ZoomMath.bestFitContentSize(imagePoints: image, scale: 1, visible: visible, minimum: minimum),
+                       CGSize(width: 800, height: 400))
+        XCTAssertEqual(ZoomMath.bestFitContentSize(imagePoints: image, scale: 2, visible: visible, minimum: minimum),
+                       CGSize(width: 1000, height: 800))
+        XCTAssertEqual(ZoomMath.bestFitContentSize(imagePoints: image, scale: 0.25, visible: visible, minimum: minimum),
+                       CGSize(width: 400, height: 300))
+    }
+
     func testFormats() {
         for e in ["jpg", "png", "heic", "avif", "bmp", "tiff", "webp", "gif", "cr3", "nef", "dng"] {
             XCTAssertTrue(ImageFormats.extensions.contains(e), e)

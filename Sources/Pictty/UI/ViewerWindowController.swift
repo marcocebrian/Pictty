@@ -877,6 +877,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let r = rects[pane]
         canvas.zoom(pane: pane, to: target, about: CGPoint(x: r.midX, y: r.midY), animated: true)
         userZoomed()
+        // Best Fit: zoom from the keyboard, menus or toolbar takes the window along, up to the
+        // screen. A pinch keeps the window.
+        fitWindowToPicture(animated: true, scale: override)
         showToast(model.zoomLabel, symbol: up ? "plus.magnifyingglass" : "minus.magnifyingglass")
     }
 
@@ -889,6 +892,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let r = rects[pane]
         canvas.zoom(pane: pane, to: CGFloat(percent) / 100, about: CGPoint(x: r.midX, y: r.midY), animated: true)
         userZoomed()
+        fitWindowToPicture(animated: true, scale: override)
         showToast(model.zoomLabel, symbol: "plus.magnifyingglass")
     }
 
@@ -912,6 +916,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         } else {
             canvas.zoom(pane: pane, to: 1, about: point, animated: true)
             userZoomed()
+            fitWindowToPicture(animated: true, scale: override)
         }
         showToast(model.zoomLabel, symbol: "1.magnifyingglass")
     }
@@ -937,14 +942,16 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Best Fit: the window takes the picture's real size, shrunk to the screen, keeping its centre.
-    private func fitWindowToPicture(animated: Bool) {
-        guard prefs.zoomMode == .bestFit, override == nil, !model.isComparing, let window,
+    /// With `scale`, the size of the picture at that zoom instead.
+    private func fitWindowToPicture(animated: Bool, scale: CGFloat? = nil) {
+        guard prefs.zoomMode == .bestFit, override == nil || scale != nil, !model.isComparing, let window,
               !window.styleMask.contains(.fullScreen), let o = canvas.orientedSize(pane: 0),
               let screen = window.screen ?? NSScreen.main else { return }
         let visible = screen.visibleFrame.insetBy(dx: 16, dy: 16)
         let b = screen.backingScaleFactor
-        let size = ZoomMath.bestFitContentSize(imagePoints: CGSize(width: o.width / b, height: o.height / b),
-                                               visible: visible.size, minimum: window.contentMinSize)
+        let points = CGSize(width: o.width / b, height: o.height / b)
+        let size = scale.map { ZoomMath.bestFitContentSize(imagePoints: points, scale: $0, visible: visible.size, minimum: window.contentMinSize) }
+            ?? ZoomMath.bestFitContentSize(imagePoints: points, visible: visible.size, minimum: window.contentMinSize)
         var f = window.frameRect(forContentRect: CGRect(origin: .zero, size: size))
         f.origin.x = min(max(window.frame.midX - f.width / 2, visible.minX), visible.maxX - f.width)
         f.origin.y = min(max(window.frame.midY - f.height / 2, visible.minY), visible.maxY - f.height)

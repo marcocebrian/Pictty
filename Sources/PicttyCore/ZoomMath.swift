@@ -83,4 +83,12 @@ public enum ZoomMath {
         return CGSize(width: max(minimum.width, (imagePoints.width * s).rounded(.down)),
                       height: max(minimum.height, (imagePoints.height * s).rounded(.down)))
     }
+
+    /// Window content size that shows the image at `scale`: each side as long as the picture,
+    /// capped by the visible screen area (the rest pans), never below `minimum`.
+    public static func bestFitContentSize(imagePoints: CGSize, scale: CGFloat, visible: CGSize, minimum: CGSize) -> CGSize {
+        guard imagePoints.width > 0, imagePoints.height > 0, scale > 0 else { return minimum }
+        return CGSize(width: max(minimum.width, min(visible.width, (imagePoints.width * scale).rounded(.down))),
+                      height: max(minimum.height, min(visible.height, (imagePoints.height * scale).rounded(.down))))
+    }
 }
