@@ -4,3 +4,8 @@ build/
 out/
 Resources/AppIcon.icns
 Resources/AppIcon.png
+fastlane/metadata/review_information/
+fastlane/screenshots/
+fastlane/previews/
+fastlane/report.xml
+fastlane/README.md
