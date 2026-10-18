@@ -133,20 +133,15 @@ Pictty reads the pictures you open and the other pictures in their folder, and k
 Requires macOS 15 or later on Apple silicon and Xcode 26 or later (Swift 6 toolchain; the macOS 26 SDK for Liquid Glass).
 
 ```sh
-./build.sh            # release build with full optimisation and LTO → build/Pictty.app
-swift test            # the engine's tests (resampling, zoom maths, analysis)
-tools/release.sh      # Developer ID signing, notarisation, and the DMG
+swift build -c release   # release build with full optimisation
+swift test               # the engine's tests (resampling, zoom maths, analysis)
 ```
-
-`tools/release.sh` needs a Developer ID certificate and an Apple account signed in to Xcode; `--no-notarize` skips the upload.
 
 | Path | What is there |
 |---|---|
 | `Sources/PicttyCore` | The engine: decoding, Lanczos and linear-light resampling, zoom maths, histogram and clipping analysis, SVG |
 | `Sources/Pictty` | The app: canvas and Core Animation layers, windows, toolbar, filmstrip, inspector, settings |
 | `Tests/PicttyCoreTests` | Tests for the engine |
-| `Resources` | Info.plist and the Spanish translation |
-| `tools` | Icon, translation, string-coverage and release scripts |
 
 ## Licence
 

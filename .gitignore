@@ -2,10 +2,10 @@
 build/
 .DS_Store
 out/
-Resources/AppIcon.icns
-Resources/AppIcon.png
-fastlane/metadata/review_information/
-fastlane/screenshots/
-fastlane/previews/
-fastlane/report.xml
-fastlane/README.md
+
+# Private: kept on this Mac only, never pushed
+Resources/
+fastlane/
+tools/
+build.sh
+BUILD_NUMBER
