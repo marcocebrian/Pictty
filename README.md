@@ -8,7 +8,7 @@
 Pictty always draws your picture with the best possible algorithm: the GPU while it moves, Lanczos in linear light the moment it rests.</p>
 
 <p align="center">
-  <a href="https://www.noxdrop.com/pictty.html#preview"><img src="https://www.noxdrop.com/img/pictty/tour.webp" width="800" alt="Pictty in action: browsing with the filmstrip, zooming to 300 % on skin texture, and a wipe comparison between two versions of a portrait. Click for the full one-minute video."></a>
+  <a href="https://www.noxdrop.com/pictty.html#preview"><img src="https://www.noxdrop.com/img/pictty/tour-v2.webp" width="800" alt="Pictty in action: the pixel loupe gliding over a motorcycle engine, the information panel with its histogram, and browsing with the filmstrip. Click for the full one-minute video."></a>
 </p>
 
 <p align="center">
