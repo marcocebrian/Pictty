@@ -5,7 +5,7 @@
 <h1 align="center">Pictty</h1>
 
 <p align="center"><b>The good-looking native technical image viewer.</b><br>
-When the picture stops moving, Pictty draws what is on your screen again, pixel for pixel.</p>
+Pictty always draws your picture with the best possible algorithm: the GPU while it moves, Lanczos in linear light the moment it rests.</p>
 
 <p align="center">
   <a href="https://www.noxdrop.com/pictty.html#preview"><img src="https://www.noxdrop.com/img/pictty/tour.webp" width="800" alt="Pictty in action: browsing with the filmstrip, zooming to 300 % on skin texture, and a wipe comparison between two versions of a portrait. Click for the full one-minute video."></a>
