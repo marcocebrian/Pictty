@@ -21,6 +21,7 @@ When the picture stops moving, Pictty draws what is on your screen again, pixel 
 
 ## Features
 
+- **High-quality preview first**: a preview made for your screen with the best algorithms, turning seamlessly into the full-resolution picture when the zoom needs it.
 - **Pixel-exact at rest**: when the picture rests, the visible region is redrawn with Lanczos at one picture pixel per screen pixel, placed to a tenth of a pixel.
 - **Linear-light shrinking**: reductions average **real light**, not the stored numbers, so fine detail keeps its brightness.
 - **Clean enlarging**: up to 300 % with Lanczos; beyond that, smooth GPU filtering.
@@ -56,7 +57,7 @@ Vectors are not rasterised once and scaled. SVG is **drawn from the vector** at 
 
 ### Decoding
 
-ImageIO does the decoding, with Apple's **hardware decoders** where the format has them. A picture is first decoded **at the size of the screen**; the full decode follows only when the zoom needs more pixels than that. The neighbours on each side are decoded ahead (how many is a setting). Past 16,384 pixels, the largest texture the GPU takes, an uncapped decode feeds the settled render, so a 180-megapixel panorama still shows every pixel at 100 %. When macOS reports memory pressure, Pictty drops every decode it can make again.
+ImageIO does the decoding, with Apple's **hardware decoders** where the format has them. A **high-quality preview** comes first, decoded for the size of your screen and drawn with the same Lanczos and linear-light rendering as everything else. It turns **seamlessly** into the **full-resolution** picture the moment the zoom needs more pixels than the preview holds. The neighbours on each side are decoded ahead (how many is a setting). Past 16,384 pixels, the largest texture the GPU takes, an uncapped decode feeds the settled render, so a 180-megapixel panorama still shows every pixel at 100 %. When macOS reports memory pressure, Pictty drops every decode it can make again.
 
 Transparency is checked against the file: some decoders return RGBA for opaque files (iPhone HEIC and AVIF among them), so when the header does not say, the alpha values are checked once and an opaque picture is drawn as opaque.
 
