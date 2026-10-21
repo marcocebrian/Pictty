@@ -1549,7 +1549,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
                 withAnimation(.easeOut(duration: 0.25)) { model.filmstripRevealed = false }
             }
         }
-        if idleSeconds > Self.chromeGrace, model.chromeVisible, !model.showInspector, !model.showLight, !model.items.isEmpty,
+        // Editing is no reason to keep the toolbar and pill up: they step aside as when viewing.
+        if idleSeconds > Self.chromeGrace, model.chromeVisible, !model.showInspector, !model.items.isEmpty,
            !(model.filmstripRevealed && !filmstripRested) {
             setChromeVisible(false)
             if window.styleMask.contains(.fullScreen) { NSCursor.setHiddenUntilMouseMoves(true) }

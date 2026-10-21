@@ -49,9 +49,7 @@ struct Params {
     float vibrance, saturation;
     /// The picture's middle brightness after exposure, encoded, 0…1, which brightness works around.
     float key;
-    /// Vibrance and saturation: 1 per pixel, 2 by regions; `vibranceScale`, how much vibrance this
-    /// picture's own colourfulness calls for (by regions).
-    int saturationAlgorithm;
+    /// How much vibrance this picture's own colourfulness calls for.
     float vibranceScale;
     /// Dehaze, −1…+1, and the light of the haze (linear, 0…1 of white).
     float dehaze;
@@ -155,14 +153,13 @@ inline float skinLikeness(float3 o) {
 /// vibrance the most saturated colours first. A raised colour comes softly to rest at the edge of
 /// Display P3 instead of clipping there, which would change its hue.
 ///
-/// `region`: the colour (Oklab a, b) of the region the pixel belongs to, when it works by regions.
-/// Then how muted and how skin-like are the region's, the region's colour takes the whole gain, and
-/// the pixel's own variation around it (texture, and colour noise) a quarter of it, so neither is
+/// It works by regions: `region` is the colour (Oklab a, b) of the region the pixel belongs to. How
+/// muted and how skin-like the region is decides the gain; the region's colour takes all of it and
+/// the pixel's own variation around it (texture, and colour noise) a quarter, so neither is
 /// amplified.
-inline float3 vibranceAndSaturation(float3 c, float vibrance, float saturation, bool byRegion, float2 region) {
+inline float3 vibranceAndSaturation(float3 c, float vibrance, float saturation, float2 region) {
     float3 o = toOklab(c);
-    if (length(o.yz) < 1e-6 && !byRegion) return c;
-    float3 judged = byRegion ? float3(o.x, region) : o;
+    float3 judged = float3(o.x, region);
     float chroma = length(judged.yz);
     float skin = skinLikeness(judged);
     // Oklab's chroma reaches about 0.33 in sRGB; past a quarter, a colour is a strong one.
@@ -179,7 +176,7 @@ inline float3 vibranceAndSaturation(float3 c, float vibrance, float saturation, 
         k *= 1.0 + saturation;
     }
     float2 target = o.yz * k;
-    if (byRegion && k > 1.0) target = region * k + (o.yz - region) * (1.0 + 0.25 * (k - 1.0));
+    if (k > 1.0) target = region * k + (o.yz - region) * (1.0 + 0.25 * (k - 1.0));
     if (k > 1.0 && inP3(c)) {
         // The furthest along the way that stays inside, by bisection, then a soft knee towards it.
         if (!inP3(fromOklab(float3(o.x, target)))) {
@@ -640,20 +637,15 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
         if (gain > 1.0 && m > 0.0) rgb *= W * rolloff(m / W, gain) / m;
     }
 
-    // Vibrance and saturation. By regions, the region's colour was measured on the picture as it
+    // Vibrance and saturation, by regions. The region's colour was measured on the picture as it
     // came in; Oklab's a and b scale with lightness, so it follows the pixel's lightness since.
     if (p.vibrance != 0.0 || p.saturation != 0.0) {
-        bool byRegion = p.saturationAlgorithm == 2;
-        float2 region = 0.0;
-        if (byRegion) {
-            constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
-            float4 m = colourRegions.sample(s, (float2(gid) + 0.5) / float2(size));
-            float3 was = toOklab(max(c.rgb, 0.0) / W);
-            float now = toOklab(max(rgb, 0.0) / W).x;
-            region = float2(m.x * was.y + m.y, m.z * was.z + m.w) * (was.x > 1e-4 ? now / was.x : 1.0);
-        }
-        rgb = vibranceAndSaturation(rgb / W, byRegion ? p.vibrance * p.vibranceScale : p.vibrance, p.saturation,
-                                    byRegion, region) * W;
+        constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+        float4 m = colourRegions.sample(s, (float2(gid) + 0.5) / float2(size));
+        float3 was = toOklab(max(c.rgb, 0.0) / W);
+        float now = toOklab(max(rgb, 0.0) / W).x;
+        float2 region = float2(m.x * was.y + m.y, m.z * was.z + m.w) * (was.x > 1e-4 ? now / was.x : 1.0);
+        rgb = vibranceAndSaturation(rgb / W, p.vibrance * p.vibranceScale, p.saturation, region) * W;
     }
 
     // Colour grading: each pixel takes the colours of the ranges it belongs to, by its brightness

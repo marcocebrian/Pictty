@@ -152,7 +152,6 @@ public final class LightEngine: @unchecked Sendable {
         var hasDenoised: Int32 = 0
         var vibrance: Float = 0, saturation: Float = 0
         var key: Float = 0.46
-        var saturationAlgorithm: Int32 = 2
         var vibranceScale: Float = 1
         var dehaze: Float = 0
         var airlight: (Float, Float, Float) = (1, 1, 1)
@@ -175,7 +174,6 @@ public final class LightEngine: @unchecked Sendable {
         p.exposure = Float(a.exposure); p.contrast = Float(a.contrast); p.brightness = Float(a.brightness)
         p.highlights = Float(a.highlights); p.shadows = Float(a.shadows)
         p.key = Self.key(src, exposure: Float(a.exposure))
-        p.saturationAlgorithm = Int32(a.saturationAlgorithm)
         p.dehaze = Float(a.dehaze)
         if a.dehaze != 0 {
             // The haze's light as the picture now has it: white-balanced, and lowered with exposure.
@@ -365,7 +363,7 @@ public final class LightEngine: @unchecked Sendable {
 
         // Vibrance and saturation by regions: each region's colour, edge-aware, on a quarter-size grid.
         var colourRegions: MTLTexture?
-        if !a.isSaturationNeutral, a.saturationAlgorithm == 2 {
+        if !a.isSaturationNeutral {
             let w4 = (w + 3) / 4, h4 = (h + 3) / 4
             guard let m = scratch(src, "km", .rgba32Float, w4, h4), let t = scratch(src, "kt", .rgba32Float, w4, h4),
                   let ab = scratch(src, "kab", .rgba32Float, w4, h4) else { return nil }

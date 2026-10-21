@@ -27,9 +27,6 @@ public struct Adjustments: Equatable, Sendable {
     /// −1…+1: haze added ← → taken out.
     public var dehaze: Double = 0
 
-    /// The engine's own number for the method a slider uses, while candidates are compared.
-    /// Vibrance and saturation share one: 1 per pixel, 2 by regions.
-    public var saturationAlgorithm = 2
 
     // Colour
     /// White balance, −1…+1: cooler ← → warmer, greener ← → more magenta.
@@ -80,7 +77,6 @@ public struct Adjustments: Equatable, Sendable {
     /// Every value back to zero; the algorithm choices stay.
     public var valuesReset: Adjustments {
         var a = Adjustments()
-        a.saturationAlgorithm = saturationAlgorithm
         return a
     }
 
@@ -167,14 +163,8 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
 
     /// The candidates still being compared, as (engine number, name, what it does). One entry:
     /// the winner, and no buttons.
-    public var algorithms: [(id: Int, name: String, detail: String)] {
-        switch self {
-        case .vibrance, .saturation:
-            [(1, "Per pixel", "Each pixel's colour judged and raised on its own, its colour noise with it."),
-             (2, "By regions", "Each region's colour raised whole, more in a dull picture and less in a vivid one; texture and colour noise within it are raised less.")]
-        default: []
-        }
-    }
+    /// None at the moment: every slider has settled on its method.
+    public var algorithms: [(id: Int, name: String, detail: String)] { [] }
 
     public func value(_ a: Adjustments) -> Double {
         switch self {
@@ -218,20 +208,9 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// The engine number of the method in use, or nil for a slider with only one.
-    public func algorithm(_ a: Adjustments) -> Int? {
-        switch self {
-        case .vibrance, .saturation: a.saturationAlgorithm
-        default: nil
-        }
-    }
+    public func algorithm(_ a: Adjustments) -> Int? { nil }
 
-    public func setAlgorithm(_ id: Int, in a: inout Adjustments) {
-        guard algorithms.contains(where: { $0.id == id }) else { return }
-        switch self {
-        case .vibrance, .saturation: a.saturationAlgorithm = id
-        default: break
-        }
-    }
+    public func setAlgorithm(_ id: Int, in a: inout Adjustments) {}
 }
 
 /// The three tonal ranges of colour grading.

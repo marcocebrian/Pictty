@@ -242,8 +242,8 @@ final class LightEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(strongVib, 0.999)
     }
 
-    /// By regions, vibrance raises a grey picture's colour noise far less than per pixel, which
-    /// takes each speck for a muted colour and raises it most.
+    /// Vibrance works by regions: a grey picture's colour noise is raised far less than the colour
+    /// of a region would be (per pixel, each speck was taken for a muted colour and raised by 80 %).
     func testVibranceByRegionsLeavesColourNoiseAlone() throws {
         let w = 96, h = 96
         let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
@@ -258,17 +258,16 @@ final class LightEngineTests: XCTestCase {
         let image = ctx.makeImage()!
         let engine = try XCTUnwrap(LightEngine())
         let src = try XCTUnwrap(engine.source(image))
-        func spread(_ algorithm: Int?) throws -> Float {
+        func spread(_ vibrance: Double) throws -> Float {
             var a = Adjustments()
-            if let algorithm { a.vibrance = 1; a.saturationAlgorithm = algorithm }
+            a.vibrance = vibrance
             let p = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
             var sum: Float = 0
             for i in 0..<(w * h) { sum += abs(p[i * 4] - p[i * 4 + 1]) + abs(p[i * 4 + 2] - p[i * 4 + 1]) }
             return sum / Float(w * h)
         }
-        let before = try spread(nil), perPixel = try spread(1), byRegions = try spread(2)
-        XCTAssertGreaterThan(perPixel, before * 1.8)
-        XCTAssertLessThan(byRegions, before * 1.5)
+        let before = try spread(0), after = try spread(1)
+        XCTAssertLessThan(after, before * 1.5)
     }
 
     /// A strong colour pushed hard stays inside what the screen shows (Display P3) instead of

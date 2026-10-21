@@ -2,8 +2,8 @@
 // first, then Light (exposure, contrast, brightness, highlights, shadows, dehaze) and Colour: white
 // balance, with Auto and an eyedropper, vibrance and saturation, and colour grading on three wheels.
 //
-// Vibrance and saturation still have numbered buttons: the candidates being compared. The winner
-// stays and the buttons go.
+// A slider whose methods are being compared shows numbered buttons, one per candidate; the winner
+// stays and the buttons go. None is being compared now.
 
 import PicttyCore
 import SwiftUI

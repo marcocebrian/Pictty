@@ -281,7 +281,6 @@ final class AppleRAW {
         g.dehaze = a.dehaze
         g.vibrance = a.vibrance
         g.saturation = a.saturation
-        g.saturationAlgorithm = a.saturationAlgorithm
         g.shadowColour = a.shadowColour
         g.midtoneColour = a.midtoneColour
         g.highlightColour = a.highlightColour
