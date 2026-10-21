@@ -232,10 +232,11 @@ kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
 // MARK: - Local exposure
 
 /// Raises the light by regions: each pixel takes the gain its region (the guided filter's smooth,
-/// edge-aware base) is given, so the detail within a region rides along unchanged. The base goes
-/// through extended Reinhard with its white at the full gain: dark regions are raised by nearly
-/// all of it, regions already lit by much less, and white stays white. A pixel brighter than its
-/// region that would still pass white rolls off into it, keeping its colour.
+/// edge-aware base) is given, so the detail within a region rides along unchanged. A region darker
+/// than 3 % of white takes all the stops; from there to half of white, they fade out evenly in
+/// log brightness, so what is already lit (a face under a lamp) keeps its light and white stays
+/// white. The fade is gentle enough that a brighter region always stays brighter, up to +4 stops.
+/// A pixel brighter than its region that would still pass white rolls off into it, keeping its colour.
 kernel void localExposure(texture2d<float, access::read> lit [[texture(0)]],
                           texture2d<float, access::read> luma [[texture(1)]],
                           texture2d<float, access::sample> guided [[texture(2)]],
@@ -250,9 +251,8 @@ kernel void localExposure(texture2d<float, access::read> lit [[texture(0)]],
     constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
     float2 ab = guided.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
     float base = max(dec(clamp(ab.x * l + ab.y, 0.0, p.lumaWhite)) / p.white, 1e-5);
-    float g = exp2(p.exposure);
-    float x = base * g;
-    float gain = x * (1.0 + x / (g * g)) / (1.0 + x) / base;
+    float lit_ = clamp(log(base / 0.03) / log(0.5 / 0.03), 0.0, 1.0);
+    float gain = exp2(p.exposure * (1.0 - lit_));
     float3 rgb = c.rgb * gain;
     float m = max(rgb.r, max(rgb.g, rgb.b));
     if (m > p.white) rgb *= p.white * rolloff(m / p.white, max(gain, 1.0001)) / m;

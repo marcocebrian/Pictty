@@ -102,6 +102,26 @@ final class LightEngineTests: XCTestCase {
         XCTAssertLessThan(film[150], film[255] - 0.01)
     }
 
+    /// Local exposure gives a dark region all the stops and a lit one almost none, and a brighter
+    /// region stays brighter.
+    func testLocalExposureRaisesTheDarkAndKeepsTheLit() throws {
+        let engine = try XCTUnwrap(LightEngine())
+        var levels: [Float] = []
+        for value: UInt8 in [30, 60, 120, 200] {
+            let image = flat(value)
+            let src = try XCTUnwrap(engine.source(image))
+            var a = Adjustments()
+            a.exposure = 2
+            a.exposureAlgorithm = 4
+            let after = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)[0]
+            let before = linear(image)[0]
+            if value == 30 { XCTAssertEqual(after / before, 4, accuracy: 0.1, "dark: all the stops") }
+            if value == 200 { XCTAssertLessThan(after / before, 1.2, "lit: almost none") }
+            levels.append(after)
+        }
+        XCTAssertEqual(levels, levels.sorted(), "brighter stays brighter")
+    }
+
     /// One flat colour, 8-bit sRGB.
     private func colour(_ r: UInt8, _ g: UInt8, _ b: UInt8) -> CGImage {
         let ctx = CGContext(data: nil, width: 32, height: 32, bitsPerComponent: 8, bytesPerRow: 128,

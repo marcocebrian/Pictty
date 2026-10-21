@@ -125,23 +125,23 @@ public enum ColourMath {
 
     // MARK: Auto white balance
 
-    /// Estimates the light a picture was taken under, as linear sRGB.
+    /// Estimates the light a picture was taken under, as linear sRGB, and how much of it to take out.
     ///
-    /// Grey points (Huo et al. 2006): pixels close to neutral once the light is taken out are the
-    /// best witnesses of the light, so the estimate white-balances, collects them, and asks again
-    /// with a tighter idea of "close to neutral", ten times. Where the search starts matters: from
-    /// the picture as shot, a strong cast is only half found, because the pixels that look neutral
-    /// then are coloured things the cast happens to cancel; from Shades of Grey (Finlayson and
-    /// Trezzi 2004, p = 4), a picture full of one colour is mistaken for a cast. So it runs from
-    /// both, and the answer that leaves more of the picture truly grey wins (as shot, on a tie),
-    /// each count weighed by how plausible the answer is as a light: a blue sky is not one. A win
-    /// for the deeper search counts for a third, which keeps some of a warm scene's warmth.
-    /// Blown pixels (they say nothing about the light) and near-black ones (noise) never vote. If
-    /// neither search keeps enough grey points, Shades of Grey is the answer.
+    /// The witnesses are grey surfaces, found by the Grayness Index (Qian et al. 2019): across an
+    /// edge, a grey surface's light changes by the same ratio in red, green and blue whatever the
+    /// light is, because only its brightness changes there, so the test does not depend on how
+    /// coloured the cast makes things look. The greyest edges vote with their colour. If too few
+    /// edges are grey, or they point at something that is not a light (a blue sky), grey points
+    /// (Huo et al. 2006) take over: pixels close to neutral, asked again with a tighter idea of
+    /// neutral ten times; and failing those, Shades of Grey (Finlayson and Trezzi 2004, p = 4).
+    /// Blown pixels (they say nothing about the light) and near-black ones (noise) never vote.
+    ///
+    /// The answer is then adapted as the eye adapts: a daylight-range light is taken out
+    /// completely, a very warm one (a lamp, a street light) only partly, so an evening keeps
+    /// some of its warmth.
     public static func estimateIlluminant(_ image: CGImage) -> SIMD3<Double>? {
-        let px = linearPixels(image, maxSide: 384)
-        guard !px.isEmpty else { return nil }
-        let usable = px.filter { max($0.x, $0.y, $0.z) < 0.92 && simd_dot($0, SIMD3(0.2126, 0.7152, 0.0722)) > 0.012 }
+        let grid = linearGrid(image, maxSide: 384)
+        let usable = grid.pixels.compactMap { $0 }.filter(votes)
         guard usable.count > 64 else { return nil }
 
         var acc = SIMD3<Double>.zero
@@ -149,53 +149,99 @@ public enum ColourMath {
         let shades = SIMD3(pow(acc.x, 0.25), pow(acc.y, 0.25), pow(acc.z, 0.25))
         guard shades.min() > 0 else { return nil }
 
+        let light: SIMD3<Double>
+        if let edges = grayness(grid), plausibility(edges) > 0.25 {
+            light = edges
+        } else if let points = greyPoints(usable) {
+            light = points
+        } else {
+            light = shades
+        }
+        return adapted(light / light.max())
+    }
+
+    /// A pixel that can say something about the light: not blown, not lost in the dark.
+    static func votes(_ p: SIMD3<Double>) -> Bool {
+        max(p.x, p.y, p.z) < 0.92 && simd_dot(p, SIMD3(0.2126, 0.7152, 0.0722)) > 0.012
+    }
+
+    /// The Grayness Index: each pixel's log light against its 5 × 5 neighbourhood's, per channel.
+    /// Where there is an edge (green changes by 3 % or more) and red and blue change by the same
+    /// ratio as green, the surface is grey. The greyest hundredth of the edges, each by its
+    /// chromaticity, is the light; nil if fewer than 40 edges are grey enough to trust.
+    static func grayness(_ grid: (width: Int, height: Int, pixels: [SIMD3<Double>?])) -> SIMD3<Double>? {
+        let w = grid.width, h = grid.height
+        guard w >= 8, h >= 8 else { return nil }
+        let logs: [SIMD3<Double>?] = grid.pixels.map { p in
+            guard let p, votes(p) else { return nil }
+            return SIMD3(log(p.x + 1e-4), log(p.y + 1e-4), log(p.z + 1e-4))
+        }
+        var found: [(score: Double, colour: SIMD3<Double>)] = []
+        for y in 2..<(h - 2) {
+            for x in 2..<(w - 2) {
+                guard let centre = logs[y * w + x], let p = grid.pixels[y * w + x] else { continue }
+                var sum = SIMD3<Double>.zero, whole = true
+                for j in -2...2 {
+                    for i in -2...2 {
+                        guard let q = logs[(y + j) * w + x + i] else { whole = false; break }
+                        sum += q
+                    }
+                    if !whole { break }
+                }
+                guard whole else { continue }
+                let d = centre - sum / 25
+                let contrast = abs(d.y)
+                guard contrast > 0.03, contrast < 1.5 else { continue }
+                let score = (pow(d.x - d.y, 2) + pow(d.z - d.y, 2)).squareRoot() / contrast
+                found.append((score, p / (p.x + p.y + p.z)))
+            }
+        }
+        found.sort { $0.score < $1.score }
+        let best = found.prefix(max(40, found.count / 100)).filter { $0.score < 0.25 }
+        guard best.count >= 40 else { return nil }
+        let m = best.reduce(SIMD3<Double>.zero) { $0 + $1.colour } / Double(best.count)
+        return m / m.max()
+    }
+
+    /// Grey points from the picture as shot: the pixels within a shrinking distance of neutral once
+    /// the light found so far is taken out, ten rounds; nil if too few are left.
+    static func greyPoints(_ usable: [SIMD3<Double>]) -> SIMD3<Double>? {
         let minimum = max(usable.count / 200, 32)
-        func gains(_ light: SIMD3<Double>) -> SIMD3<Double> { SIMD3(light.y / light.x, 1, light.y / light.z) }
-        /// The pixels within `threshold` of neutral once `g` is applied: their count and mean.
-        func greys(_ g: SIMD3<Double>, _ threshold: Double) -> (n: Int, mean: SIMD3<Double>) {
+        var gains = SIMD3<Double>(1, 1, 1), estimate: SIMD3<Double>?
+        for i in 0..<10 {
+            let threshold = 0.4 - Double(i) * 0.03
             var sum = SIMD3<Double>.zero, n = 0
             for p in usable {
-                let q = p * g
+                let q = p * gains
                 let y = simd_dot(q, SIMD3(0.299, 0.587, 0.114))
                 let u = -0.147 * q.x - 0.289 * q.y + 0.436 * q.z
                 let v = 0.615 * q.x - 0.515 * q.y - 0.100 * q.z
                 if (abs(u) + abs(v)) / y < threshold { sum += p; n += 1 }
             }
-            return (n, n > 0 ? sum / Double(n) : .zero)
+            guard n >= minimum else { break }
+            let m = sum / Double(n)
+            estimate = m
+            gains = SIMD3(m.y / m.x, 1, m.y / m.z)
         }
-        func search(from start: SIMD3<Double>) -> (light: SIMD3<Double>, support: Int)? {
-            var g = gains(start)
-            var estimate: SIMD3<Double>?
-            for i in 0..<10 {
-                let found = greys(g, 0.4 - Double(i) * 0.03)
-                guard found.n >= minimum else { break }
-                estimate = found.mean
-                g = gains(found.mean)
-            }
-            guard let estimate else { return nil }
-            return (estimate, greys(gains(estimate), 0.1).n)
-        }
+        return estimate.map { $0 / $0.max() }
+    }
 
-        let asShot = search(from: SIMD3(1, 1, 1)), fromShades = search(from: shades)
-        let light: SIMD3<Double>
-        switch (asShot, fromShades) {
-        case let (a?, s?):
-            let score = (asShot: Double(a.support) * plausibility(a.light), shades: Double(s.support) * plausibility(s.light))
-            // Even when the deeper search wins, it only gets a third of the say (a weighted
-            // geometric mean of the two lights): taken all the way, or even halfway, a warm evening
-            // or a lamp-lit room turns cold and grey, which is not what the eye saw there either.
-            if score.shades > score.asShot {
-                let x = a.light / a.light.max(), y = s.light / s.light.max()
-                func blend(_ p: Double, _ q: Double) -> Double { pow(p, 0.65) * pow(q, 0.35) }
-                light = SIMD3(blend(x.x, y.x), blend(x.y, y.y), blend(x.z, y.z))
-            } else {
-                light = a.light
-            }
-        case let (a?, nil): light = a.light
-        case let (nil, s?): light = s.light
-        case (nil, nil): light = shades
-        }
-        return light / light.max()
+    /// The light the sliders should take out, for a light the picture was taken under: all of
+    /// it from 5000 K up; below, a shrinking share of its distance from D65 in mireds, down to
+    /// half of it at 3000 K and warmer. Its distance off the locus (a street light's green or
+    /// magenta) is taken out by that share squared: all of it in daylight, a quarter under a lamp,
+    /// where taking it all out turns skin olive. Real lights sit at most a little below the locus
+    /// (fluorescents and LEDs stray above it, towards green): an estimate further towards magenta
+    /// is mixed light fooling the witnesses, and only the possible part of it is believed.
+    static func adapted(_ light: SIMD3<Double>) -> SIMD3<Double> {
+        guard let (t, duv) = kelvin(light) else { return light }
+        let mired = 1e6 / t, neutral = 1e6 / baseKelvin
+        let share = 1 - 0.5 * min(max((mired - 200) / (333 - 200), 0), 1)
+        let t1 = 1e6 / (neutral + (mired - neutral) * share)
+        let duv1 = duvD65 + (min(max(duv, -0.006), 0.02) - duvD65) * share * share
+        let rgb = xyzToRGB * xyz(uv: locus(t1) + normal(t1) * duv1)
+        guard rgb.min() > 0 else { return light }
+        return rgb / rgb.max()
     }
 
     /// The average colour of a small square of a picture, linear sRGB: what the eyedropper reads.
@@ -210,11 +256,16 @@ public enum ColourMath {
         return px.reduce(.zero, +) / Double(px.count)
     }
 
-    /// Pixels as linear sRGB, colour-managed, shrunk to `maxSide`.
+    /// Pixels as linear sRGB, colour-managed, shrunk to `maxSide`; transparent ones left out.
     static func linearPixels(_ image: CGImage, maxSide: Int) -> [SIMD3<Double>] {
+        linearGrid(image, maxSide: maxSide).pixels.compactMap { $0 }
+    }
+
+    /// The same, in their places: nil where the picture is transparent.
+    static func linearGrid(_ image: CGImage, maxSide: Int) -> (width: Int, height: Int, pixels: [SIMD3<Double>?]) {
         let k = min(1, Double(maxSide) / Double(max(image.width, image.height)))
         let w = max(1, Int(Double(image.width) * k)), h = max(1, Int(Double(image.height) * k))
-        guard let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { return [] }
+        guard let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { return (0, 0, []) }
         var data = [Float](repeating: 0, count: w * h * 4)
         let ok = data.withUnsafeMutableBytes { raw -> Bool in
             guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 32, bytesPerRow: w * 16,
@@ -225,14 +276,14 @@ public enum ColourMath {
             ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
             return true
         }
-        guard ok else { return [] }
-        var out: [SIMD3<Double>] = []
+        guard ok else { return (0, 0, []) }
+        var out: [SIMD3<Double>?] = []
         out.reserveCapacity(w * h)
-        for i in stride(from: 0, to: data.count, by: 4) where data[i + 3] > 0.5 {
+        for i in stride(from: 0, to: data.count, by: 4) {
             let a = Double(data[i + 3])
-            out.append(SIMD3(Double(data[i]) / a, Double(data[i + 1]) / a, Double(data[i + 2]) / a))
+            out.append(a > 0.5 ? SIMD3(Double(data[i]) / a, Double(data[i + 1]) / a, Double(data[i + 2]) / a) : nil)
         }
-        return out
+        return (w, h, out)
     }
 }
 
