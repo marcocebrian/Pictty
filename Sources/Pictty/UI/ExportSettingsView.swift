@@ -288,7 +288,7 @@ private struct FormatCard: View {
     var body: some View {
         Button(action: choose) {
             VStack(spacing: 6) {
-                FormatBadge(format: format, size: 40)
+                FormatBadge(format: format, size: 28)
                     .scaleEffect(selected ? 1.06 : 1)
                 Text(format.title)
                     .font(.system(size: 11, weight: selected ? .semibold : .medium))
