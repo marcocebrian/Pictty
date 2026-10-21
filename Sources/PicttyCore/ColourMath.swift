@@ -135,7 +135,7 @@ public enum ColourMath {
     /// Trezzi 2004, p = 4), a picture full of one colour is mistaken for a cast. So it runs from
     /// both, and the answer that leaves more of the picture truly grey wins (as shot, on a tie),
     /// each count weighed by how plausible the answer is as a light: a blue sky is not one. A win
-    /// for the deeper search is met halfway, which keeps some of a warm scene's warmth.
+    /// for the deeper search counts for a third, which keeps some of a warm scene's warmth.
     /// Blown pixels (they say nothing about the light) and near-black ones (noise) never vote. If
     /// neither search keeps enough grey points, Shades of Grey is the answer.
     public static func estimateIlluminant(_ image: CGImage) -> SIMD3<Double>? {
@@ -181,12 +181,13 @@ public enum ColourMath {
         switch (asShot, fromShades) {
         case let (a?, s?):
             let score = (asShot: Double(a.support) * plausibility(a.light), shades: Double(s.support) * plausibility(s.light))
-            // Even when the deeper search wins, it is met halfway (the geometric mean of the two
-            // lights): taken all the way, a warm evening or a lamp-lit room turns cold and grey,
-            // which is not what the eye saw there either.
+            // Even when the deeper search wins, it only gets a third of the say (a weighted
+            // geometric mean of the two lights): taken all the way, or even halfway, a warm evening
+            // or a lamp-lit room turns cold and grey, which is not what the eye saw there either.
             if score.shades > score.asShot {
                 let x = a.light / a.light.max(), y = s.light / s.light.max()
-                light = SIMD3(sqrt(x.x * y.x), sqrt(x.y * y.y), sqrt(x.z * y.z))
+                func blend(_ p: Double, _ q: Double) -> Double { pow(p, 0.65) * pow(q, 0.35) }
+                light = SIMD3(blend(x.x, y.x), blend(x.y, y.y), blend(x.z, y.z))
             } else {
                 light = a.light
             }

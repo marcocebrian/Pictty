@@ -171,7 +171,8 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .exposure:
             [(1, "Linear", "Multiplies the light. Whatever passes white clips."),
              (2, "Colour-keeping shoulder", "Multiplies the light, then rolls the brightest channel off into white, keeping each colour's hue and saturation."),
-             (3, "Film shoulder", "Multiplies the light, then rolls each channel off on its own, so the brightest colours drift to white as on film.")]
+             (3, "Film shoulder", "Multiplies the light, then rolls each channel off on its own, so the brightest colours drift to white as on film."),
+             (4, "Local", "Raises the light by regions, the dark ones most: what is already lit keeps its light, and the detail rides along. For night and backlit pictures.")]
         case .highlights:
             [(2, "Guided filter", "The curve moves a smooth, edge-aware base layer; the detail on top is kept."),
              (3, "Local Laplacian", "The curve applied scale by scale through a Laplacian pyramid: detail kept at every size, no halos.")]

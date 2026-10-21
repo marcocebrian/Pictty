@@ -52,7 +52,7 @@ public final class LightEngine: @unchecked Sendable {
         self.device = device
         self.queue = queue
         for name in ["prepare", "downsample", "remap", "accumulate", "collapse", "guidedMoments", "boxHorizontal",
-                     "boxVertical", "guidedCoefficients", "detailBand", "finish"] {
+                     "boxVertical", "guidedCoefficients", "detailBand", "localExposure", "finish"] {
             guard let f = library.makeFunction(name: name),
                   let state = try? device.makeComputePipelineState(function: f) else { return nil }
             pipelines[name] = state
@@ -191,13 +191,24 @@ public final class LightEngine: @unchecked Sendable {
         }
 
         guard let cb = queue.makeCommandBuffer() else { return nil }
-        let lit = scratch(src, "lit", .rgba16Float, w, h)
-        let luma = scratch(src, "luma", .r32Float, w, h)
         let outFormat: MTLPixelFormat = output == .display ? .rgba8Unorm : .rgba16Float
         let out = scratch(src, output == .display ? "out8" : "outF", outFormat, w, h, shared: true)
-        guard let lit, let luma, let out else { return nil }
+        guard var lit = scratch(src, "lit", .rgba16Float, w, h), var luma = scratch(src, "luma", .r32Float, w, h),
+              let out else { return nil }
 
         dispatch(cb, "prepare", [src.input, lit, luma, src.denoised ?? src.input], &p, w, h)
+
+        // Local exposure: the gain goes onto a smooth, edge-aware map of the picture's brightness,
+        // full in the dark regions and less where the light already is; each pixel's detail rides
+        // on its region. Everything after works on the result, as after any exposure.
+        if a.exposureAlgorithm == 4, a.exposure > 0 {
+            guard let regions = self.guided(cb, src, luma, key: "e", radius: 0.04, eps: 0.01, &p),
+                  let litE = scratch(src, "litE", .rgba16Float, w, h),
+                  let lumaE = scratch(src, "lumaE", .r32Float, w, h) else { return nil }
+            dispatch(cb, "localExposure", [lit, luma, regions, litE, lumaE], &p, w, h)
+            lit = litE
+            luma = lumaE
+        }
 
         // The Gaussian pyramid of the luminance, for the local Laplacian and for detail.
         var sizes = [(w, h)]
@@ -217,20 +228,7 @@ public final class LightEngine: @unchecked Sendable {
         // Guided base: on a quarter-size luminance, its coefficients smoothed and sampled back up.
         var coefficients: MTLTexture?
         if guided {
-            let w2 = (w + 1) / 2, h2 = (h + 1) / 2, w4 = (w2 + 1) / 2, h4 = (h2 + 1) / 2
-            guard let half = scratch(src, "g1", .r32Float, w2, h2), let quarter = scratch(src, "g2", .r32Float, w4, h4),
-                  let m = scratch(src, "gm", .rgba32Float, w4, h4), let t = scratch(src, "gt", .rgba32Float, w4, h4),
-                  let ab = scratch(src, "gab", .rgba32Float, w4, h4) else { return nil }
-            dispatch(cb, "downsample", [luma, half], &p, w2, h2)
-            dispatch(cb, "downsample", [half, quarter], &p, w4, h4)
-            dispatch(cb, "guidedMoments", [quarter, m], &p, w4, h4)
-            p.radius = Int32(max(2, Double(max(w4, h4)) * 0.025))
-            p.eps = 0.012
-            dispatch(cb, "boxHorizontal", [m, t], &p, w4, h4)
-            dispatch(cb, "boxVertical", [t, m], &p, w4, h4)
-            dispatch(cb, "guidedCoefficients", [m, ab], &p, w4, h4)
-            dispatch(cb, "boxHorizontal", [ab, t], &p, w4, h4)
-            dispatch(cb, "boxVertical", [t, ab], &p, w4, h4)
+            guard let ab = self.guided(cb, src, luma, key: "g", radius: 0.025, eps: 0.012, &p) else { return nil }
             coefficients = ab
         }
 
@@ -336,6 +334,28 @@ public final class LightEngine: @unchecked Sendable {
     }
 
     // MARK: - Plumbing
+
+    /// The guided filter's coefficients (a, b) for `luma`, worked out on a quarter-size copy:
+    /// `radius` as a fraction of that copy's longer side, `eps` the regularisation. `key` keeps
+    /// each user's textures apart.
+    private func guided(_ cb: MTLCommandBuffer, _ src: Source, _ luma: MTLTexture, key: String, radius: Double,
+                        eps: Float, _ p: inout Params) -> MTLTexture? {
+        let w2 = (src.width + 1) / 2, h2 = (src.height + 1) / 2, w4 = (w2 + 1) / 2, h4 = (h2 + 1) / 2
+        guard let half = scratch(src, key + "1", .r32Float, w2, h2), let quarter = scratch(src, key + "2", .r32Float, w4, h4),
+              let m = scratch(src, key + "m", .rgba32Float, w4, h4), let t = scratch(src, key + "t", .rgba32Float, w4, h4),
+              let ab = scratch(src, key + "ab", .rgba32Float, w4, h4) else { return nil }
+        dispatch(cb, "downsample", [luma, half], &p, w2, h2)
+        dispatch(cb, "downsample", [half, quarter], &p, w4, h4)
+        dispatch(cb, "guidedMoments", [quarter, m], &p, w4, h4)
+        p.radius = Int32(max(2, Double(max(w4, h4)) * radius))
+        p.eps = eps
+        dispatch(cb, "boxHorizontal", [m, t], &p, w4, h4)
+        dispatch(cb, "boxVertical", [t, m], &p, w4, h4)
+        dispatch(cb, "guidedCoefficients", [m, ab], &p, w4, h4)
+        dispatch(cb, "boxHorizontal", [ab, t], &p, w4, h4)
+        dispatch(cb, "boxVertical", [t, ab], &p, w4, h4)
+        return ab
+    }
 
     private func scratch(_ src: Source, _ key: String, _ format: MTLPixelFormat, _ w: Int, _ h: Int,
                          shared: Bool = false) -> MTLTexture? {

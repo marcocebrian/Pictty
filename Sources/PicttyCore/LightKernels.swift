@@ -215,9 +215,10 @@ kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
     }
     // Exposure multiplies the light. Raised, what passes white either clips (1), or the brightest
     // channel rolls off into white keeping each colour's hue and saturation (2), or each channel
-    // rolls off on its own, so the brightest colours drift to white as on film (3).
+    // rolls off on its own, so the brightest colours drift to white as on film (3). Local
+    // exposure (4) raised is its own pass, after this one.
     float g = exp2(p.exposure);
-    rgb *= g;
+    if (!(p.exposureAlgorithm == 4 && p.exposure > 0.0)) rgb *= g;
     if (p.exposure > 0.0 && p.exposureAlgorithm == 2) {
         float m = max(rgb.r, max(rgb.g, rgb.b));
         if (m > 0.0) rgb *= p.white * rolloff(m / p.white, g) / m;
@@ -226,6 +227,37 @@ kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
     }
     lit.write(float4(rgb, c.a), gid);
     luma.write(float4(enc(dot(rgb, lumaWeights))), gid);
+}
+
+// MARK: - Local exposure
+
+/// Raises the light by regions: each pixel takes the gain its region (the guided filter's smooth,
+/// edge-aware base) is given, so the detail within a region rides along unchanged. The base goes
+/// through extended Reinhard with its white at the full gain: dark regions are raised by nearly
+/// all of it, regions already lit by much less, and white stays white. A pixel brighter than its
+/// region that would still pass white rolls off into it, keeping its colour.
+kernel void localExposure(texture2d<float, access::read> lit [[texture(0)]],
+                          texture2d<float, access::read> luma [[texture(1)]],
+                          texture2d<float, access::sample> guided [[texture(2)]],
+                          texture2d<float, access::write> litOut [[texture(3)]],
+                          texture2d<float, access::write> lumaOut [[texture(4)]],
+                          constant Params& p [[buffer(0)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    uint2 size = uint2(litOut.get_width(), litOut.get_height());
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    float4 c = lit.read(gid);
+    float l = luma.read(gid).r;
+    constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+    float2 ab = guided.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
+    float base = max(dec(clamp(ab.x * l + ab.y, 0.0, p.lumaWhite)) / p.white, 1e-5);
+    float g = exp2(p.exposure);
+    float x = base * g;
+    float gain = x * (1.0 + x / (g * g)) / (1.0 + x) / base;
+    float3 rgb = c.rgb * gain;
+    float m = max(rgb.r, max(rgb.g, rgb.b));
+    if (m > p.white) rgb *= p.white * rolloff(m / p.white, max(gain, 1.0001)) / m;
+    litOut.write(float4(rgb, c.a), gid);
+    lumaOut.write(float4(enc(dot(rgb, lumaWeights))), gid);
 }
 
 // MARK: - Pyramids
