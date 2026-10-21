@@ -120,6 +120,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         DispatchQueue.main.asyncAfter(deadline: .now() + (Double(auto.dropFirst(7)) ?? 2)) { controller.autoWhiteBalance(nil) }
                     case let turn where turn.hasPrefix("rotate@"):
                         DispatchQueue.main.asyncAfter(deadline: .now() + (Double(turn.dropFirst(7)) ?? 2)) { controller.rotateRight(nil) }
+                    case let browse where browse.hasPrefix("browse="):
+                        // browse=<n>: the right arrow held down for n pictures, at 60 a second.
+                        var left = Int(browse.dropFirst(7)) ?? 100
+                        Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { timer in
+                            MainActor.assumeIsolated {
+                                controller.nextImage(nil)
+                                left -= 1
+                                if left <= 0 { timer.invalidate(); NSLog("browse done") }
+                            }
+                        }
                     case "stress":
                         // Every slider and algorithm at 60 Hz for four seconds, zooming to 100 % and
                         // back and flipping before/after on the way, the way hands do it.

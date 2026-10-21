@@ -140,7 +140,10 @@ final class ThumbStore: @unchecked Sendable {
     }()
 
     init() {
-        cache.countLimit = 2000
+        cache.countLimit = 4000
+        // By memory, not count: a 2000-picture folder browsed end to end would otherwise keep
+        // about a gigabyte of thumbnails.
+        cache.totalCostLimit = 256 << 20
         // Nothing decodes for the filmstrip until the picture itself is on screen.
         queue.isSuspended = true
     }
@@ -155,7 +158,7 @@ final class ThumbStore: @unchecked Sendable {
         return await withCheckedContinuation { cont in
             queue.addOperation {
                 let img = ImageDecoder.thumbnail(url, maxPixel: 400)
-                if let img { self.cache.setObject(img, forKey: url as NSURL) }
+                if let img { self.cache.setObject(img, forKey: url as NSURL, cost: img.bytesPerRow * img.height) }
                 cont.resume(returning: img)
             }
         }
