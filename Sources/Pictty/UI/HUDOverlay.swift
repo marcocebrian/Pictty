@@ -11,8 +11,13 @@ struct HUDOverlay: View {
     @ObservedObject var prefs: Preferences
 
     var body: some View {
-        GeometryReader { geometry in
-            content(size: geometry.size)
+        // Nothing until the picture's first frame is up; the pill follows a frame later.
+        Group {
+            if model.chromeReady {
+                GeometryReader { geometry in
+                    content(size: geometry.size)
+                }
+            }
         }
         // Pane rectangles come from the canvas in window points, so this layer must not be
         // shifted by the titlebar's safe area.

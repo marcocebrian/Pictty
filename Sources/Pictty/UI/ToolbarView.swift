@@ -32,6 +32,10 @@ struct ToolbarView: View {
     static let tooltipDelay: TimeInterval = 0.2
 
     var body: some View {
+        if model.chromeReady { toolbar }
+    }
+
+    private var toolbar: some View {
         pill
             .padding(.top, 7)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

@@ -23,14 +23,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        timingMark("will finish launching")
         NSWindow.allowsAutomaticWindowTabbing = false
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        timingMark("did finish launching")
+        // Launched on its own, to come back to last time's picture: it starts decoding now, while
+        // the window is built. (Finder's files have arrived by now and won.)
+        if pendingOpen.isEmpty, launchPath == nil, let file = Preferences.shared.savedSession()?.file {
+            EarlyDecode.shared.start(file)
+        }
         NSApp.setActivationPolicy(.regular)
         buildMenu()
 
-        let controller = makeWindow()
+        // The window is made, given its picture (decoded already, if it was opened with one) and
+        // only then shown: its first frame has the picture in it, at the picture's own size.
+        let controller = makeWindow(show: false)
+        timingMark("window made")
 
         // Files handed over by Finder / `open -a Pictty`, or on the command line.
         if !pendingOpen.isEmpty {
@@ -43,6 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Finder arrive before this point and start a fresh session instead.
             controller.restoreSession(folder: session.folder, file: session.file)
         }
+        // Shown with its picture in it: at once if it is there, else when it lands (a HEIC from an
+        // iPhone takes a little longer), and after 150 ms whatever happens.
+        controller.showWhenPictureIsReady(within: 0.15)
+        // Thumbnails wait for the picture; this is only the backstop if it never comes.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { ThumbStore.shared.release() }
         // Developer hooks for screenshots: launch without taking focus, with panels open.
         let env = ProcessInfo.processInfo.environment
         if env["PICTTY_BACKGROUND"] != "1" { NSApp.activate(ignoringOtherApps: true) }
@@ -234,7 +249,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard !controllers.isEmpty else { pendingOpen.append(contentsOf: urls); return }
+        guard !controllers.isEmpty else {
+            // Opened from Finder: the picture starts decoding before the window exists.
+            if pendingOpen.isEmpty, let first = urls.first { EarlyDecode.shared.start(first) }
+            pendingOpen.append(contentsOf: urls)
+            return
+        }
         windowFor(urls).open(urls: urls)
     }
 
@@ -261,7 +281,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// A new viewer window, cascaded from the frontmost one.
     @discardableResult
-    private func makeWindow() -> ViewerWindowController {
+    /// `show` false: the caller shows it, once there is something in it.
+    private func makeWindow(show: Bool = true) -> ViewerWindowController {
         let controller = ViewerWindowController()
         if let front = current?.window, let window = controller.window {
             window.setFrame(front.frame, display: false)
@@ -272,7 +293,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async { self?.controllers.removeAll { $0 === closed } }
         }
         controllers.append(controller)
-        controller.showWindow(nil)
+        if show {
+            controller.showWindow(nil)
+            timingMark("window shown")
+        }
         return controller
     }
 

@@ -47,7 +47,11 @@ final class CanvasView: NSView {
         var isHDR = false
         var hasAlpha = false
         var preview: CGImage?
+        /// The preview matched to the display, for the layer alone.
+        var previewDisplay: CGImage?
         var full: CGImage?
+        /// The full decode matched to the display, when it came that way.
+        var fullDisplay: CGImage?
         /// Every pixel of a picture larger than a GPU texture; only the settled render uses it.
         var detail: CGImage?
         /// SVG: sharp renders are drawn from this instead of resampled.
@@ -299,7 +303,16 @@ final class CanvasView: NSView {
         // A RAW's real develop replacing the camera's preview of the same picture.
         let developed = !isNew && !d.isFull && !d.isDetail && p.shown?.preview != nil && p.shown?.preview !== d.image
         var s = isNew ? Shown(url: d.url, pixelSize: d.pixelSize, frames: d.frameCount) : p.shown!
-        if d.isDetail { s.detail = d.image } else if d.isFull { s.full = d.image } else { s.preview = d.image }
+        // Each decode with its copy for the screen, if it came with one.
+        if d.isDetail {
+            s.detail = d.image
+        } else if d.isFull {
+            s.full = d.image
+            s.fullDisplay = d.display
+        } else {
+            s.preview = d.image
+            s.previewDisplay = d.display
+        }
         s.isHDR = s.isHDR || d.isHDR
         s.hasAlpha = s.hasAlpha || d.hasAlpha
         if let v = d.vector { s.vector = v }
@@ -337,9 +350,12 @@ final class CanvasView: NSView {
         if let hasAlpha { s.hasAlpha = hasAlpha }
         if full {
             s.full = image
+            s.fullDisplay = nil
         } else {
             s.preview = image
+            s.previewDisplay = nil
             s.full = nil
+            s.fullDisplay = nil
         }
         s.detail = nil
         p.shown = s
@@ -578,7 +594,8 @@ final class CanvasView: NSView {
         p.clip.isHidden = !showClipping || p.clip.contents == nil
         if let img, img !== p.displayed, p.animatedURL == nil {
             p.displayed = img
-            p.base.contents = img
+            // The screen gets the copy already in its colour space when there is one.
+            p.base.contents = (img === s.preview ? s.previewDisplay : img === s.full ? s.fullDisplay : nil) ?? img
         }
         setEDR(p, s.isHDR)
         CATransaction.setDisableActions(!animated)

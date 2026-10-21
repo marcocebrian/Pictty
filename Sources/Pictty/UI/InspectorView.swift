@@ -17,6 +17,11 @@ struct InspectorView: View {
     let controller: ViewerWindowController
 
     var body: some View {
+        // Nothing while put away: a hidden panel costs the picture nothing, at launch or after.
+        if model.showInspector { panel }
+    }
+
+    private var panel: some View {
         VStack(spacing: 0) {
             header
             Divider().overlay(.white.opacity(0.08))

@@ -48,6 +48,34 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     /// The picture being edited in the Light panel, if any.
     var lightSession: LightSession?
     var lightAnalysisTicket = 0
+    /// Neighbours and thumbnails wait for the picture on screen.
+    private var warmUpPending = false
+    /// The window is held back until its first picture is in it.
+    private var pendingShow = false
+    private var toolbarWidths: [Bool: CGFloat] = [:]
+
+    /// Shows the window now if its picture is in it (or none is coming), else when it arrives,
+    /// and after `limit` seconds regardless.
+    func showWhenPictureIsReady(within limit: TimeInterval) {
+        let waiting = model.current != nil && canvas.shown(pane: 0)?.url != model.current?.url
+        guard waiting else { return showHeldWindow(force: true) }
+        pendingShow = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + limit) { [weak self] in self?.showHeldWindow() }
+    }
+
+    private func showHeldWindow(force: Bool = false) {
+        guard pendingShow || force else { return }
+        pendingShow = false
+        showWindow(nil)
+        timingMark("window shown")
+        // The controls, a frame after the picture; then the minimum size, which needs the toolbar.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.model.chromeReady = true
+            self.syncChrome()
+            timingMark("controls ready")
+        }
+    }
 
     /// The user's own zoom for pane 0 (device pixels per image pixel), or nil to follow the
     /// zoom mode. In Remember mode it survives navigation.
@@ -289,7 +317,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         if model.cropping { updateCropOverlay() }
 
         if let window {
-            let width = max(560, (toolbarHost?.fittingSize.width ?? 0) + 20).rounded(.up)
+            let width = max(560, toolbarWidth + 20).rounded(.up)
             let size = NSSize(width: width, height: 340)
             if window.contentMinSize != size {
                 window.contentMinSize = size
@@ -307,6 +335,19 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         set(lightHost, visible: model.showLight, slide: 28)
         set(nudgeHost, visible: model.items.isEmpty && !DefaultViewer.shared.opensJPEG
             && !Preferences.store.bool(forKey: DefaultNudgeView.dismissedKey), duration: 0.4)
+    }
+
+    /// The toolbar's own width, for the window's minimum size. Asking SwiftUI for it lays the whole
+    /// toolbar out (20 ms at launch), and `syncChrome` runs on every change of the model, so it is
+    /// measured once for each set of buttons: with and without the comparison's.
+    private var toolbarWidth: CGFloat {
+        let key = model.isComparing
+        if let known = toolbarWidths[key] { return known }
+        // Not before the window's first frame: the picture comes first, the minimum size after.
+        guard window?.isVisible == true else { return 0 }
+        let w = toolbarHost?.fittingSize.width ?? 0
+        toolbarWidths[key] = w
+        return w
     }
 
     /// What the Adjust panel takes from the right of the window.
@@ -467,8 +508,18 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let generation = scanGeneration
         requestedFull.removeAll()
 
+        timingMark("scan start")
+        // A picture opened from another folder shows now; its folder joins it when the scan is done.
+        if let target, folder != model.folderURL, ImageFormats.isSupported(target) {
+            model.replaceItems([ImageItem(url: target)], folder: folder)
+            model.setPrimary(0)
+            model.endCompare()
+            navigated()
+            refreshCurrent(animated: false)
+        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var items = FolderScanner.scan(folder, order: order, recursive: recursive)
+            timingMark("scan done, \(items.count) items")
             // Paths are compared canonically: `/tmp/x` and `/private/tmp/x` are one file.
             func canonical(_ path: String) -> String { URL(fileURLWithPath: path).resolvingSymlinksInPath().path }
             let wanted = previousPath.map(canonical)
@@ -477,9 +528,15 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
                 items.append(ImageItem(url: target, values: try? target.resourceValues(forKeys: Set(FolderScanner.resourceKeys))))
             }
             let found = wanted.flatMap { w in items.firstIndex { canonical($0.url.path) == w } }
+            // The picture keeps the spelling it was opened with (/tmp, not /private/tmp), so it
+            // stays the picture already decoded or on screen.
+            if let target, let found, items[found].url != target {
+                items[found] = ImageItem(url: target, values: try? target.resourceValues(forKeys: Set(FolderScanner.resourceKeys)))
+            }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, generation == self.scanGeneration else { return }
+                    timingMark("scan back on main")
                     let sameFolder = self.model.folderURL == folder
                     self.model.replaceItems(items, folder: folder)
                     self.model.setPrimary(found ?? 0)
@@ -551,8 +608,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         if !ImageFormats.isRaw(url) { model.rawStatus = nil }
         model.analysis = analyses[url.path]?.analysis
         updateLightAvailability()
-        prefetchNeighbours()
-        warmThumbnails()
+        // Neighbours and thumbnails only once the picture is up: nothing competes with it.
+        if canvas.shown(pane: 0)?.url == url {
+            prefetchNeighbours()
+            warmThumbnails()
+        } else {
+            warmUpPending = true
+        }
         updateStatus()
         syncChrome()
     }
@@ -575,7 +637,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     private func requestDecode(for item: ImageItem, pane: Int, animated: Bool) {
         let url = item.url
+        timingMark("decode requested")
         store.load(url, full: false) { [weak self] decoded in
+            timingMark("decode back on main")
             guard let self else { return }
             guard let decoded else {
                 if self.model.current?.url == url {
@@ -590,7 +654,17 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     /// Puts a decode into every pane showing that file. A new picture gets a fresh camera:
     /// the zoom mode's scale, centred, unrotated (Remember mode keeps zoom and centre).
+    private static var firstShown = false
+
     func deliver(_ d: DecodedImage, animated: Bool) {
+        if timingEnabled, !Self.firstShown, model.current?.url == d.url {
+            Self.firstShown = true
+            timingMark("first picture delivered")
+            DispatchQueue.main.async {
+                CATransaction.flush()
+                timingMark("first picture committed")
+            }
+        }
         // The picture being edited keeps its edited pixels; sharper decodes go through the Light engine.
         if keepsEdits(d.url) { return }
         CATransaction.begin()
@@ -629,6 +703,16 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         updateStatus()
         updateLightAvailability()
         updateDocumentEdited()
+        if pendingShow, model.current?.url == d.url { showHeldWindow() }
+        if warmUpPending, model.current?.url == d.url {
+            warmUpPending = false
+            // After this frame is committed.
+            DispatchQueue.main.async { [weak self] in
+                ThumbStore.shared.release()
+                self?.prefetchNeighbours()
+                self?.warmThumbnails()
+            }
+        }
     }
 
     /// Measures histogram and clipping on a screen-sized decode, once per file (again when a

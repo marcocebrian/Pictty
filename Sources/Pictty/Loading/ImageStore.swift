@@ -22,9 +22,7 @@ final class ImageStore {
         previews.totalCostLimit = 768 << 20
         details.countLimit = 2
         details.totalCostLimit = Int(min(ProcessInfo.processInfo.physicalMemory / 3, 8 << 30))
-        previewMaxPixel = NSScreen.screens
-            .map { Int(max($0.frame.width, $0.frame.height) * $0.backingScaleFactor) }
-            .max() ?? 3840
+        previewMaxPixel = EarlyDecode.screenMaxPixel
     }
 
     func cached(_ url: URL, full: Bool) -> DecodedImage? {
@@ -81,10 +79,25 @@ final class ImageStore {
         let key = (full ? "F" : "P") + url.path
         if waiting[key] != nil { waiting[key]!.append(done); return }
         waiting[key] = [done]
+        // The picture Pictty was opened with may be decoded already, or nearly.
+        if !full, EarlyDecode.shared.take(url, { [weak self] early in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if let early { self.finish(key, early.with(url: url)) } else { self.decode(url, full: false, key: key, urgent: isUrgent) }
+            }
+        }) { return }
+        decode(url, full: full, key: key, urgent: isUrgent)
+    }
+
+    private func decode(_ url: URL, full: Bool, key: String, urgent isUrgent: Bool) {
         let maxPixel = previewMaxPixel
         let backing = NSScreen.main?.backingScaleFactor ?? 2
         (isUrgent ? urgent : background).async {
+            timingMark("decode start")
             let img = full ? ImageDecoder.full(url) : ImageDecoder.preview(url, maxPixel: maxPixel, backing: backing)
+            // Previews are what the screen shows at a glance: matched to it here, not on the main thread.
+            if !full { img?.matchDisplay(to: EarlyDecode.displaySpace) }
+            timingMark("decode done")
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self.finish(key, img) }
             }
@@ -126,7 +139,14 @@ final class ThumbStore: @unchecked Sendable {
         return q
     }()
 
-    init() { cache.countLimit = 2000 }
+    init() {
+        cache.countLimit = 2000
+        // Nothing decodes for the filmstrip until the picture itself is on screen.
+        queue.isSuspended = true
+    }
+
+    /// The picture is up: thumbnails may decode now.
+    func release() { if queue.isSuspended { queue.isSuspended = false } }
 
     func cached(_ url: URL) -> CGImage? { cache.object(forKey: url as NSURL) }
 

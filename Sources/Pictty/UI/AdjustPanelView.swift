@@ -14,6 +14,12 @@ struct AdjustPanelView: View {
     let controller: ViewerWindowController
 
     var body: some View {
+        // Nothing at all while the panel is put away: a hidden panel must never cost the picture
+        // a millisecond, at launch or on any change of the model.
+        if model.showLight { panel }
+    }
+
+    private var panel: some View {
         VStack(spacing: 0) {
             header
             Divider().overlay(.white.opacity(0.08))

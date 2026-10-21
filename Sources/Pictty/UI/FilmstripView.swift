@@ -17,7 +17,9 @@ struct FilmstripView: View {
     static let dockedHeight: CGFloat = 142
 
     var body: some View {
-        if model.filmstripPinned { docked } else { floating }
+        if !model.chromeReady {
+            // The picture's first frame goes out alone; the strip follows a frame later.
+        } else if model.filmstripPinned { docked } else { floating }
     }
 
     private var content: some View {

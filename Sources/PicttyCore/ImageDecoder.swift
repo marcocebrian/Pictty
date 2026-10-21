@@ -17,6 +17,9 @@ public final class DecodedImage: @unchecked Sendable {
     public let isEmbedded: Bool
     /// Every pixel of a picture larger than a GPU texture, for the settled render only.
     public let isDetail: Bool
+    /// The same pixels already in the display's colour space, for the screen alone (see
+    /// `ImageDecoder.matched`); everything that measures colour keeps `image`.
+    public private(set) var display: CGImage?
 
     init(url: URL, image: CGImage, pixelSize: CGSize, isFull: Bool, frameCount: Int, vector: VectorImage? = nil,
          isEmbedded: Bool = false, isDetail: Bool = false) {
@@ -41,7 +44,21 @@ public final class DecodedImage: @unchecked Sendable {
     /// Has an alpha channel worth honouring.
     public let hasAlpha: Bool
 
-    public var cost: Int { image.bytesPerRow * image.height }
+    public var cost: Int { image.bytesPerRow * image.height + (display.map { $0.bytesPerRow * $0.height } ?? 0) }
+
+    /// The same decode, under another spelling of the same file's URL.
+    public func with(url other: URL) -> DecodedImage {
+        let d = DecodedImage(url: other, image: image, pixelSize: pixelSize, isFull: isFull, frameCount: frameCount, vector: vector,
+                             isEmbedded: isEmbedded, isDetail: isDetail)
+        d.display = display
+        return d
+    }
+
+    /// Prepares `display` for a screen in `space`, before the decode is handed over.
+    public func matchDisplay(to space: CGColorSpace?) {
+        guard let space else { return }
+        display = ImageDecoder.matched(image, to: space)
+    }
 }
 
 /// ImageIO decoding. ImageIO routes HEIC/AVIF/JPEG to the hardware decoders where available
@@ -120,6 +137,40 @@ public enum ImageDecoder {
         return CGColorSpaceUsesITUR_2100TF(cs) || CGColorSpaceUsesExtendedRange(cs)
     }
 
+    /// An 8-bit SDR picture converted to the display's own colour space and the GPU's own pixel
+    /// layout, off the main thread. Core Animation would otherwise do that conversion itself, on the
+    /// CPU, on the main thread, while committing the frame: about 55 ms for 12 megapixels, all of
+    /// it before the picture can appear. nil when there is nothing to gain (deep or HDR pictures,
+    /// or a picture already in that space).
+    public static func matched(_ img: CGImage, to space: CGColorSpace) -> CGImage? {
+        guard img.bitsPerComponent == 8, img.bitsPerPixel == 32, !isHDR(img), let own = img.colorSpace,
+              own.model == .rgb, own != space else { return nil }
+        let opaque = [.none, .noneSkipFirst, .noneSkipLast].contains(img.alphaInfo)
+        let info = CGBitmapInfo.byteOrder32Little.rawValue
+            | (opaque ? CGImageAlphaInfo.noneSkipFirst : CGImageAlphaInfo.premultipliedFirst).rawValue
+        let w = img.width, h = img.height, rowBytes = w * 4
+        // In bands, one per core: colour conversion runs on one core per draw, and 12 megapixels
+        // on one core take 60 ms where eight bands take a fraction of it.
+        guard let data = CFDataCreateMutable(nil, rowBytes * h) else { return nil }
+        CFDataSetLength(data, rowBytes * h)
+        guard let base = CFDataGetMutableBytePtr(data) else { return nil }
+        let bands = max(1, min(ProcessInfo.processInfo.activeProcessorCount, h / 64))
+        let bandHeight = (h + bands - 1) / bands
+        nonisolated(unsafe) let buffer = base
+        DispatchQueue.concurrentPerform(iterations: bands) { i in
+            let top = i * bandHeight, rows = min(bandHeight, h - top)
+            guard rows > 0, let slice = img.cropping(to: CGRect(x: 0, y: top, width: w, height: rows)),
+                  let ctx = CGContext(data: buffer + top * rowBytes, width: w, height: rows, bitsPerComponent: 8,
+                                      bytesPerRow: rowBytes, space: space, bitmapInfo: info) else { return }
+            ctx.setBlendMode(.copy)
+            ctx.draw(slice, in: CGRect(x: 0, y: 0, width: w, height: rows))
+        }
+        guard let provider = CGDataProvider(data: data) else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: rowBytes, space: space,
+                       bitmapInfo: CGBitmapInfo(rawValue: info), provider: provider, decode: nil, shouldInterpolate: true,
+                       intent: .defaultIntent)
+    }
+
     /// `hdr` asks ImageIO to apply gain maps and keep HDR range; SDR files decode unchanged.
     static func decode(_ src: CGImageSource, maxPixel: Int, allowEmbedded: Bool, hdr: Bool = true) -> CGImage? {
         var opts: [CFString: Any] = [
@@ -147,7 +198,14 @@ public enum ImageDecoder {
         } else if longest <= maxPixel * 3 / 2 {
             return full(url, src: src, size: size, frames: frames)
         }
-        guard let img = decode(src, maxPixel: maxPixel, allowEmbedded: false) else { return nil }
+        // An exact half, quarter or eighth comes straight out of a JPEG's own transform and costs
+        // about half a full decode; any other size is a full decode and a resample on top, twice
+        // as slow. The smallest such fraction that still covers the screen, when there is one.
+        var target = maxPixel
+        var fraction = longest
+        while fraction % 2 == 0, fraction / 2 >= maxPixel { fraction /= 2 }
+        if fraction < longest { target = fraction }
+        guard let img = decode(src, maxPixel: target, allowEmbedded: false) else { return nil }
         return DecodedImage(url: url, image: img, pixelSize: size, isFull: false, frameCount: frames)
     }
 

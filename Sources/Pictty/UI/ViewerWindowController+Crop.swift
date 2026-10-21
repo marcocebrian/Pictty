@@ -182,6 +182,10 @@ struct CropToolbarView: View {
     private var radius: Double { model.cropDraft.radii.max() ?? 0 }
 
     var body: some View {
+        if model.cropping { bar }
+    }
+
+    private var bar: some View {
         HStack(spacing: 4) {
             ratioMenu
             GlyphButton(symbol: model.cropRatioTurned ? "rectangle.landscape.rotate" : "rectangle.portrait.rotate",

@@ -43,6 +43,8 @@ final class ViewerModel: ObservableObject {
     @Published var loadingText: String?
     @Published var toast: ToastMessage?
     @Published var chromeVisible = true
+    /// False until the window's first frame is up: the picture comes first, the controls a frame later.
+    @Published var chromeReady = false
     @Published var showInspector = false
     @Published var showHUD = true
     /// The feature is on (T).
