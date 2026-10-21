@@ -16,8 +16,6 @@ struct InspectorView: View {
     @ObservedObject var prefs: Preferences
     let controller: ViewerWindowController
 
-    @State private var copiedRow: String?
-
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -43,7 +41,7 @@ struct InspectorView: View {
                             .padding(.top, 12)
                     }
                     ForEach(report.sections.filter { InspectorSection(sectionTitle: $0.title).map(prefs.shows) ?? true }) { section in
-                        SectionBlock(section: section, copiedRow: $copiedRow)
+                        SectionBlock(section: section)
                     }
                     if prefs.shows(.keywords) {
                         KeywordsCard(keywords: report.keywords, tags: report.finderTags)
@@ -222,7 +220,6 @@ struct InspectorView: View {
 
 private struct SectionBlock: View {
     let section: MetadataSection
-    @Binding var copiedRow: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -239,11 +236,7 @@ private struct SectionBlock: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(section.fields) { field in
-                    FieldRow(field: field,
-                             isCopied: copiedRow == field.id.uuidString,
-                             onCopy: {
-                                 copy(field)
-                             })
+                    FieldRow(field: field)
                 }
             }
             .padding(.leading, 19)
@@ -252,24 +245,11 @@ private struct SectionBlock: View {
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.045)))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
     }
-
-    private func copy(_ field: MetadataField) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(field.value, forType: .string)
-        copiedRow = field.id.uuidString
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
-            if copiedRow == field.id.uuidString { copiedRow = nil }
-        }
-    }
 }
 
 private struct FieldRow: View {
+    /// The value is selectable text: drag across it, or double-click a word, and ⌘C.
     let field: MetadataField
-    let isCopied: Bool
-    let onCopy: () -> Void
-
-    @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -298,19 +278,7 @@ private struct FieldRow: View {
                 .textSelection(.enabled)
 
             Spacer(minLength: 0)
-
-            if hovering || isCopied {
-                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(isCopied ? Color.green : Color.white.opacity(0.62))
-                    .transition(.opacity)
-            }
         }
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .onTapGesture(count: 1) { onCopy() }
-        .animation(.easeInOut(duration: 0.15), value: hovering)
-        .animation(.easeInOut(duration: 0.15), value: isCopied)
     }
 
     private var valueColor: Color {
