@@ -52,7 +52,6 @@ final class LightEngineTests: XCTestCase {
         let src = try XCTUnwrap(engine.source(image))
         for n in 1...3 {
             var a = Adjustments()
-            a.contrastAlgorithm = min(n, 2); a.brightnessAlgorithm = min(n, 2)
             a.highlightsAlgorithm = n
             a.shadowsAlgorithm = n
             let out = try XCTUnwrap(engine.render(src, a, output: .linear)).image
@@ -79,10 +78,10 @@ final class LightEngineTests: XCTestCase {
         XCTAssertLessThanOrEqual(px.max() ?? 0, 1.0005)
     }
 
-    /// Contrast and brightness by regions: black and white pictures stay as they are; on the ramp
-    /// brightness keeps its order, contrast raised darkens below the picture's middle and lightens
+    /// Contrast (per pixel) and brightness (by regions): black and white pictures stay as they are;
+    /// on the ramp brightness keeps its order, contrast raised darkens below mid-grey and lightens
     /// above it, and brightness raised lifts the middle.
-    func testContrastAndBrightnessByRegions() throws {
+    func testContrastAndBrightness() throws {
         let engine = try XCTUnwrap(LightEngine())
         for value: UInt8 in [0, 255] {
             let src = try XCTUnwrap(engine.source(flat(value)))
@@ -129,6 +128,77 @@ final class LightEngineTests: XCTestCase {
             levels.append(after)
         }
         XCTAssertEqual(levels, levels.sorted(), "brighter stays brighter")
+    }
+
+    /// Highlights pulled down hard by the local Laplacian: a bright, noisy patch comes out darker
+    /// and no noisier for its brightness than it went in.
+    func testLaplacianHighlightsDoNotRaiseNoise() throws {
+        let w = 128, h = 128
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let px = ctx.data!.assumingMemoryBound(to: UInt8.self)
+        var seed: UInt32 = 3
+        for i in 0..<(w * h) {
+            seed = seed &* 1_664_525 &+ 1_013_904_223
+            let v = UInt8(215 + Int(seed >> 28) - 8)
+            px[i * 4] = v; px[i * 4 + 1] = v; px[i * 4 + 2] = v; px[i * 4 + 3] = 255
+        }
+        let image = ctx.makeImage()!
+        let engine = try XCTUnwrap(LightEngine())
+        let src = try XCTUnwrap(engine.source(image))
+        func relativeNoise(_ p: [Float]) -> Float {
+            let g = stride(from: 0, to: p.count, by: 4).map { p[$0 + 1] }
+            let mean = g.reduce(0, +) / Float(g.count)
+            return (g.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Float(g.count)).squareRoot() / mean
+        }
+        var a = Adjustments()
+        a.highlights = -1; a.highlightsAlgorithm = 3
+        let before = linear(image), after = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
+        XCTAssertLessThan(after[4 * (64 * w + 64) + 1], before[4 * (64 * w + 64) + 1], "darker")
+        XCTAssertLessThan(relativeNoise(after), relativeNoise(before) * 1.05)
+    }
+
+    /// A scene of strong colours (each with a nearly black channel, as the dark channel prior
+    /// expects of a clear scene) under an even haze, and the distance, which is all haze: Dehaze
+    /// brings it much closer to the clear scene, and lowered, it adds haze.
+    func testDehazeTakesOutHaze() throws {
+        let w = 120, h = 80
+        let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        let air = SIMD3<Double>(0.8, 0.82, 0.86), t = 0.55
+        let colours: [SIMD3<Double>] = [SIMD3(0.6, 0.05, 0.02), SIMD3(0.02, 0.4, 0.05), SIMD3(0.03, 0.08, 0.5),
+                                        SIMD3(0.5, 0.4, 0.01), SIMD3(0.01, 0.3, 0.35), SIMD3(0.4, 0.02, 0.3)]
+        func scene(_ haze: Bool) -> CGImage {
+            let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 32, bytesPerRow: w * 16, space: space,
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+                                    | CGBitmapInfo.byteOrder32Little.rawValue)!
+            for (i, j) in colours.enumerated() {
+                // The last patch is the distance: haze only, whatever the scene.
+                let c = i == colours.count - 1 ? air : haze ? j * t + air * (1 - t) : j
+                ctx.setFillColor(CGColor(colorSpace: space, components: [c.x, c.y, c.z, 1])!)
+                ctx.fill(CGRect(x: (i % 3) * 40, y: (i / 3) * 40, width: 40, height: 40))
+            }
+            return ctx.makeImage()!
+        }
+        let clear = linear(scene(false)), hazy = scene(true)
+        let engine = try XCTUnwrap(LightEngine())
+        let src = try XCTUnwrap(engine.source(hazy))
+        XCTAssertEqual(Double(src.airlight.z), air.z, accuracy: 0.03, "the haze's light, read in the distance")
+        func error(_ p: [Float]) -> Float {
+            // Away from the patches' borders, where the guided filter blends.
+            var e: Float = 0, n: Float = 0
+            for y in stride(from: 20, to: h, by: 40) {
+                for x in stride(from: 20, to: w, by: 40) where !(x == 100 && y == 60) {
+                    for c in 0..<3 { e += abs(p[(y * w + x) * 4 + c] - clear[(y * w + x) * 4 + c]); n += 1 }
+                }
+            }
+            return e / n
+        }
+        var a = Adjustments()
+        a.dehaze = 1
+        let before = error(linear(hazy)), after = error(linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image))
+        XCTAssertLessThan(after, before * 0.4, "most of the haze is out")
+        a.dehaze = -1
+        XCTAssertGreaterThan(error(linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)), before * 1.2, "more haze")
     }
 
     /// One flat colour, 8-bit sRGB.

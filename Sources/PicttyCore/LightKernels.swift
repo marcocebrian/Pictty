@@ -48,14 +48,15 @@ struct Params {
     int hasDenoised;
     /// −1…+1 each.
     float vibrance, saturation;
-    /// Contrast and brightness: 1 per pixel, 2 by regions. `key`: the picture's middle brightness
-    /// after exposure, encoded, 0…1, which they work around.
-    int contrastAlgorithm, brightnessAlgorithm;
+    /// The picture's middle brightness after exposure, encoded, 0…1, which brightness works around.
     float key;
     /// Vibrance and saturation: 1 per pixel, 2 by regions; `vibranceScale`, how much vibrance this
     /// picture's own colourfulness calls for (by regions).
     int saturationAlgorithm;
     float vibranceScale;
+    /// Dehaze, −1…+1, and the light of the haze (linear, 0…1 of white).
+    float dehaze;
+    float air0, air1, air2;
 };
 
 constant float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
@@ -292,7 +293,7 @@ inline float brightnessCurve(float l, float b, float key) {
     float e = log(0.5) / log(clamp(key, 0.05, 0.95));
     float m = pow(clamp(l, 0.0, 1.0), e);
     // Raising a midtone lift to the power that puts the key at 0.5, and back.
-    float m1 = clamp(m + b * 0.35 * m * (1.0 - m), 0.0, 1.0);
+    float m1 = clamp(m + b * 0.44 * m * (1.0 - m), 0.0, 1.0);
     return pow(m1, 1.0 / e);
 }
 
@@ -321,6 +322,105 @@ kernel void localExposure(texture2d<float, access::read> lit [[texture(0)]],
     // The shoulder over every raised pixel, not only those past white, or the two would not meet.
     float m = max(rgb.r, max(rgb.g, rgb.b));
     if (gain > 1.0 && m > 0.0) rgb *= p.white * rolloff(m / p.white, gain) / m;
+    litOut.write(float4(rgb, c.a), gid);
+    lumaOut.write(float4(enc(dot(rgb, lumaWeights))), gid);
+}
+
+// MARK: - Dehaze: the dark channel prior (He, Sun and Tang 2009), refined by a guided filter
+
+/// Per quarter-size cell: the darkest channel of its pixels, each channel over the haze's own
+/// (r), and the cell's mean encoded brightness, the guide (g).
+kernel void hazeDark(texture2d<float, access::read> lit [[texture(0)]],
+                     texture2d<float, access::read> luma [[texture(1)]],
+                     texture2d<float, access::write> dst [[texture(2)]],
+                     constant Params& p [[buffer(0)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    int2 size = int2(lit.get_width(), lit.get_height());
+    float3 air = float3(p.air0, p.air1, p.air2) * p.white;
+    float dark = 1e9, I = 0.0;
+    for (int j = 0; j < 4; j++) {
+        for (int i = 0; i < 4; i++) {
+            uint2 q = uint2(min(int(gid.x) * 4 + i, size.x - 1), min(int(gid.y) * 4 + j, size.y - 1));
+            float3 c = max(lit.read(q).rgb, 0.0) / air;
+            dark = min(dark, min(c.r, min(c.g, c.b)));
+            I += luma.read(q).r;
+        }
+    }
+    dst.write(float4(clamp(dark, 0.0, 1.0), I / 16.0, 0.0, 0.0), gid);
+}
+
+/// The erosion of the dark channel, row by row and column by column; the guide passes through.
+kernel void minHorizontal(texture2d<float, access::read> src [[texture(0)]],
+                          texture2d<float, access::write> dst [[texture(1)]],
+                          constant Params& p [[buffer(0)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    int w = src.get_width();
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    float m = 1e9;
+    for (int i = -p.radius; i <= p.radius; i++) m = min(m, src.read(uint2(clamp(int(gid.x) + i, 0, w - 1), gid.y)).r);
+    dst.write(float4(m, src.read(gid).g, 0.0, 0.0), gid);
+}
+
+kernel void minVertical(texture2d<float, access::read> src [[texture(0)]],
+                        texture2d<float, access::write> dst [[texture(1)]],
+                        constant Params& p [[buffer(0)]],
+                        uint2 gid [[thread_position_in_grid]]) {
+    int h = src.get_height();
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    float m = 1e9;
+    for (int i = -p.radius; i <= p.radius; i++) m = min(m, src.read(uint2(gid.x, clamp(int(gid.y) + i, 0, h - 1))).r);
+    dst.write(float4(m, src.read(gid).g, 0.0, 0.0), gid);
+}
+
+/// Packs (I, I², D, I·D) for the box means: the guide I and the eroded dark channel D.
+kernel void hazeMoments(texture2d<float, access::read> src [[texture(0)]],
+                        texture2d<float, access::write> dst [[texture(1)]],
+                        uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    float2 v = src.read(gid).rg;
+    float D = v.r, I = v.g;
+    dst.write(float4(I, I * I, D, I * D), gid);
+}
+
+/// The guided filter's model of the dark channel from the brightness, D = a·I + b.
+kernel void hazeCoefficients(texture2d<float, access::read> moments [[texture(0)]],
+                             texture2d<float, access::write> dst [[texture(1)]],
+                             constant Params& p [[buffer(0)]],
+                             uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    float4 m = moments.read(gid);
+    float variance = max(m.y - m.x * m.x, 0.0);
+    float a = (m.w - m.x * m.z) / (variance + p.eps);
+    dst.write(float4(a, m.z - a * m.x, 0.0, 0.0), gid);
+}
+
+/// Takes the haze out: the scene's light J = (I − A)/t + A, with the transmission t = 1 − ω·D
+/// (ω up to 0.95, so a little haze always stays and distance still reads) and never below 0.2,
+/// which keeps far, hazy noise from being blown up. Lowered, haze is added: the picture fades
+/// towards the haze's light, more where it is already hazier.
+kernel void dehaze(texture2d<float, access::read> lit [[texture(0)]],
+                   texture2d<float, access::read> luma [[texture(1)]],
+                   texture2d<float, access::sample> model [[texture(2)]],
+                   texture2d<float, access::write> litOut [[texture(3)]],
+                   texture2d<float, access::write> lumaOut [[texture(4)]],
+                   constant Params& p [[buffer(0)]],
+                   uint2 gid [[thread_position_in_grid]]) {
+    uint2 size = uint2(litOut.get_width(), litOut.get_height());
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    float4 c = lit.read(gid);
+    constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+    float2 ab = model.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
+    float D = clamp(ab.x * luma.read(gid).r + ab.y, 0.0, 1.0);
+    float3 air = float3(p.air0, p.air1, p.air2) * p.white;
+    float3 rgb = c.rgb;
+    if (p.dehaze > 0.0) {
+        float t = max(1.0 - 0.95 * p.dehaze * D, 0.2);
+        rgb = max((rgb - air) / t + air, 0.0);
+    } else {
+        float h = -p.dehaze * 0.7 * (0.3 + 0.7 * D);
+        rgb = mix(rgb, air, h);
+    }
     litOut.write(float4(rgb, c.a), gid);
     lumaOut.write(float4(enc(dot(rgb, lumaWeights))), gid);
 }
@@ -356,8 +456,8 @@ inline float upsampled(texture2d<float, access::sample> coarse, uint2 gid, uint2
 }
 
 /// The Laplacian remap for one sample level γ: near γ (closer than σ) the pixel keeps its detail
-/// at full strength riding on the curve's value at γ; far from it (an edge) it follows the curve
-/// itself, which is what stops halos.
+/// riding on the curve's value at γ; far from it (an edge) it follows the curve itself, which is
+/// what stops halos.
 kernel void remap(texture2d<float, access::read> luma [[texture(0)]],
                   texture2d<float, access::write> dst [[texture(1)]],
                   constant Params& p [[buffer(0)]],
@@ -367,8 +467,15 @@ kernel void remap(texture2d<float, access::read> luma [[texture(0)]],
     float g = p.gamma;
     float tg = g + toneOffset(g, p, 3);
     float ti = i + toneOffset(i, p, 3);
-    float near = tg + (i - g);
-    float far = smoothstep(p.sigma, 2.0 * p.sigma, fabs(i - g));
+    // Detail no larger than the picture's noise is compressed or stretched as the curve is there,
+    // so a pulled-down highlight does not show its noise more than before; larger detail is kept
+    // whole. Only ever compressed: where the curve is steeper, detail stays as it was.
+    float d = i - g, h = 0.01 * p.lumaWhite;
+    float slope = 1.0 + (toneOffset(g + h, p, 3) - toneOffset(g - h, p, 3)) / (2.0 * h);
+    float n = p.noise * p.lumaWhite;
+    float keep = mix(clamp(slope, 0.25, 1.0), 1.0, smoothstep(2.0 * n, 4.0 * n + 1e-4, fabs(d)));
+    float near = tg + d * keep;
+    float far = smoothstep(p.sigma, 2.0 * p.sigma, fabs(d));
     dst.write(float4(mix(near, ti, far)), gid);
 }
 
@@ -521,50 +628,29 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
     }
     if (l1 != l0) rgb = withLuminance(rgb, dec(l0), dec(l1));
 
-    // Contrast and brightness by regions: the curves move the region's brightness (the guided
-    // filter's base, where the tone sliders have taken it), and the pixel follows as a ratio, so
-    // its texture keeps its own contrast. A raised pixel near white rolls off into it.
-    bool byRegions = (p.contrast != 0.0 && p.contrastAlgorithm == 2) || (p.brightness != 0.0 && p.brightnessAlgorithm == 2);
-    if (byRegions) {
-        constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
-        float2 ab = regions.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
-        float b0 = clamp(ab.x * l0 + ab.y, 0.0, lw);
-        float b = clamp(b0 + toneOffset(b0, p, 1) + toneOffset(b0, p, 2) + toneOffset(b0, p, 3), 0.0, lw) / lw;
-        float b1 = b;
-        if (p.contrast != 0.0 && p.contrastAlgorithm == 2) b1 = contrastCurve(b1, p.contrast, p.key);
-        if (p.brightness != 0.0 && p.brightnessAlgorithm == 2) b1 = brightnessCurve(b1, p.brightness, p.key);
-        float gain = dec(b1 * lw) / max(dec(b * lw), 1e-6);
-        rgb *= gain;
-        float m = max(rgb.r, max(rgb.g, rgb.b));
-        if (gain > 1.0 && m > 0.0) rgb *= W * rolloff(m / W, gain) / m;
-    }
-
-    // Contrast per pixel: an S-curve on brightness that holds black and white in place, keeping colours.
-    float k = p.contrastAlgorithm == 1 ? p.contrast : 0.0;
+    // Contrast: an S-curve on each pixel's brightness around mid-grey, holding black and white in
+    // place, keeping colours.
+    float k = p.contrast;
     if (k != 0.0) {
         float y = dot(rgb, lumaWeights);
         float l = enc(y / W);
         if (l > 0.0 && l < 1.0) rgb = withLuminance(rgb, y, dec(clamp(contrastCurve(l, k, 0.4613), 0.0, 1.0)) * W);
     }
 
-    // Brightness per pixel: lightness raised in CIELAB; the colour coordinates stay where they are.
-    float b = p.brightnessAlgorithm == 1 ? p.brightness : 0.0;
-    if (b != 0.0) {
-        const float3x3 toXYZ = float3x3(float3(0.4124, 0.2126, 0.0193), float3(0.3576, 0.7152, 0.1192),
-                                        float3(0.1805, 0.0722, 0.9505));
-        const float3x3 toRGB = float3x3(float3(3.2406, -0.9689, 0.0557), float3(-1.5372, 1.8758, -0.2040),
-                                        float3(-0.4986, 0.0415, 1.0570));
-        const float3 white = float3(0.95047, 1.0, 1.08883);
-        float3 xyz = toXYZ * (rgb / W) / white;
-        float3 f = select(xyz * 7.787 + 16.0 / 116.0, pow(max(xyz, 0.0), 1.0 / 3.0), xyz > 0.008856);
-        float L = 116.0 * f.y - 16.0, A = 500.0 * (f.x - f.y), B = 200.0 * (f.y - f.z);
-        if (L > 0.0 && L < 100.0) {
-            L = clamp(L + b * 0.8 * L * (100.0 - L) / 100.0, 0.0, 100.0);
-            float fy = (L + 16.0) / 116.0;
-            float3 f1 = float3(fy + A / 500.0, fy, fy - B / 200.0);
-            float3 xyz1 = select((f1 - 16.0 / 116.0) / 7.787, f1 * f1 * f1, f1 > 0.206893) * white;
-            rgb = toRGB * xyz1 * W;
-        }
+    // Brightness by regions: the curve moves the region's brightness (the guided filter's base,
+    // where the tone sliders and contrast have taken it), and the pixel follows as a ratio, so its
+    // texture keeps its own contrast. A raised pixel near white rolls off into it.
+    if (p.brightness != 0.0) {
+        constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+        float2 ab = regions.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
+        float b0 = clamp(ab.x * l0 + ab.y, 0.0, lw);
+        float b = clamp(b0 + toneOffset(b0, p, 1) + toneOffset(b0, p, 2) + toneOffset(b0, p, 3), 0.0, lw) / lw;
+        if (k != 0.0 && b > 0.0 && b < 1.0) b = clamp(contrastCurve(b, k, 0.4613), 0.0, 1.0);
+        float b1 = brightnessCurve(b, p.brightness, p.key);
+        float gain = dec(b1 * lw) / max(dec(b * lw), 1e-6);
+        rgb *= gain;
+        float m = max(rgb.r, max(rgb.g, rgb.b));
+        if (gain > 1.0 && m > 0.0) rgb *= W * rolloff(m / W, gain) / m;
     }
 
     // Vibrance and saturation. By regions, the region's colour was measured on the picture as it

@@ -1,5 +1,5 @@
 // The Adjust panel, on the right of the window, which makes room for it. The live histogram
-// first, then Light (exposure, contrast, brightness, highlights, shadows) and Colour: white
+// first, then Light (exposure, contrast, brightness, highlights, shadows, dehaze) and Colour: white
 // balance, with Auto and an eyedropper, vibrance and saturation, and colour grading on three wheels.
 //
 // Contrast, brightness, highlights, shadows, vibrance and saturation still have numbered buttons:
@@ -414,6 +414,7 @@ private struct SliderRow: View {
         case .brightness: [Color(white: 0.18), Color(white: 0.82)]
         case .highlights: [Color(white: 0.5), Color(white: 1)]
         case .shadows: [Color(white: 0), Color(white: 0.5)]
+        case .dehaze: [Color(white: 0.78), Color(white: 0.55), Color(hex: 0x3E6FA8)]
         case .temperature: [Color(hex: 0x3F7DFF), Color(white: 0.82), Color(hex: 0xFFAE3A)]
         case .tint: [Color(hex: 0x39C85A), Color(white: 0.82), Color(hex: 0xE24BD3)]
         case .vibrance: [Color(white: 0.5), Color(hex: 0xC9A27E), Color(hex: 0x2FB4E8), Color(hex: 0xA44CE8)]

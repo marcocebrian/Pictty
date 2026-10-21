@@ -24,10 +24,10 @@ public struct Adjustments: Equatable, Sendable {
     public var brightness: Double = 0
     public var highlights: Double = 0
     public var shadows: Double = 0
+    /// −1…+1: haze added ← → taken out.
+    public var dehaze: Double = 0
 
     /// The engine's own number for the method each tone slider uses, while candidates are compared.
-    public var contrastAlgorithm = 2
-    public var brightnessAlgorithm = 2
     /// Vibrance and saturation share one: 1 per pixel, 2 by regions.
     public var saturationAlgorithm = 2
     public var highlightsAlgorithm = 2
@@ -62,7 +62,7 @@ public struct Adjustments: Equatable, Sendable {
     public static let neutral = Adjustments()
 
     public var isLightNeutral: Bool {
-        exposure == 0 && contrast == 0 && brightness == 0 && highlights == 0 && shadows == 0
+        exposure == 0 && contrast == 0 && brightness == 0 && highlights == 0 && shadows == 0 && dehaze == 0
     }
 
     public var isWhiteBalanceNeutral: Bool { temperature == 0 && tint == 0 }
@@ -82,8 +82,6 @@ public struct Adjustments: Equatable, Sendable {
     /// Every value back to zero; the algorithm choices stay.
     public var valuesReset: Adjustments {
         var a = Adjustments()
-        a.contrastAlgorithm = contrastAlgorithm
-        a.brightnessAlgorithm = brightnessAlgorithm
         a.saturationAlgorithm = saturationAlgorithm
         a.highlightsAlgorithm = highlightsAlgorithm
         a.shadowsAlgorithm = shadowsAlgorithm
@@ -92,7 +90,7 @@ public struct Adjustments: Equatable, Sendable {
 
     public var lightReset: Adjustments {
         var a = self
-        a.exposure = 0; a.contrast = 0; a.brightness = 0; a.highlights = 0; a.shadows = 0
+        a.exposure = 0; a.contrast = 0; a.brightness = 0; a.highlights = 0; a.shadows = 0; a.dehaze = 0
         return a
     }
 
@@ -113,10 +111,10 @@ public struct Adjustments: Equatable, Sendable {
 
 /// One slider of the Adjust panel, for the panel and the engine alike.
 public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
-    case exposure, contrast, brightness, highlights, shadows, temperature, tint, vibrance, saturation, balance
+    case exposure, contrast, brightness, highlights, shadows, dehaze, temperature, tint, vibrance, saturation, balance
     case texture, clarity, sharpening, denoise
 
-    public static let light: [AdjustmentControl] = [.exposure, .contrast, .brightness, .highlights, .shadows]
+    public static let light: [AdjustmentControl] = [.exposure, .contrast, .brightness, .highlights, .shadows, .dehaze]
     public static let whiteBalance: [AdjustmentControl] = [.temperature, .tint]
     public static let saturationControls: [AdjustmentControl] = [.vibrance, .saturation]
     public static let detail: [AdjustmentControl] = [.texture, .clarity, .sharpening]
@@ -130,6 +128,7 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .brightness: "Brightness"
         case .highlights: "Highlights"
         case .shadows: "Shadows"
+        case .dehaze: "Dehaze"
         case .temperature: "Temperature"
         case .tint: "Tint"
         case .vibrance: "Vibrance"
@@ -149,6 +148,7 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .brightness: "sun.max"
         case .highlights: "sun.horizon"
         case .shadows: "moon"
+        case .dehaze: "cloud.fog"
         case .temperature: "thermometer.medium"
         case .tint: "drop.halffull"
         case .vibrance: "camera.filters"
@@ -173,15 +173,9 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
     /// the winner, and no buttons.
     public var algorithms: [(id: Int, name: String, detail: String)] {
         switch self {
-        case .contrast:
-            [(1, "Sigmoid", "An S-curve on each pixel's brightness around mid-grey, holding black and white in place."),
-             (2, "By regions", "The S-curve moves regions apart around the picture's own middle brightness; the texture in each keeps its own contrast, and nothing clips.")]
         case .vibrance, .saturation:
             [(1, "Per pixel", "Each pixel's colour judged and raised on its own, its colour noise with it."),
              (2, "By regions", "Each region's colour raised whole, more in a dull picture and less in a vivid one; texture and colour noise within it are raised less.")]
-        case .brightness:
-            [(1, "CIELAB L*", "Raises lightness in a perceptual space; colour coordinates stay where they are."),
-             (2, "By regions", "Lifts the picture's own midtones, region by region, holding black and white; the texture in each rides along.")]
         case .highlights:
             [(2, "Guided filter", "The curve moves a smooth, edge-aware base layer; the detail on top is kept."),
              (3, "Local Laplacian", "The curve applied scale by scale through a Laplacian pyramid: detail kept at every size, no halos.")]
@@ -199,6 +193,7 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .brightness: a.brightness
         case .highlights: a.highlights
         case .shadows: a.shadows
+        case .dehaze: a.dehaze
         case .temperature: a.temperature
         case .tint: a.tint
         case .vibrance: a.vibrance
@@ -219,6 +214,7 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .brightness: a.brightness = v
         case .highlights: a.highlights = v
         case .shadows: a.shadows = v
+        case .dehaze: a.dehaze = v
         case .temperature: a.temperature = v
         case .tint: a.tint = v
         case .vibrance: a.vibrance = v
@@ -234,8 +230,6 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
     /// The engine number of the method in use, or nil for a slider with only one.
     public func algorithm(_ a: Adjustments) -> Int? {
         switch self {
-        case .contrast: a.contrastAlgorithm
-        case .brightness: a.brightnessAlgorithm
         case .vibrance, .saturation: a.saturationAlgorithm
         case .highlights: a.highlightsAlgorithm
         case .shadows: a.shadowsAlgorithm
@@ -246,8 +240,6 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
     public func setAlgorithm(_ id: Int, in a: inout Adjustments) {
         guard algorithms.contains(where: { $0.id == id }) else { return }
         switch self {
-        case .contrast: a.contrastAlgorithm = id
-        case .brightness: a.brightnessAlgorithm = id
         case .vibrance, .saturation: a.saturationAlgorithm = id
         case .highlights: a.highlightsAlgorithm = id
         case .shadows: a.shadowsAlgorithm = id

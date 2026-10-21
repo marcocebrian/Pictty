@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import Metal
+import simd
 
 /// Pictty's own Light engine for everything that is not a camera RAW: JPEG, HEIC, PNG, TIFF,
 /// AVIF, WebP and the rest. A picture is uploaded once as linear half-float light; every change
@@ -32,6 +33,8 @@ public final class LightEngine: @unchecked Sendable {
         public let key: Float
         /// How colourful the picture is: the median Oklab chroma of its pixels.
         public let chroma: Float
+        /// The light of its haze, linear, on a 0…1 scale of `white`.
+        public let airlight: SIMD3<Float>
         /// The same picture through the denoiser, once it has been.
         fileprivate(set) var denoised: MTLTexture?
         fileprivate var scratch: [String: MTLTexture] = [:]
@@ -39,9 +42,10 @@ public final class LightEngine: @unchecked Sendable {
         public var hasDenoised: Bool { denoised != nil }
 
         init(width: Int, height: Int, white: Float, isHDR: Bool, input: MTLTexture, noise: Float, blur: Float, key: Float,
-             chroma: Float) {
+             chroma: Float, airlight: SIMD3<Float>) {
             self.width = width; self.height = height; self.white = white; self.isHDR = isHDR; self.input = input
             self.noise = noise; self.blur = blur; self.key = key; self.chroma = chroma
+            self.airlight = airlight
         }
     }
 
@@ -57,7 +61,8 @@ public final class LightEngine: @unchecked Sendable {
         self.device = device
         self.queue = queue
         for name in ["prepare", "downsample", "remap", "accumulate", "collapse", "guidedMoments", "boxHorizontal",
-                     "boxVertical", "guidedCoefficients", "detailBand", "localExposure", "colourMoments", "colourCoefficients", "finish"] {
+                     "boxVertical", "guidedCoefficients", "detailBand", "localExposure", "colourMoments", "colourCoefficients", "hazeDark",
+                     "minHorizontal", "minVertical", "hazeMoments", "hazeCoefficients", "dehaze", "finish"] {
             guard let f = library.makeFunction(name: name),
                   let state = try? device.makeComputePipelineState(function: f) else { return nil }
             pipelines[name] = state
@@ -89,7 +94,9 @@ public final class LightEngine: @unchecked Sendable {
         let medians = PictureMeasure.medians(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
                                              rowFloats: ctx.bytesPerRow / 2, white: hdr ? headroom : 1)
         return Source(width: w, height: h, white: hdr ? headroom : 1, isHDR: hdr, input: texture,
-                      noise: measured.noise, blur: measured.blur, key: medians.luma, chroma: medians.chroma)
+                      noise: measured.noise, blur: measured.blur, key: medians.luma, chroma: medians.chroma,
+                      airlight: PictureMeasure.airlight(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
+                                                        rowFloats: ctx.bytesPerRow / 2, white: hdr ? headroom : 1))
     }
 
     /// Gives `src` its denoised counterpart, the same size, colour-managed the same way.
@@ -145,14 +152,17 @@ public final class LightEngine: @unchecked Sendable {
         var denoise: Float = 0
         var hasDenoised: Int32 = 0
         var vibrance: Float = 0, saturation: Float = 0
-        var contrastAlgorithm: Int32 = 2, brightnessAlgorithm: Int32 = 2
         var key: Float = 0.46
         var saturationAlgorithm: Int32 = 2
         var vibranceScale: Float = 1
+        var dehaze: Float = 0
+        var airlight: (Float, Float, Float) = (1, 1, 1)
     }
 
     /// Samples of the Laplacian remap across the brightness range.
-    static let laplacianSamples = 12
+    /// 24: with 12, the steps between samples showed as rings and speckle beside small, very
+    /// bright things (a street lamp at night) when highlights were pulled down hard.
+    static let laplacianSamples = 24
 
     public struct Result: @unchecked Sendable {
         public let image: CGImage
@@ -165,9 +175,16 @@ public final class LightEngine: @unchecked Sendable {
         var p = Params()
         p.exposure = Float(a.exposure); p.contrast = Float(a.contrast); p.brightness = Float(a.brightness)
         p.highlights = Float(a.highlights); p.shadows = Float(a.shadows)
-        p.contrastAlgorithm = Int32(a.contrastAlgorithm); p.brightnessAlgorithm = Int32(a.brightnessAlgorithm)
         p.key = Self.key(src, exposure: Float(a.exposure))
         p.saturationAlgorithm = Int32(a.saturationAlgorithm)
+        p.dehaze = Float(a.dehaze)
+        if a.dehaze != 0 {
+            // The haze's light as the picture now has it: white-balanced, and lowered with exposure.
+            let m = ColourMath.whiteBalance(temperature: a.temperature, tint: a.tint)
+            let lit = m * SIMD3<Double>(src.airlight) * pow(2, min(a.exposure, 0))
+            let airlight = simd_clamp(SIMD3<Float>(lit), SIMD3(repeating: 0.02), SIMD3(repeating: 1))
+            p.airlight = (airlight.x, airlight.y, airlight.z)
+        }
         // A dull picture is given more vibrance, a vivid one less: about 0.08 of Oklab chroma is typical.
         p.vibranceScale = min(max((0.08 / max(src.chroma, 0.02)).squareRoot(), 0.75), 1.3)
         p.highlightsAlgorithm = Int32(a.highlightsAlgorithm); p.shadowsAlgorithm = Int32(a.shadowsAlgorithm)
@@ -212,6 +229,34 @@ public final class LightEngine: @unchecked Sendable {
               let out else { return nil }
 
         dispatch(cb, "prepare", [src.input, lit, luma, src.denoised ?? src.input], &p, w, h)
+
+        // Dehaze, before exposure and the rest: a dark channel per quarter-size cell, eroded, made
+        // to follow the picture's edges by a guided filter on its brightness, and the haze it shows
+        // taken out of the light (or added to it).
+        if a.dehaze != 0 {
+            let w4 = (w + 3) / 4, h4 = (h + 3) / 4
+            guard let dk = scratch(src, "hd", .rg32Float, w4, h4), let dt = scratch(src, "hdt", .rg32Float, w4, h4),
+                  let m = scratch(src, "hm", .rgba32Float, w4, h4), let t = scratch(src, "hmt", .rgba32Float, w4, h4),
+                  let ab = scratch(src, "hab", .rgba32Float, w4, h4),
+                  let litD = scratch(src, "litD", .rgba16Float, w, h), let lumaD = scratch(src, "lumaD", .r32Float, w, h)
+            else { return nil }
+            dispatch(cb, "hazeDark", [lit, luma, dk], &p, w4, h4)
+            // The erosion: about 1.5 % of the picture's longer side.
+            p.radius = Int32(max(2, Double(max(w4, h4)) * 0.015))
+            dispatch(cb, "minHorizontal", [dk, dt], &p, w4, h4)
+            dispatch(cb, "minVertical", [dt, dk], &p, w4, h4)
+            dispatch(cb, "hazeMoments", [dk, m], &p, w4, h4)
+            p.radius = Int32(max(2, Double(max(w4, h4)) * 0.03))
+            p.eps = 0.001
+            dispatch(cb, "boxHorizontal", [m, t], &p, w4, h4)
+            dispatch(cb, "boxVertical", [t, m], &p, w4, h4)
+            dispatch(cb, "hazeCoefficients", [m, ab], &p, w4, h4)
+            dispatch(cb, "boxHorizontal", [ab, t], &p, w4, h4)
+            dispatch(cb, "boxVertical", [t, ab], &p, w4, h4)
+            dispatch(cb, "dehaze", [lit, luma, ab, litD, lumaD], &p, w, h)
+            lit = litD
+            luma = lumaD
+        }
 
         // Local exposure: the gain goes onto a smooth, edge-aware map of the picture's brightness,
         // full in the dark regions and less where the light already is; each pixel's detail rides
@@ -323,9 +368,9 @@ public final class LightEngine: @unchecked Sendable {
             coarse = coarseLevels[0]
         }
 
-        // Contrast and brightness by regions read the same kind of base as local exposure.
+        // Brightness works by regions, on the same kind of base as local exposure.
         var regions: MTLTexture?
-        if (a.contrast != 0 && a.contrastAlgorithm == 2) || (a.brightness != 0 && a.brightnessAlgorithm == 2) {
+        if a.brightness != 0 {
             guard let r = self.guided(cb, src, luma, key: "c", radius: 0.04, eps: 0.01, &p) else { return nil }
             regions = r
         }
@@ -357,8 +402,8 @@ public final class LightEngine: @unchecked Sendable {
         return Result(image: image, milliseconds: (CFAbsoluteTimeGetCurrent() - start) * 1000)
     }
 
-    /// The picture's middle brightness after `exposure` (encoded, 0…1), for contrast and brightness
-    /// to work around: the median as measured, moved as local exposure moves a region that bright.
+    /// The picture's middle brightness after `exposure` (encoded, 0…1), for brightness to work
+    /// around: the median as measured, moved as local exposure moves a region that bright.
     static func key(_ src: Source, exposure: Float) -> Float {
         var y = Self.decode(src.key) * src.white
         if exposure < 0 {

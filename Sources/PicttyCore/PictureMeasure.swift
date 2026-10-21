@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import simd
 
 /// Two things about a picture that set how far its detail can be pushed: how noisy it is, and
 /// how soft its edges are. Both are measured on its own pixels, on a sample of rows, in the
@@ -203,5 +204,53 @@ public enum PictureMeasure {
         let A = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s
         let B = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s
         return (A * A + B * B).squareRoot()
+    }
+
+    /// The light of the haze (the airlight), linear RGB on a 0…1 scale of `white`, by the dark channel
+    /// prior (He, Sun and Tang 2009): on a grid of about 256 pixels across, each cell's darkest
+    /// channel, eroded over a 15-cell square, is the haze there; among the haziest thousandth of
+    /// cells, the brightest tenth say the haze's colour. Blown cells say nothing and are left out.
+    /// A haze is a bright thing: in a dark picture with none in it, the estimate keeps its colour
+    /// but is raised until its brightest channel is 0.7, or everything brighter would read as haze.
+    public static func airlight(_ pixels: UnsafePointer<Float16>, width w: Int, height h: Int, rowFloats: Int,
+                                white: Float) -> SIMD3<Float> {
+        let step = max(1, max(w, h) / 256)
+        let gw = max(1, w / step), gh = max(1, h / step)
+        var colour = [SIMD3<Float>](repeating: .zero, count: gw * gh)
+        var dark = [Float](repeating: 0, count: gw * gh)
+        for y in 0..<gh {
+            for x in 0..<gw {
+                let p = pixels + (y * step) * rowFloats + (x * step) * 4
+                let a = max(Float(p[3]), 1e-4)
+                let c = SIMD3(Float(p[0]), Float(p[1]), Float(p[2])) / a / white
+                colour[y * gw + x] = c
+                dark[y * gw + x] = c.max() > 0.98 ? 0 : max(c.min(), 0)
+            }
+        }
+        let r = 7
+        var rows = dark, eroded = dark
+        for y in 0..<gh {
+            for x in 0..<gw {
+                var m = Float.greatestFiniteMagnitude
+                for i in max(0, x - r)...min(gw - 1, x + r) { m = min(m, dark[y * gw + i]) }
+                rows[y * gw + x] = m
+            }
+        }
+        for y in 0..<gh {
+            for x in 0..<gw {
+                var m = Float.greatestFiniteMagnitude
+                for j in max(0, y - r)...min(gh - 1, y + r) { m = min(m, rows[j * gw + x]) }
+                eroded[y * gw + x] = m
+            }
+        }
+        let order = eroded.indices.sorted { eroded[$0] > eroded[$1] }
+        let haziest = order.prefix(max(10, order.count / 1000))
+        let brightest = haziest.sorted {
+            simd_dot(colour[$0], SIMD3(0.2126, 0.7152, 0.0722)) > simd_dot(colour[$1], SIMD3(0.2126, 0.7152, 0.0722))
+        }.prefix(max(1, haziest.count / 10))
+        var mean = brightest.reduce(SIMD3<Float>.zero) { $0 + colour[$1] } / Float(brightest.count)
+        mean = simd_clamp(mean, SIMD3(repeating: 0.05), SIMD3(repeating: 1))
+        if mean.max() < 0.7 { mean *= 0.7 / mean.max() }
+        return mean
     }
 }
