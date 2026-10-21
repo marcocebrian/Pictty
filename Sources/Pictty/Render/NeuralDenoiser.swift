@@ -14,6 +14,12 @@ import PicttyCore
 /// pass then takes the fine noise. Detail at full size is never smoothed by the smaller passes'
 /// enlargement because only their residual (the noise they found) comes back up.
 ///
+/// The network diverges on very dark tiles (a mean below about 0.06 encoded): it answers with a
+/// bright, coloured lattice instead of the picture. So a dark tile is first lifted by a curve that
+/// can be undone exactly, y = x(1 + a)/(1 + ax), until its mean is 0.15, and lowered again after;
+/// a tile that still comes back far from what went in is run once more, lifted further, and if it
+/// still does, it is left as it was rather than spoilt.
+///
 /// Tiles overlap by 64 pixels and are blended across the overlap: the network averages over each
 /// tile (its channel attention), so cut-and-paste tiles could show seams. About 2.6 s for 12
 /// megapixels on an M5 Pro, plus a quarter for a half-size pass. HDR pictures are not offered it.
@@ -240,8 +246,8 @@ final class NeuralDenoiser: @unchecked Sendable {
             for x0 in Self.origins(w) {
                 if cancelled() { return nil }
                 defer { tick() }
-                // Fill the tile; past the picture's edges (small pictures), mirror it.
-                let inPtr = input.dataPointer.bindMemory(to: Float16.self, capacity: plane * 3)
+                // The tile; past the picture's edges (small pictures), mirrored.
+                var tileIn = [Float](repeating: 0, count: plane * 3)
                 for ty in 0..<t {
                     var sy = y0 + ty
                     if sy >= h { sy = max(0, 2 * h - 2 - sy) }
@@ -249,21 +255,28 @@ final class NeuralDenoiser: @unchecked Sendable {
                         var sx = x0 + tx
                         if sx >= w { sx = max(0, 2 * w - 2 - sx) }
                         let s = sy * w + sx, q = ty * t + tx
-                        inPtr[q] = Float16(p.r[s]); inPtr[plane + q] = Float16(p.g[s]); inPtr[2 * plane + q] = Float16(p.b[s])
+                        tileIn[q] = p.r[s]; tileIn[plane + q] = p.g[s]; tileIn[2 * plane + q] = p.b[s]
                     }
                 }
-                guard let result = try? model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["input": input])),
-                      let res = result.featureValue(for: "output")?.multiArrayValue else { return nil }
-                let outPtr = res.dataPointer.bindMemory(to: Float16.self, capacity: plane * 3)
+                let mean = tileIn.reduce(0, +) / Float(tileIn.count)
+                var tileOut = tileIn
+                for target: Float in [0.15, 0.3] {
+                    guard let attempt = predict(model, input, tileIn, lift: Self.lift(mean: mean, to: target)) else { return nil }
+                    // Noise is a few hundredths at most; a tile that moved on average by more went wrong.
+                    var moved: Float = 0
+                    for i in 0..<tileIn.count { moved += abs(attempt[i] - tileIn[i]) }
+                    if moved / Float(tileIn.count) < 0.04 { tileOut = attempt; break }
+                    timingMark(String(format: "denoise: tile at %d,%d diverged (mean %.3f, lifted to %.2f)", x0, y0, mean, target))
+                }
                 for ty in 0..<t where y0 + ty < h {
                     // Tiles at the picture's edge do not fade out towards it.
                     let wy = (y0 == 0 && ty < o) || (y0 + t >= h && ty >= t - o) ? 1 : ramp[ty]
                     for tx in 0..<t where x0 + tx < w {
                         let wx = (x0 == 0 && tx < o) || (x0 + t >= w && tx >= t - o) ? 1 : ramp[tx]
                         let wgt = wx * wy, q = ty * t + tx, d = (y0 + ty) * w + x0 + tx
-                        out.r[d] += Float(outPtr[q]) * wgt
-                        out.g[d] += Float(outPtr[plane + q]) * wgt
-                        out.b[d] += Float(outPtr[2 * plane + q]) * wgt
+                        out.r[d] += tileOut[q] * wgt
+                        out.g[d] += tileOut[plane + q] * wgt
+                        out.b[d] += tileOut[2 * plane + q] * wgt
                         weight[d] += wgt
                     }
                 }
@@ -272,6 +285,37 @@ final class NeuralDenoiser: @unchecked Sendable {
         for i in 0..<(w * h) {
             let k = 1 / max(weight[i], 1e-6)
             out.r[i] *= k; out.g[i] *= k; out.b[i] *= k
+        }
+        return out
+    }
+
+    /// The curve's `a` that lifts a tile whose mean is `mean` to `target`; 0 for a tile bright enough.
+    private static func lift(mean: Float, to target: Float) -> Float {
+        guard mean < target else { return 0 }
+        return min((target - mean) / (max(mean, 0.002) * (1 - target)), 64)
+    }
+
+    /// One tile through the network, planar RGB in and out, lifted by y = x(1 + a)/(1 + ax) on the
+    /// way in and lowered by its inverse on the way out.
+    private func predict(_ model: MLModel, _ input: MLMultiArray, _ tile: [Float], lift a: Float) -> [Float]? {
+        let n = tile.count
+        let inPtr = input.dataPointer.bindMemory(to: Float16.self, capacity: n)
+        for i in 0..<n {
+            let x = min(max(tile[i], 0), 1)
+            inPtr[i] = Float16(a > 0 ? x * (1 + a) / (1 + a * x) : tile[i])
+        }
+        guard let result = try? model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["input": input])),
+              let res = result.featureValue(for: "output")?.multiArrayValue else { return nil }
+        let outPtr = res.dataPointer.bindMemory(to: Float16.self, capacity: n)
+        var out = [Float](repeating: 0, count: n)
+        for i in 0..<n {
+            let y = Float(outPtr[i])
+            if a > 0 {
+                let c = min(max(y, 0), 1)
+                out[i] = c / (1 + a - a * c)
+            } else {
+                out[i] = y
+            }
         }
         return out
     }
