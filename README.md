@@ -40,6 +40,10 @@ In Best Fit the window takes the shape of the picture. The toolbar, the file pil
 
 ## Edit on its own engine
 
+<p align="center">
+  <img src="https://www.noxdrop.com/img/pictty/edit-v1.webp" width="820" alt="The Adjust panel beside a sunset over rocks: exposure raised by regions opens up the dark rocks while the sun keeps its light.">
+</p>
+
 Press E and the Adjust panel opens beside the picture, with a live histogram on top. Pictty loads the picture once as linear light in 16-bit floating point and runs every slider on the GPU, in Metal, while you drag it. Each slider has one method, picked for what that slider has to do.
 
 | Light | Colour | Detail |
@@ -50,6 +54,13 @@ Press E and the Adjust panel opens beside the picture, with a live histogram on 
 | Highlights, local Laplacian | Colour grading on three wheels | Noise reduction, a neural network on the GPU |
 | Shadows | | |
 | Dehaze | | |
+
+<table>
+  <tr>
+    <td align="center" width="50%"><img src="https://www.noxdrop.com/img/pictty/noise-v1.webp" alt="A rhododendron garden at 100 %: the original's noise on the left of the line, after noise reduction on the right."><br><b>Noise reduction</b><br>Noise and grain gone, detail kept</td>
+    <td align="center" width="50%"><img src="https://www.noxdrop.com/img/pictty/crop-v1.webp" alt="The crop frame with rounded corners on a motorcycle engine, and the crop toolbar."><br><b>Crop</b><br>Ratios for social, screens and print, rounded corners</td>
+  </tr>
+</table>
 
 Crop with ratios and rounded corners, flip to the original with Y, and save over the file in its own format and quality, or as anything else. How each one works is [below](#editing).
 
