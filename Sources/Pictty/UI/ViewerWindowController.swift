@@ -1287,8 +1287,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             else if model.showInspector { toggleInspector(nil) }
             else if slideshowTimer != nil { stopSlideshow() }
             else if window?.styleMask.contains(.fullScreen) == true { window?.toggleFullScreen(nil) }
-            // Nothing left to dismiss: Esc closes the window.
-            else { window?.performClose(nil) }
+            // Nothing left to dismiss: Esc does nothing more. ⌘W closes the window, ⌘Q quits.
             return true
         default: break
         }

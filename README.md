@@ -126,7 +126,7 @@ Pictty reads the pictures you open and the other pictures in their folder, and k
 | D · L · B · P · Tab | Compare · layout · blink · sync pan · next pane |
 | [ ] · M | Rotate · mirror |
 | S · T · F or ↩ | Slideshow · filmstrip · full screen |
-| ? · Esc | All shortcuts · close what is open, then the window |
+| ? · Esc | All shortcuts · close what is open, then leave full screen |
 
 ## Build from source
 
