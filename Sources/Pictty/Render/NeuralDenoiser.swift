@@ -3,26 +3,21 @@ import CoreML
 import Foundation
 import PicttyCore
 
-/// Noise reduction by NAFNet (Chen et al. 2022, MIT licence), a convolutional network trained on
-/// real smartphone noise (SIDD), run by Core ML on the GPU in 512-pixel tiles.
+/// Noise reduction by SCUNet (Zhang et al. 2023, Apache 2.0), a Swin-and-convolution network trained
+/// on realistic camera noise, JPEG and their mixtures, run by Core ML on the GPU in 512-pixel tiles.
 ///
-/// The network knows pixel-sized noise. Grain that is coarser (film grain added in an editor, or a
-/// noisy picture that was enlarged) looks like texture to it at full size, so the picture is first
-/// measured: noise that averages away when the picture is halved is fine; noise that grows instead
-/// is coarse. Coarse grain is taken out at the scale where it is pixel-sized again (half, quarter),
-/// coarsest first, by removing only what the network removed there, enlarged back; the full-size
-/// pass then takes the fine noise. Detail at full size is never smoothed by the smaller passes'
-/// enlargement because only their residual (the noise they found) comes back up.
+/// The network knows pixel-sized noise; grain that is coarser (an editor's film grain, a noisy
+/// picture enlarged) looks like texture to it, and at full size it would smooth the picture instead.
+/// So the picture is measured first (`PictureMeasure.grainPlan`): pixel-sized noise is taken out
+/// at full size; grain of about a pixel at half size and then what is left at full size; coarser
+/// grain at half size only, where it is pixel-sized again. At half size, only what the network
+/// removed there comes back up, enlarged, and is taken out: the picture's own detail is never
+/// enlarged. Each resolution is planned on its own: the same grain is coarse in every pixel and fine
+/// on the screen.
 ///
-/// The network diverges on very dark tiles (a mean below about 0.06 encoded): it answers with a
-/// bright, coloured lattice instead of the picture. So a dark tile is first lifted by a curve that
-/// can be undone exactly, y = x(1 + a)/(1 + ax), until its mean is 0.15, and lowered again after;
-/// a tile that still comes back far from what went in is run once more, lifted further, and if it
-/// still does, it is left as it was rather than spoilt.
-///
-/// Tiles overlap by 64 pixels and are blended across the overlap: the network averages over each
-/// tile (its channel attention), so cut-and-paste tiles could show seams. About 2.6 s for 12
-/// megapixels on an M5 Pro, plus a quarter for a half-size pass. HDR pictures are not offered it.
+/// Tiles overlap by 64 pixels and are blended across the overlap. A tile that comes back far from
+/// what went in (none did in testing, even darkened fourfold; NAFNet's did on very dark tiles) is
+/// left as it was rather than spoilt. About 100 ms a tile on an M5 Pro. HDR pictures are not offered it.
 final class NeuralDenoiser: @unchecked Sendable {
     static let shared = NeuralDenoiser()
 
@@ -41,7 +36,7 @@ final class NeuralDenoiser: @unchecked Sendable {
         if let loaded { return loaded }
         guard let url else { return nil }
         let config = MLModelConfiguration()
-        // Measured: the GPU is three times faster than the Neural Engine for this network.
+        // Measured: a tenth of a second a tile on the GPU; the Neural Engine takes seconds.
         config.computeUnits = .cpuAndGPU
         loaded = try? MLModel(contentsOf: url, configuration: config)
         return loaded
@@ -99,11 +94,7 @@ final class NeuralDenoiser: @unchecked Sendable {
 
     /// `image` denoised, the same size and colour space; nil if it cannot be (or `cancelled` says so).
     /// `progress` hears how far it is, 0…1, after every tile, on the calling thread.
-    /// `coarse`: the screen-sized picture and what this denoiser made of it. A larger picture then
-    /// takes its coarse noise from there, enlarged, and only its own finest noise at full size: the
-    /// grain was judged once, on the picture as it shows, and is not judged again differently.
-    func denoise(_ image: CGImage, coarse: (original: CGImage, denoised: CGImage)? = nil,
-                 progress: ((Double) -> Void)? = nil, cancelled: () -> Bool = { false }) -> CGImage? {
+    func denoise(_ image: CGImage, progress: ((Double) -> Void)? = nil, cancelled: () -> Bool = { false }) -> CGImage? {
         guard let model else { return nil }
         let w = image.width, h = image.height
         let own = image.colorSpace.flatMap { $0.model == .rgb && !CGColorSpaceUsesExtendedRange($0) ? $0 : nil }
@@ -125,32 +116,24 @@ final class NeuralDenoiser: @unchecked Sendable {
             planes.r[i] = pixels[i * 4] / a; planes.g[i] = pixels[i * 4 + 1] / a; planes.b[i] = pixels[i * 4 + 2] / a
         }
 
-        var scales: [Int] = []
-        if let coarse, coarse.original.width < w, let residual = Self.residual(coarse, space: space) {
-            // What the screen-sized pass took out, enlarged and taken out here.
-            Self.subtract(residual, from: &planes)
-            timingMark("denoise: coarse noise from the screen-sized pass")
-        } else {
-            let l = planes.luma
-            let half = PictureMeasure.shrink(l, width: w, height: h, by: 2)
-            let quarter = PictureMeasure.shrink(half.plane, width: half.width, height: half.height, by: 2)
-            let levels = (full: PictureMeasure.flatNoise(l, width: w, height: h),
-                          half: PictureMeasure.flatNoise(half.plane, width: half.width, height: half.height),
-                          quarter: PictureMeasure.flatNoise(quarter.plane, width: quarter.width, height: quarter.height))
-            scales = PictureMeasure.grainScales(levels)
-        }
-        timingMark("denoise: grain scales \(scales.isEmpty ? "fine only" : scales.map { "1/\($0)" }.joined(separator: ", "))")
+        let l = planes.luma
+        let half = PictureMeasure.shrink(l, width: w, height: h, by: 2)
+        let quarter = PictureMeasure.shrink(half.plane, width: half.width, height: half.height, by: 2)
+        let plan = PictureMeasure.grainPlan((full: PictureMeasure.flatNoise(l, width: w, height: h),
+                                             half: PictureMeasure.flatNoise(half.plane, width: half.width, height: half.height),
+                                             quarter: PictureMeasure.flatNoise(quarter.plane, width: quarter.width,
+                                                                               height: quarter.height)))
+        timingMark("denoise: \(w)×\(h), \(plan.rawValue)")
+        let atHalf = plan != .full, atFull = plan != .half
         // Progress in tiles, across every pass.
-        let total = ([1] + scales).reduce(0) { $0 + Self.tileCount(w / $1, h / $1) }
+        let total = (atHalf ? Self.tileCount(w / 2, h / 2) : 0) + (atFull ? Self.tileCount(w, h) : 0)
         var done = 0
         let tick = { done += 1; progress?(Double(done) / Double(max(total, 1))) }
         progress?(0)
 
-        // Coarse grain first, at the scale where it is pixel-sized: only what the network took out
-        // there comes back up, enlarged, and is taken out here.
-        for k in scales {
-            if cancelled() { return nil }
-            let small = planes.shrunk(by: k)
+        if atHalf {
+            // Only what the network took out at half size comes back up, enlarged, and is taken out here.
+            let small = planes.shrunk(by: 2)
             guard let clean = run(model, small, tick: tick, cancelled: cancelled) else { return nil }
             var residual = small
             for i in 0..<(small.w * small.h) {
@@ -158,15 +141,18 @@ final class NeuralDenoiser: @unchecked Sendable {
             }
             Self.subtract(residual, from: &planes)
         }
-        // Then the fine noise, at full size.
-        guard let clean = run(model, planes, tick: tick, cancelled: cancelled) else { return nil }
+        if atFull {
+            if cancelled() { return nil }
+            guard let clean = run(model, planes, tick: tick, cancelled: cancelled) else { return nil }
+            planes = clean
+        }
 
         // Out: alpha as it was, premultiplied again.
         for i in 0..<(w * h) {
             let a = pixels[i * 4 + 3]
-            pixels[i * 4] = min(max(clean.r[i], 0), 1) * a
-            pixels[i * 4 + 1] = min(max(clean.g[i], 0), 1) * a
-            pixels[i * 4 + 2] = min(max(clean.b[i], 0), 1) * a
+            pixels[i * 4] = min(max(planes.r[i], 0), 1) * a
+            pixels[i * 4 + 1] = min(max(planes.g[i], 0), 1) * a
+            pixels[i * 4 + 2] = min(max(planes.b[i], 0), 1) * a
         }
         let data = pixels.withUnsafeBytes { Data($0) }
         guard let provider = CGDataProvider(data: data as CFData) else { return nil }
@@ -193,35 +179,6 @@ final class NeuralDenoiser: @unchecked Sendable {
                 p.b[i] -= residual.b[i00] * w00 + residual.b[i01] * w01 + residual.b[i10] * w10 + residual.b[i11] * w11
             }
         }
-    }
-
-    /// The screen-sized picture minus what the denoiser made of it: the noise it found.
-    private static func residual(_ pair: (original: CGImage, denoised: CGImage), space: CGColorSpace) -> Planes? {
-        guard pair.original.width == pair.denoised.width, pair.original.height == pair.denoised.height,
-              let a = planes(of: pair.original, space: space), let b = planes(of: pair.denoised, space: space) else { return nil }
-        var out = a
-        for i in 0..<(a.w * a.h) { out.r[i] -= b.r[i]; out.g[i] -= b.g[i]; out.b[i] -= b.b[i] }
-        return out
-    }
-
-    private static func planes(of image: CGImage, space: CGColorSpace) -> Planes? {
-        let w = image.width, h = image.height
-        var px = [Float](repeating: 0, count: w * h * 4)
-        let info = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
-            | CGBitmapInfo.byteOrder32Little.rawValue
-        let ok = px.withUnsafeMutableBytes { raw -> Bool in
-            guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 32, bytesPerRow: w * 16,
-                                      space: space, bitmapInfo: info) else { return false }
-            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-            return true
-        }
-        guard ok else { return nil }
-        var p = Planes(w: w, h: h)
-        for i in 0..<(w * h) {
-            let a = max(px[i * 4 + 3], 1e-4)
-            p.r[i] = px[i * 4] / a; p.g[i] = px[i * 4 + 1] / a; p.b[i] = px[i * 4 + 2] / a
-        }
-        return p
     }
 
     private static func origins(_ size: Int) -> [Int] {
@@ -258,15 +215,13 @@ final class NeuralDenoiser: @unchecked Sendable {
                         tileIn[q] = p.r[s]; tileIn[plane + q] = p.g[s]; tileIn[2 * plane + q] = p.b[s]
                     }
                 }
-                let mean = tileIn.reduce(0, +) / Float(tileIn.count)
-                var tileOut = tileIn
-                for target: Float in [0.15, 0.3] {
-                    guard let attempt = predict(model, input, tileIn, lift: Self.lift(mean: mean, to: target)) else { return nil }
-                    // Noise is a few hundredths at most; a tile that moved on average by more went wrong.
-                    var moved: Float = 0
-                    for i in 0..<tileIn.count { moved += abs(attempt[i] - tileIn[i]) }
-                    if moved / Float(tileIn.count) < 0.04 { tileOut = attempt; break }
-                    timingMark(String(format: "denoise: tile at %d,%d diverged (mean %.3f, lifted to %.2f)", x0, y0, mean, target))
+                guard var tileOut = predict(model, input, tileIn) else { return nil }
+                // Noise is a few hundredths at most; a tile that moved on average by more went wrong.
+                var moved: Float = 0
+                for i in 0..<tileIn.count { moved += abs(tileOut[i] - tileIn[i]) }
+                if moved / Float(tileIn.count) > 0.04 {
+                    timingMark(String(format: "denoise: tile at %d,%d left as it was", x0, y0))
+                    tileOut = tileIn
                 }
                 for ty in 0..<t where y0 + ty < h {
                     // Tiles at the picture's edge do not fade out towards it.
@@ -289,34 +244,14 @@ final class NeuralDenoiser: @unchecked Sendable {
         return out
     }
 
-    /// The curve's `a` that lifts a tile whose mean is `mean` to `target`; 0 for a tile bright enough.
-    private static func lift(mean: Float, to target: Float) -> Float {
-        guard mean < target else { return 0 }
-        return min((target - mean) / (max(mean, 0.002) * (1 - target)), 64)
-    }
-
-    /// One tile through the network, planar RGB in and out, lifted by y = x(1 + a)/(1 + ax) on the
-    /// way in and lowered by its inverse on the way out.
-    private func predict(_ model: MLModel, _ input: MLMultiArray, _ tile: [Float], lift a: Float) -> [Float]? {
+    /// One tile through the network, planar RGB in and out.
+    private func predict(_ model: MLModel, _ input: MLMultiArray, _ tile: [Float]) -> [Float]? {
         let n = tile.count
         let inPtr = input.dataPointer.bindMemory(to: Float16.self, capacity: n)
-        for i in 0..<n {
-            let x = min(max(tile[i], 0), 1)
-            inPtr[i] = Float16(a > 0 ? x * (1 + a) / (1 + a * x) : tile[i])
-        }
+        for i in 0..<n { inPtr[i] = Float16(tile[i]) }
         guard let result = try? model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["input": input])),
               let res = result.featureValue(for: "output")?.multiArrayValue else { return nil }
         let outPtr = res.dataPointer.bindMemory(to: Float16.self, capacity: n)
-        var out = [Float](repeating: 0, count: n)
-        for i in 0..<n {
-            let y = Float(outPtr[i])
-            if a > 0 {
-                let c = min(max(y, 0), 1)
-                out[i] = c / (1 + a - a * c)
-            } else {
-                out[i] = y
-            }
-        }
-        return out
+        return (0..<n).map { Float(outPtr[$0]) }
     }
 }

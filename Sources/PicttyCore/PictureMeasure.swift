@@ -71,12 +71,27 @@ public enum PictureMeasure {
                 flatNoise(quarter.plane, width: quarter.width, height: quarter.height))
     }
 
-    /// The scales coarse grain needs to be taken out at, coarsest first ([4, 2], [2] or none), from
-    /// `noiseLevels`. Calibrated on seventeen photos: coarse grain read 0.5 / 1.2 / 2.1 levels;
-    /// fine noise and clean pictures fall or hold as they shrink.
-    public static func grainScales(_ n: (full: Float, half: Float, quarter: Float)) -> [Int] {
-        guard n.half > 0.6, n.half / max(n.full, 0.05) > 1.4 else { return [] }
-        return n.quarter > 0.8 && n.quarter / max(n.half, 0.05) > 1.3 ? [4, 2] : [2]
+    /// How a picture's noise is best taken out, by the size of its grain.
+    public enum GrainPlan: String, Sendable {
+        /// Pixel-sized: camera noise, JPEG, the finest grain. At full size.
+        case full
+        /// About a pixel: first at half size, then what is left at full size.
+        case halfThenFull
+        /// Coarser: at half size only, where it is pixel-sized again; full size would smooth the picture.
+        case half
+    }
+
+    /// The plan for `noiseLevels` (flat noise at full, half and quarter size). Pixel-sized noise
+    /// halves as the picture halves; grain holds or grows until the picture is shrunk past its size.
+    /// Calibrated on camera noise, noise and JPEG, and grain from 0.5 to 3 pixels, by which plan came
+    /// out closest to the clean picture (LPIPS): halved over full above 1.5 with quartered over
+    /// halved from 1.0 is grain of about a pixel; quartered over halved from 1.5 (or from 1.2 when
+    /// halving no longer helps) is coarse.
+    public static func grainPlan(_ n: (full: Float, half: Float, quarter: Float)) -> GrainPlan {
+        let halved = n.half / max(n.full, 0.05), quartered = n.quarter / max(n.half, 0.05)
+        if quartered >= 1.5 || (halved < 1.2 && quartered > 1.2) { return .half }
+        if halved > 1.5, quartered >= 1.0 { return .halfThenFull }
+        return .full
     }
 
     /// How much noise reduction a picture wants, 0…1, from `noiseLevels`: the strongest of the three

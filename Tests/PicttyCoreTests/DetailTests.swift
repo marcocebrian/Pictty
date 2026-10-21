@@ -154,7 +154,7 @@ final class GrainTests: XCTestCase {
         let fine = (0..<(w * h)).map { _ in 0.5 + 3 / 255 * r.g() }
         let f = levels(fine, w, h)
         XCTAssertEqual(f.full, 3, accuracy: 0.8)
-        XCTAssertEqual(PictureMeasure.grainScales(f), [], "fine noise needs no coarse pass")
+        XCTAssertEqual(PictureMeasure.grainPlan(f), .full, "fine noise is taken out at full size")
         // Coarse: noise drawn at a third of the size and enlarged, as an editor's grain is (blobs
         // of a few pixels, like the photo this was calibrated on).
         let k: Float = 3
@@ -168,7 +168,7 @@ final class GrainTests: XCTestCase {
             return 0.5 + v
         }
         let c = levels(coarse, w, h)
-        XCTAssertFalse(PictureMeasure.grainScales(c).isEmpty, "coarse grain is taken out at a smaller scale: \(c)")
+        XCTAssertEqual(PictureMeasure.grainPlan(c), .half, "coarse grain is taken out at half size: \(c)")
     }
 
     func testAutoLeavesCleanPicturesAlone() {

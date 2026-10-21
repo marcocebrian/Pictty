@@ -1,10 +1,16 @@
 # Models
 
-`Denoise.mlpackage` is Pictty's noise reduction: **NAFNet** (Chen, Chu, Zhang and Sun, *Simple Baselines
-for Image Restoration*, ECCV 2022), width 32, trained on SIDD by its authors at Megvii, from
-[megvii-research/NAFNet](https://github.com/megvii-research/NAFNet) under the MIT licence
-(`NAFNet-LICENSE`).
+`Denoise.mlpackage` is Pictty's noise reduction: **SCUNet** (Zhang, Li, Liang, Cao, Zhang, Tang,
+Wen, Timofte and Van Gool, *Practical Blind Image Denoising via Swin-Conv-UNet and Data Synthesis*,
+Machine Intelligence Research 2023), the "real GAN" weights its authors trained on realistic camera
+noise, JPEG compression and their mixtures, from [cszn/SCUNet](https://github.com/cszn/SCUNet) under
+the Apache 2.0 licence (`SCUNet-LICENSE`).
 
-Converted to Core ML for 512 × 512 tiles, weights quantised to 8 bits (29 MB; within two 8-bit
-levels of fp16) by `make-denoise-model.py`, which says how to rebuild it. `build.sh` compiles it
-into the app. Measured on an M5 Pro: 21 ms a tile on the GPU, about 2.6 s for 12 megapixels.
+Chosen over NAFNet (SIDD), Restormer, DRUNet and FBCNN, and SCUNet's own PSNR weights, on clean
+crops with camera noise, strong noise, noise and JPEG, and film grain from 0.5 to 3 pixels, by
+LPIPS: closest to the clean picture as people see it, everywhere. NAFNet left film grain looking
+worse than before.
+
+Converted to Core ML for 512 × 512 tiles, weights quantised to 8 bits (20 MB) by
+`make-denoise-model.py`, which says how to rebuild it and why the attention is rewritten.
+`build.sh` compiles it into the app. Measured on an M5 Pro: about 100 ms a tile on the GPU.

@@ -206,7 +206,7 @@ struct AdjustPanelView: View {
                 }
                 SliderRow(control: .denoise, adjustments: a, showsAlgorithms: false, change: change)
                 Text(model.lightEngine == .appleRAW ? "Apple's RAW noise reduction, from the camera's own default up."
-                                                    : "NAFNet, a neural network for real camera noise, on this Mac's GPU. Nothing leaves it.")
+                                                    : "SCUNet, a neural network for real camera noise, grain and JPEG, on this Mac's GPU. Nothing leaves it.")
                     .font(.system(size: 9.5))
                     .foregroundStyle(.white.opacity(0.42))
                     .fixedSize(horizontal: false, vertical: true)

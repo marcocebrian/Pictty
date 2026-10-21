@@ -50,11 +50,6 @@ final class LightRenderer: @unchecked Sendable {
         return denoisedCache[width]
     }
 
-    /// The screen-sized picture and the network's version of it, once there is one.
-    var screenPass: (original: CGImage, denoised: CGImage)? {
-        cachedDenoised(width: preview.width).map { (preview, $0) }
-    }
-
     func storeDenoised(_ image: CGImage) {
         cacheLock.lock(); defer { cacheLock.unlock() }
         denoisedCache[image.width] = image
@@ -166,8 +161,7 @@ final class LightRenderer: @unchecked Sendable {
         if a.denoise > 0, !isHDR {
             if let known = renderer?.cachedDenoised(width: original.width) {
                 engineRef.setDenoised(known, on: src)
-            } else if let denoised = NeuralDenoiser.shared.denoise(original, coarse: renderer?.screenPass,
-                                                                   progress: progress, cancelled: cancelled) {
+            } else if let denoised = NeuralDenoiser.shared.denoise(original, progress: progress, cancelled: cancelled) {
                 renderer?.storeDenoised(denoised)
                 engineRef.setDenoised(denoised, on: src)
             }

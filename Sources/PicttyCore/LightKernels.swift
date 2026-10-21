@@ -246,8 +246,13 @@ kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
                     uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= src.get_width() || gid.y >= src.get_height()) return;
     float4 c = src.read(gid);
-    // Noise reduction first: the denoised picture mixed in, before anything else is done.
-    if (p.hasDenoised && p.denoise > 0.0) c = mix(c, denoised.read(gid), p.denoise);
+    // Noise reduction first, before anything else is done: the denoised picture mixed in, its
+    // brightness by the amount and its colour twice as fast, since colour noise is never wanted.
+    if (p.hasDenoised && p.denoise > 0.0) {
+        float3 change = denoised.read(gid).rgb - c.rgb;
+        float y = dot(change, lumaWeights);
+        c.rgb += y * p.denoise + (change - y) * min(1.0, 2.0 * p.denoise);
+    }
     float3 rgb = c.a > 0.0 ? c.rgb / c.a : float3(0.0);
     // White balance first: the light the picture was taken under, adapted to the display's.
     if (p.whiteBalance) {

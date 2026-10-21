@@ -3,6 +3,7 @@
 // Each step is "<seconds from launch> <action> [arguments]". Fractions are of the canvas.
 
 import AppKit
+import ImageIO
 
 @MainActor
 enum DevScript {
@@ -73,6 +74,14 @@ enum DevScript {
         case "state":
             print("state items=\(c.model.items.count) folder=\(c.model.folderURL?.path ?? "-") sheet=\(c.window?.attachedSheet != nil) sandbox=\(FolderAccess.isSandboxed) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") zoom=\(c.model.zoomLabel)")
             fflush(stdout)
+        case "snapshot":
+            // snapshot <path>: what the canvas shows of the picture, as a PNG, for checking edits.
+            if let image = canvas.displayedImage(pane: 0),
+               let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: (text as NSString).expandingTildeInPath) as CFURL,
+                                                          "public.png" as CFString, 1, nil) {
+                CGImageDestinationAddImage(dest, image, nil)
+                CGImageDestinationFinalize(dest)
+            }
         case "quit": NSApp.terminate(nil)
         default: break
         }
