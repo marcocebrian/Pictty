@@ -188,8 +188,9 @@ final class LightRenderer: @unchecked Sendable {
 
 /// Apple's RAW engine with the panel's values: exposure and white balance go into the develop,
 /// where the sensor's headroom and its own colour are; the tones are Core Image's own filters on
-/// the result. Dehaze, vibrance, saturation and colour grading have no Apple counterpart (one that
-/// protects skin or keeps lightness): Pictty's engine does them on the developed picture.
+/// the result. Dehaze, texture, clarity, sharpening, vibrance, saturation and colour grading have no
+/// Apple counterpart (one that guards grain and halos, protects skin or keeps lightness): Pictty's
+/// engine does them on the developed picture.
 final class AppleRAW {
     private let filter: CIRAWFilter
     private let context = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
@@ -268,11 +269,16 @@ final class AppleRAW {
         return context.createCGImage(image, from: extent, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.displayP3))
     }
 
-    /// Dehaze, vibrance, saturation and colour grading on a developed picture, through Pictty's engine.
+    /// Dehaze, detail, vibrance, saturation and colour grading on a developed picture, through
+    /// Pictty's engine. Noise reduction stays Apple's, in the develop.
     static func graded(_ image: CGImage, _ a: Adjustments, isHDR: Bool, output: LightEngine.Output? = nil) -> CGImage? {
-        guard !a.isGradingNeutral || !a.isSaturationNeutral || a.dehaze != 0 else { return image }
+        let detail = a.texture != 0 || a.clarity != 0 || a.sharpening != 0
+        guard !a.isGradingNeutral || !a.isSaturationNeutral || a.dehaze != 0 || detail else { return image }
         var g = Adjustments()
         g.dehaze = a.dehaze
+        g.texture = a.texture
+        g.clarity = a.clarity
+        g.sharpening = a.sharpening
         g.vibrance = a.vibrance
         g.saturation = a.saturation
         g.shadowColour = a.shadowColour
