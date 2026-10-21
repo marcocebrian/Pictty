@@ -38,6 +38,8 @@ final class LightRenderer: @unchecked Sendable {
     private var denoising = false
     /// Called on the main thread when the screen-sized picture has been denoised: render again.
     var onDenoised: (@MainActor () -> Void)?
+    /// How far the network is, 0…1, on the main thread, for the canvas to say so.
+    var onDenoiseProgress: (@MainActor (Double, _ full: Bool) -> Void)?
 
     /// Whether this picture can have Pictty's noise reduction (not HDR, and the network is here).
     var offersNeuralDenoise: Bool { engine == .pictty && !isHDR && NeuralDenoiser.shared.isAvailable }
@@ -85,7 +87,10 @@ final class LightRenderer: @unchecked Sendable {
         let preview = preview
         denoiseQueue.async {
             let start = CFAbsoluteTimeGetCurrent()
-            let denoised = NeuralDenoiser.shared.denoise(preview)
+            let report = self.onDenoiseProgress
+            let denoised = NeuralDenoiser.shared.denoise(preview, progress: { fraction in
+                DispatchQueue.main.async { MainActor.assumeIsolated { report?(fraction, false) } }
+            })
             timingMark(String(format: "denoised %ld×%ld in %.0f ms", preview.width, preview.height,
                               (CFAbsoluteTimeGetCurrent() - start) * 1000))
             self.queue.async {
@@ -110,7 +115,11 @@ final class LightRenderer: @unchecked Sendable {
         queue.async {
             guard self.isLatest(ticket, self.latestFull) else { return }
             let start = CFAbsoluteTimeGetCurrent()
-            guard let image = Self.renderWhole(original, url: self.url, engine: self.engine, isHDR: self.isHDR, a, output: nil),
+            let report = self.onDenoiseProgress
+            guard let image = Self.renderWhole(original, url: self.url, engine: self.engine, isHDR: self.isHDR, a, output: nil,
+                                               progress: { fraction in
+                                                   DispatchQueue.main.async { MainActor.assumeIsolated { report?(fraction, true) } }
+                                               }),
                   self.isLatest(ticket, self.latestFull) else { return }
             let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
             DispatchQueue.main.async { MainActor.assumeIsolated { done(Rendered(image: image, milliseconds: ms, adjustments: a)) } }
@@ -119,7 +128,7 @@ final class LightRenderer: @unchecked Sendable {
 
     /// The whole picture with `a`, for saving or zooming. `output` nil picks what the screen wants.
     static func renderWhole(_ original: CGImage, url: URL, engine: Engine, isHDR: Bool, _ a: Adjustments,
-                            output: LightEngine.Output?) -> CGImage? {
+                            output: LightEngine.Output?, progress: ((Double) -> Void)? = nil) -> CGImage? {
         if engine == .appleRAW {
             return AppleRAW(url: url, maxPixel: nil, hdr: isHDR)?.render(a, float: output == .linear || isHDR)
                 .flatMap { AppleRAW.graded($0, a, isHDR: isHDR, output: output) }
@@ -127,7 +136,7 @@ final class LightRenderer: @unchecked Sendable {
         guard let engineRef = LightEngine.shared,
               let src = engineRef.source(original, headroom: isHDR ? max(original.contentHeadroom, 1) : 1) else { return nil }
         // Every pixel through the network too, when noise reduction is asked for.
-        if a.denoise > 0, !isHDR, let denoised = NeuralDenoiser.shared.denoise(original) {
+        if a.denoise > 0, !isHDR, let denoised = NeuralDenoiser.shared.denoise(original, progress: progress) {
             engineRef.setDenoised(denoised, on: src)
         }
         return engineRef.render(src, a, output: output ?? (isHDR ? .linear : .display))?.image

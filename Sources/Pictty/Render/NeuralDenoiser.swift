@@ -54,7 +54,8 @@ final class NeuralDenoiser: @unchecked Sendable {
     }
 
     /// `image` denoised, the same size and colour space; nil if it cannot be (or `cancelled` says so).
-    func denoise(_ image: CGImage, cancelled: () -> Bool = { false }) -> CGImage? {
+    /// `progress` hears how far it is, 0…1, after every tile, on the calling thread.
+    func denoise(_ image: CGImage, progress: ((Double) -> Void)? = nil, cancelled: () -> Bool = { false }) -> CGImage? {
         let t0 = CFAbsoluteTimeGetCurrent()
         guard let model else { return nil }
         timingMark(String(format: "  denoise: model ready %.0f ms", (CFAbsoluteTimeGetCurrent() - t0) * 1000))
@@ -91,8 +92,16 @@ final class NeuralDenoiser: @unchecked Sendable {
             let d = Float(min(i, t - 1 - i))
             return min(1, (d + 1) / Float(o))
         }
-        for y0 in origins(h) {
-            for x0 in origins(w) {
+        let rows = origins(h), columns = origins(w)
+        let tiles = rows.count * columns.count
+        var done = 0
+        progress?(0)
+        for y0 in rows {
+            for x0 in columns {
+                defer {
+                    done += 1
+                    progress?(Double(done) / Double(tiles))
+                }
                 if cancelled() { return nil }
                 // Fill the tile; past the picture's edges (small pictures), mirror it.
                 let inPtr = input.dataPointer.bindMemory(to: Float16.self, capacity: plane * 3)

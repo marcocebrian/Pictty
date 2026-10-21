@@ -116,6 +116,29 @@ extension ViewerWindowController: NSMenuItemValidation {
         refreshEdit()
     }
 
+    /// The network's progress, for the canvas: under way, then a moment of done.
+    func denoiseProgressed(_ fraction: Double, full: Bool) {
+        if model.denoiseFull != full { model.denoiseFull = full }
+        model.denoiseDone = false
+        model.denoising = true
+        if model.denoiseProgress == nil || fraction == 1 || Int(fraction * 4) != Int((model.denoiseProgress ?? 0) * 4) {
+            timingMark(String(format: "noise badge: %@ %.0f %%", full ? "every pixel" : "on screen", fraction * 100))
+        }
+        model.denoiseProgress = fraction
+    }
+
+    func denoiseFinished() {
+        guard model.denoiseProgress != nil || model.denoising else { return }
+        model.denoising = false
+        model.denoiseProgress = nil
+        model.denoiseDone = true
+        timingMark("noise badge: noise reduced")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak self] in
+            self?.model.denoiseDone = false
+            timingMark("noise badge: gone")
+        }
+    }
+
     /// Auto: the picture's own noise sets the strength; a clean picture is left alone.
     @objc func autoDenoise(_ sender: Any?) {
         guard model.lightUnavailable == nil, let url = model.current?.url, let shown = canvas.shown(pane: 0),
@@ -170,8 +193,12 @@ extension ViewerWindowController: NSMenuItemValidation {
         let renderer = LightRenderer(url: url, preview: preview, isHDR: shown.isHDR, maxPixel: store.previewMaxPixel)
         renderer.onDenoised = { [weak self] in
             guard let self, self.lightSession?.renderer === renderer else { return }
-            self.model.denoising = false
+            self.denoiseFinished()
             self.refreshEdit()
+        }
+        renderer.onDenoiseProgress = { [weak self] fraction, full in
+            guard let self, self.lightSession?.renderer === renderer else { return }
+            self.denoiseProgressed(fraction, full: full)
         }
         lightSession = LightSession(renderer: renderer, preview: preview, pixelSize: shown.pixelSize, hasAlpha: shown.hasAlpha)
     }
@@ -244,7 +271,9 @@ extension ViewerWindowController: NSMenuItemValidation {
             let render: (CGImage) -> Void = { original in
                 guard !a.isNeutral else { return self.present(original, full: true, session: session) }
                 session.renderer.renderFull(original, a) { [weak self] r in
-                    guard let self, self.lightSession === session, self.model.light == r.adjustments,
+                    guard let self else { return }
+                    if self.model.denoiseFull { self.denoiseFinished() }
+                    guard self.lightSession === session, self.model.light == r.adjustments,
                           !self.model.showingOriginal else { return }
                     self.present(r.image, full: true, session: session)
                     self.updateStatus()
@@ -312,6 +341,8 @@ extension ViewerWindowController: NSMenuItemValidation {
     /// The picture changed: the edits go (settled before, if they had to be).
     func endLight() {
         model.denoising = false
+        model.denoiseProgress = nil
+        model.denoiseDone = false
         model.crop = nil
         model.cropping = false
         syncCropChrome()
@@ -518,7 +549,12 @@ extension ViewerWindowController: NSMenuItemValidation {
                 let isHDR = original.isHDR
                 var picture = a.isNeutral
                     ? original.image
-                    : LightRenderer.renderWhole(original.image, url: url, engine: engine, isHDR: isHDR, a, output: .linear)
+                    : LightRenderer.renderWhole(original.image, url: url, engine: engine, isHDR: isHDR, a, output: .linear,
+                                                progress: { fraction in
+                                                    DispatchQueue.main.async {
+                                                        MainActor.assumeIsolated { self?.denoiseProgressed(fraction, full: true) }
+                                                    }
+                                                })
                 if let crop, let p = picture { picture = crop.apply(to: p) }
                 if let turn, let p = picture { picture = ImageExporter.oriented(p, quarterTurns: turn.quarterTurns, mirror: turn.mirror) }
                 var o = options
@@ -536,6 +572,7 @@ extension ViewerWindowController: NSMenuItemValidation {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.model.isSaving = false
+                    if self.model.denoiseFull { self.denoiseFinished() }
                     if let failure {
                         self.showToast(L("Not saved: %@", failure), symbol: "exclamationmark.triangle", tone: .error)
                         cancelled?()

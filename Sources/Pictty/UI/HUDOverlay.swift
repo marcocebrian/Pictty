@@ -70,6 +70,21 @@ struct HUDOverlay: View {
                 Spacer()
             }
 
+            // Work going on in the picture, top left: the RAW develop, the noise reduction.
+            if model.denoiseProgress != nil || model.denoiseDone, model.current != nil, !model.isComparing {
+                VStack {
+                    HStack {
+                        DenoiseBadge(progress: model.denoiseProgress, everyPixel: model.denoiseFull)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(.top, model.rawStatus == nil ? 62 : 106)
+                .padding(.leading, 18)
+                .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .topLeading)))
+                .animation(Chrome.spring, value: model.denoiseProgress == nil)
+            }
+
             if let raw = model.rawStatus, model.current != nil, !model.isComparing {
                 VStack {
                     HStack {
@@ -427,6 +442,81 @@ struct RawBadge: View {
         }
         .offset(y: floating ? -2.5 : 2.5)
         .animation(.easeInOut(duration: 1.7).repeatForever(autoreverses: true), value: floating)
+        .onAppear { floating = true }
+    }
+}
+
+/// The noise reduction at work, like the RAW develop: the network's own capsule, Pictty's little
+/// character keeping it company, and how far it is. A moment of "noise reduced" when it is done.
+struct DenoiseBadge: View {
+    /// nil once done.
+    let progress: Double?
+    /// Going over every pixel (zoomed in, or saving) rather than the picture on screen.
+    let everyPixel: Bool
+    @State private var floating = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: progress == nil ? "checkmark.seal.fill" : "wand.and.sparkles")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(progress == nil ? Color(hex: 0x34A853) : Color(hex: 0xB9A8FF))
+                    .contentTransition(.symbolEffect(.replace))
+                    .symbolEffect(.pulse, isActive: progress != nil)
+                Text("NOISE")
+                    .font(.system(size: 10.5, weight: .heavy, design: .rounded))
+                    .tracking(0.6)
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .liquidGlassCapsule(tint: 0.5, shadow: 8)
+
+            if let progress {
+                HStack(spacing: 2) {
+                    TimelineView(.animation) { context in
+                        PicttyBuddy(time: context.date.timeIntervalSinceReferenceDate)
+                    }
+                    .frame(width: 38, height: 38)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 5) {
+                            Text(everyPixel ? "reducing noise in every pixel" : "reducing noise")
+                            Text("\(Int((progress * 100).rounded())) %")
+                                .monospacedDigit()
+                                .foregroundStyle(.white.opacity(0.6))
+                                .contentTransition(.numericText(value: progress))
+                        }
+                        .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.85))
+                        // A fine line filling up, in the network's colour.
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(.white.opacity(0.15))
+                                Capsule()
+                                    .fill(LinearGradient(colors: [Color(hex: 0x9C8CF0), Color(hex: 0x6A4CE0)],
+                                                         startPoint: .leading, endPoint: .trailing))
+                                    .frame(width: max(3, geo.size.width * progress))
+                                    .shadow(color: Color(hex: 0x9C8CF0).opacity(0.7), radius: 3)
+                            }
+                        }
+                        .frame(width: 120, height: 3)
+                    }
+                    .shadow(color: .black.opacity(0.6), radius: 3)
+                    .animation(.easeOut(duration: 0.2), value: progress)
+                }
+                .transition(.asymmetric(insertion: .scale(scale: 0.6, anchor: .leading).combined(with: .opacity),
+                                        removal: .scale(scale: 1.3).combined(with: .opacity).combined(with: .offset(y: -10))))
+            } else {
+                Text("noise reduced")
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .shadow(color: .black.opacity(0.6), radius: 3)
+                    .transition(.opacity)
+            }
+        }
+        .offset(y: floating ? -2.5 : 2.5)
+        .animation(.easeInOut(duration: 1.7).repeatForever(autoreverses: true), value: floating)
+        .animation(Chrome.spring, value: progress == nil)
         .onAppear { floating = true }
     }
 }

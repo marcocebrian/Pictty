@@ -87,6 +87,11 @@ final class ViewerModel: ObservableObject {
     @Published var pickingWhite = false
     /// The neural network is going over the picture.
     @Published var denoising = false
+    /// How far it is, 0…1, while it is; and a moment of "done" after, for the canvas to say so.
+    @Published var denoiseProgress: Double?
+    @Published var denoiseDone = false
+    /// Going over every pixel (zoomed in, or saving) rather than the screen-sized picture.
+    @Published var denoiseFull = false
     /// This picture can have Pictty's noise reduction (or, for a RAW, Apple's).
     @Published var offersDenoise = false
 
