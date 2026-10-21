@@ -11,7 +11,7 @@ using namespace metal;
 
 struct Params {
     float exposure, contrast, brightness, highlights, shadows;
-    int exposureAlgorithm, contrastAlgorithm, brightnessAlgorithm, highlightsAlgorithm, shadowsAlgorithm;
+    int highlightsAlgorithm, shadowsAlgorithm;
     /// Linear white: 1 for SDR, the content headroom for HDR.
     float white;
     /// 1 when the result is shown on an SDR scale: it is clamped to white at the end.
@@ -30,6 +30,13 @@ struct Params {
     float lumaWhite;  // encoded white
     float eps;        // guided filter regularisation
     int radius;       // box radius, guided filter
+    /// White balance, a linear sRGB matrix by rows; `whiteBalance` 0 skips it.
+    float wb0, wb1, wb2, wb3, wb4, wb5, wb6, wb7, wb8;
+    int whiteBalance;
+    /// Colour grading: a colour direction for shadows, midtones and highlights, and the balance.
+    float gs0, gs1, gs2, gm0, gm1, gm2, gh0, gh1, gh2;
+    float balance;
+    int grade;
 };
 
 constant float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
@@ -104,13 +111,18 @@ kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
     if (gid.x >= src.get_width() || gid.y >= src.get_height()) return;
     float4 c = src.read(gid);
     float3 rgb = c.a > 0.0 ? c.rgb / c.a : float3(0.0);
+    // White balance first: the light the picture was taken under, adapted to the display's.
+    if (p.whiteBalance) {
+        rgb = float3(dot(float3(p.wb0, p.wb1, p.wb2), rgb), dot(float3(p.wb3, p.wb4, p.wb5), rgb),
+                     dot(float3(p.wb6, p.wb7, p.wb8), rgb));
+    }
+    // Exposure multiplies the light, then rolls the brightest channel off into white, keeping
+    // each colour's hue and saturation.
     float g = exp2(p.exposure);
     rgb *= g;
-    if (p.exposure > 0.0 && p.exposureAlgorithm == 2) {
+    if (p.exposure > 0.0) {
         float m = max(rgb.r, max(rgb.g, rgb.b));
         if (m > 0.0) rgb *= p.white * rolloff(m / p.white, g) / m;
-    } else if (p.exposure > 0.0 && p.exposureAlgorithm == 3) {
-        rgb = float3(rolloff(rgb.r / p.white, g), rolloff(rgb.g / p.white, g), rolloff(rgb.b / p.white, g)) * p.white;
     }
     lit.write(float4(rgb, c.a), gid);
     luma.write(float4(enc(dot(rgb, lumaWeights))), gid);
@@ -261,67 +273,58 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
     if (p.localPaths & 2) l1 += laplacian.read(gid).r - l0;
     if (l1 != l0) rgb = withLuminance(rgb, dec(l0), dec(l1));
 
-    // Contrast.
+    // Contrast: an S-curve on brightness that holds black and white in place, keeping colours.
     float k = p.contrast;
     if (k != 0.0) {
-        if (p.contrastAlgorithm == 1) {
-            const float pivot = 0.4613;
-            float3 e = (enc3(rgb / W) - pivot) * (1.0 + k) + pivot;
-            rgb = max(dec3(e), 0.0) * W;
-        } else if (p.contrastAlgorithm == 2) {
-            float y = dot(rgb, lumaWeights);
-            if (y > 0.0) {
-                float y1 = 0.18 * W * pow(y / (0.18 * W), 1.0 + k);
-                if (k > 0.0) {
-                    float X = 0.18 * pow(1.0 / 0.18, 1.0 + k);
-                    y1 = W * rolloff(y1 / W, X);
-                }
-                rgb = withLuminance(rgb, y, y1);
+        float y = dot(rgb, lumaWeights);
+        float l = enc(y / W);
+        if (l > 0.0 && l < 1.0) {
+            const float pivot = 0.4613, steep = 8.0;
+            float lo = sigmoid(-steep * pivot), hi = sigmoid(steep * (1.0 - pivot));
+            float l1;
+            if (k > 0.0) {
+                l1 = mix(l, (sigmoid(steep * (l - pivot)) - lo) / (hi - lo), k);
+            } else {
+                float u = clamp(l * (hi - lo) + lo, 1e-6, 1.0 - 1e-6);
+                l1 = mix(l, pivot + log(u / (1.0 - u)) / steep, -k);
             }
-        } else {
-            float y = dot(rgb, lumaWeights);
-            float l = enc(y / W);
-            if (l > 0.0 && l < 1.0) {
-                const float pivot = 0.4613, steep = 8.0;
-                float lo = sigmoid(-steep * pivot), hi = sigmoid(steep * (1.0 - pivot));
-                float l1;
-                if (k > 0.0) {
-                    l1 = mix(l, (sigmoid(steep * (l - pivot)) - lo) / (hi - lo), k);
-                } else {
-                    float u = clamp(l * (hi - lo) + lo, 1e-6, 1.0 - 1e-6);
-                    l1 = mix(l, pivot + log(u / (1.0 - u)) / steep, -k);
-                }
-                rgb = withLuminance(rgb, y, dec(clamp(l1, 0.0, 1.0)) * W);
-            }
+            rgb = withLuminance(rgb, y, dec(clamp(l1, 0.0, 1.0)) * W);
         }
     }
 
-    // Brightness.
+    // Brightness: lightness raised in CIELAB; the colour coordinates stay where they are.
     float b = p.brightness;
     if (b != 0.0) {
-        if (p.brightnessAlgorithm == 1) {
-            float y = dot(rgb, lumaWeights);
-            float l = enc(y) / lw;
-            if (l > 0.0 && l < 1.0) rgb = withLuminance(rgb, y, dec(pow(l, exp2(-0.9 * b)) * lw));
-        } else if (p.brightnessAlgorithm == 2) {
-            rgb = dec3(enc3(rgb / W) + 0.22 * b) * W;
-        } else {
-            // Linear sRGB → XYZ (D65) → CIELAB, lightness moved, and back.
-            const float3x3 toXYZ = float3x3(float3(0.4124, 0.2126, 0.0193), float3(0.3576, 0.7152, 0.1192),
-                                            float3(0.1805, 0.0722, 0.9505));
-            const float3x3 toRGB = float3x3(float3(3.2406, -0.9689, 0.0557), float3(-1.5372, 1.8758, -0.2040),
-                                            float3(-0.4986, 0.0415, 1.0570));
-            const float3 white = float3(0.95047, 1.0, 1.08883);
-            float3 xyz = toXYZ * (rgb / W) / white;
-            float3 f = select(xyz * 7.787 + 16.0 / 116.0, pow(max(xyz, 0.0), 1.0 / 3.0), xyz > 0.008856);
-            float L = 116.0 * f.y - 16.0, A = 500.0 * (f.x - f.y), B = 200.0 * (f.y - f.z);
-            if (L > 0.0 && L < 100.0) {
-                L = clamp(L + b * 0.8 * L * (100.0 - L) / 100.0, 0.0, 100.0);
-                float fy = (L + 16.0) / 116.0;
-                float3 f1 = float3(fy + A / 500.0, fy, fy - B / 200.0);
-                float3 xyz1 = select((f1 - 16.0 / 116.0) / 7.787, f1 * f1 * f1, f1 > 0.206893) * white;
-                rgb = toRGB * xyz1 * W;
-            }
+        const float3x3 toXYZ = float3x3(float3(0.4124, 0.2126, 0.0193), float3(0.3576, 0.7152, 0.1192),
+                                        float3(0.1805, 0.0722, 0.9505));
+        const float3x3 toRGB = float3x3(float3(3.2406, -0.9689, 0.0557), float3(-1.5372, 1.8758, -0.2040),
+                                        float3(-0.4986, 0.0415, 1.0570));
+        const float3 white = float3(0.95047, 1.0, 1.08883);
+        float3 xyz = toXYZ * (rgb / W) / white;
+        float3 f = select(xyz * 7.787 + 16.0 / 116.0, pow(max(xyz, 0.0), 1.0 / 3.0), xyz > 0.008856);
+        float L = 116.0 * f.y - 16.0, A = 500.0 * (f.x - f.y), B = 200.0 * (f.y - f.z);
+        if (L > 0.0 && L < 100.0) {
+            L = clamp(L + b * 0.8 * L * (100.0 - L) / 100.0, 0.0, 100.0);
+            float fy = (L + 16.0) / 116.0;
+            float3 f1 = float3(fy + A / 500.0, fy, fy - B / 200.0);
+            float3 xyz1 = select((f1 - 16.0 / 116.0) / 7.787, f1 * f1 * f1, f1 > 0.206893) * white;
+            rgb = toRGB * xyz1 * W;
+        }
+    }
+
+    // Colour grading: each pixel takes the colours of the ranges it belongs to, by its brightness
+    // (shadows (1−t)², midtones 2t(1−t), highlights t², with t pushed by the balance), in
+    // proportion to its own light, and keeps its luminance.
+    if (p.grade) {
+        float y = dot(rgb, lumaWeights);
+        if (y > 0.0) {
+            float t = pow(clamp(enc(y / W), 0.0, 1.0), exp2(-p.balance));
+            float3 shift = (1.0 - t) * (1.0 - t) * float3(p.gs0, p.gs1, p.gs2)
+                         + 2.0 * t * (1.0 - t) * float3(p.gm0, p.gm1, p.gm2)
+                         + t * t * float3(p.gh0, p.gh1, p.gh2);
+            float3 graded = rgb + y * shift;
+            float y1 = dot(graded, lumaWeights);
+            if (y1 > 0.0) rgb = graded * (y / y1);
         }
     }
 

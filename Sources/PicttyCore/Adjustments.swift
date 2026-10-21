@@ -1,0 +1,212 @@
+import Foundation
+
+/// A colour pushed into one tonal range: which colour (hue, degrees) and how much (0…1).
+public struct ColourShift: Equatable, Codable, Sendable {
+    public var hue: Double = 0
+    public var amount: Double = 0
+
+    public init(hue: Double = 0, amount: Double = 0) {
+        self.hue = hue
+        self.amount = amount
+    }
+
+    public var isNeutral: Bool { amount == 0 }
+}
+
+/// Everything the Adjust panel does to a picture. Every value is 0 at rest, and at rest the
+/// engine gives back the picture untouched.
+public struct Adjustments: Equatable, Sendable {
+    // Light
+    /// Stops, −4…+4.
+    public var exposure: Double = 0
+    /// −1…+1 for the rest.
+    public var contrast: Double = 0
+    public var brightness: Double = 0
+    public var highlights: Double = 0
+    public var shadows: Double = 0
+
+    /// The engine's own number for the method each tone slider uses, while candidates are compared.
+    public var highlightsAlgorithm = 2
+    public var shadowsAlgorithm = 1
+
+    // Colour
+    /// White balance, −1…+1: cooler ← → warmer, greener ← → more magenta.
+    public var temperature: Double = 0
+    public var tint: Double = 0
+    /// Colour grading: a colour for each tonal range, and where the ranges meet (−1…+1).
+    public var shadowColour = ColourShift()
+    public var midtoneColour = ColourShift()
+    public var highlightColour = ColourShift()
+    public var balance: Double = 0
+
+    public init() {}
+
+    public static let neutral = Adjustments()
+
+    public var isLightNeutral: Bool {
+        exposure == 0 && contrast == 0 && brightness == 0 && highlights == 0 && shadows == 0
+    }
+
+    public var isWhiteBalanceNeutral: Bool { temperature == 0 && tint == 0 }
+
+    public var isGradingNeutral: Bool {
+        shadowColour.isNeutral && midtoneColour.isNeutral && highlightColour.isNeutral
+    }
+
+    /// True when nothing would change the picture, whatever the algorithms.
+    public var isNeutral: Bool { isLightNeutral && isWhiteBalanceNeutral && isGradingNeutral }
+
+    /// Every value back to zero; the algorithm choices stay.
+    public var valuesReset: Adjustments {
+        var a = Adjustments()
+        a.highlightsAlgorithm = highlightsAlgorithm
+        a.shadowsAlgorithm = shadowsAlgorithm
+        return a
+    }
+
+    public var lightReset: Adjustments {
+        var a = self
+        a.exposure = 0; a.contrast = 0; a.brightness = 0; a.highlights = 0; a.shadows = 0
+        return a
+    }
+
+    public var colourReset: Adjustments {
+        var a = self
+        a.temperature = 0; a.tint = 0
+        a.shadowColour = ColourShift(); a.midtoneColour = ColourShift(); a.highlightColour = ColourShift()
+        a.balance = 0
+        return a
+    }
+}
+
+/// One slider of the Adjust panel, for the panel and the engine alike.
+public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
+    case exposure, contrast, brightness, highlights, shadows, temperature, tint, balance
+
+    public static let light: [AdjustmentControl] = [.exposure, .contrast, .brightness, .highlights, .shadows]
+    public static let whiteBalance: [AdjustmentControl] = [.temperature, .tint]
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .exposure: "Exposure"
+        case .contrast: "Contrast"
+        case .brightness: "Brightness"
+        case .highlights: "Highlights"
+        case .shadows: "Shadows"
+        case .temperature: "Temperature"
+        case .tint: "Tint"
+        case .balance: "Balance"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .exposure: "plusminus.circle"
+        case .contrast: "circle.lefthalf.filled"
+        case .brightness: "sun.max"
+        case .highlights: "sun.horizon"
+        case .shadows: "moon"
+        case .temperature: "thermometer.medium"
+        case .tint: "drop.halffull"
+        case .balance: "scalemass"
+        }
+    }
+
+    public var range: ClosedRange<Double> { self == .exposure ? -4...4 : -1...1 }
+
+    /// The candidates still being compared, as (engine number, name, what it does). One entry:
+    /// the winner, and no buttons.
+    public var algorithms: [(id: Int, name: String, detail: String)] {
+        switch self {
+        case .highlights:
+            [(2, "Guided filter", "The curve moves a smooth, edge-aware base layer; the detail on top is kept."),
+             (3, "Local Laplacian", "The curve applied scale by scale through a Laplacian pyramid: detail kept at every size, no halos.")]
+        case .shadows:
+            [(1, "Global curve", "A tone curve on each pixel's brightness. Fast; flattens detail in the range it moves."),
+             (2, "Guided filter", "The curve moves a smooth, edge-aware base layer; the detail on top is kept."),
+             (3, "Local Laplacian", "The curve applied scale by scale through a Laplacian pyramid: detail kept at every size, no halos.")]
+        default: []
+        }
+    }
+
+    public func value(_ a: Adjustments) -> Double {
+        switch self {
+        case .exposure: a.exposure
+        case .contrast: a.contrast
+        case .brightness: a.brightness
+        case .highlights: a.highlights
+        case .shadows: a.shadows
+        case .temperature: a.temperature
+        case .tint: a.tint
+        case .balance: a.balance
+        }
+    }
+
+    public func set(_ v: Double, in a: inout Adjustments) {
+        let v = min(max(v, range.lowerBound), range.upperBound)
+        switch self {
+        case .exposure: a.exposure = v
+        case .contrast: a.contrast = v
+        case .brightness: a.brightness = v
+        case .highlights: a.highlights = v
+        case .shadows: a.shadows = v
+        case .temperature: a.temperature = v
+        case .tint: a.tint = v
+        case .balance: a.balance = v
+        }
+    }
+
+    /// The engine number of the method in use, or nil for a slider with only one.
+    public func algorithm(_ a: Adjustments) -> Int? {
+        switch self {
+        case .highlights: a.highlightsAlgorithm
+        case .shadows: a.shadowsAlgorithm
+        default: nil
+        }
+    }
+
+    public func setAlgorithm(_ id: Int, in a: inout Adjustments) {
+        guard algorithms.contains(where: { $0.id == id }) else { return }
+        switch self {
+        case .highlights: a.highlightsAlgorithm = id
+        case .shadows: a.shadowsAlgorithm = id
+        default: break
+        }
+    }
+}
+
+/// The three tonal ranges of colour grading.
+public enum ToneRange: String, CaseIterable, Identifiable, Sendable {
+    case shadows, midtones, highlights
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .shadows: "Shadows"
+        case .midtones: "Midtones"
+        case .highlights: "Highlights"
+        }
+    }
+
+    public func shift(_ a: Adjustments) -> ColourShift {
+        switch self {
+        case .shadows: a.shadowColour
+        case .midtones: a.midtoneColour
+        case .highlights: a.highlightColour
+        }
+    }
+
+    public func set(_ s: ColourShift, in a: inout Adjustments) {
+        var s = s
+        s.amount = min(max(s.amount, 0), 1)
+        s.hue = (s.hue.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
+        switch self {
+        case .shadows: a.shadowColour = s
+        case .midtones: a.midtoneColour = s
+        case .highlights: a.highlightColour = s
+        }
+    }
+}

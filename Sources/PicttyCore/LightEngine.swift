@@ -82,8 +82,7 @@ public final class LightEngine: @unchecked Sendable {
     /// Must match `Params` in the kernels, field for field.
     private struct Params {
         var exposure: Float = 0, contrast: Float = 0, brightness: Float = 0, highlights: Float = 0, shadows: Float = 0
-        var exposureAlgorithm: Int32 = 1, contrastAlgorithm: Int32 = 1, brightnessAlgorithm: Int32 = 1
-        var highlightsAlgorithm: Int32 = 1, shadowsAlgorithm: Int32 = 1
+        var highlightsAlgorithm: Int32 = 2, shadowsAlgorithm: Int32 = 1
         var white: Float = 1
         var clampWhite: Int32 = 1
         var outputEncoding: Int32 = 0
@@ -97,6 +96,11 @@ public final class LightEngine: @unchecked Sendable {
         var lumaWhite: Float = 1
         var eps: Float = 0.01
         var radius: Int32 = 8
+        var wb: (Float, Float, Float, Float, Float, Float, Float, Float, Float) = (1, 0, 0, 0, 1, 0, 0, 0, 1)
+        var whiteBalance: Int32 = 0
+        var grade: (Float, Float, Float, Float, Float, Float, Float, Float, Float) = (0, 0, 0, 0, 0, 0, 0, 0, 0)
+        var balance: Float = 0
+        var gradeOn: Int32 = 0
     }
 
     /// Samples of the Laplacian remap across the brightness range.
@@ -107,15 +111,29 @@ public final class LightEngine: @unchecked Sendable {
         public let milliseconds: Double
     }
 
-    public func render(_ src: Source, _ a: LightAdjustments, output: Output) -> Result? {
+    public func render(_ src: Source, _ a: Adjustments, output: Output) -> Result? {
         let start = CFAbsoluteTimeGetCurrent()
         let w = src.width, h = src.height
         var p = Params()
         p.exposure = Float(a.exposure); p.contrast = Float(a.contrast); p.brightness = Float(a.brightness)
         p.highlights = Float(a.highlights); p.shadows = Float(a.shadows)
-        p.exposureAlgorithm = Int32(a.exposureAlgorithm); p.contrastAlgorithm = Int32(a.contrastAlgorithm)
-        p.brightnessAlgorithm = Int32(a.brightnessAlgorithm)
         p.highlightsAlgorithm = Int32(a.highlightsAlgorithm); p.shadowsAlgorithm = Int32(a.shadowsAlgorithm)
+        if !a.isWhiteBalanceNeutral {
+            // By rows; simd's own storage is by columns.
+            let m = ColourMath.whiteBalance(temperature: a.temperature, tint: a.tint).transpose
+            let c = (0..<3).flatMap { i in (0..<3).map { Float(m[i][$0]) } }
+            p.wb = (c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8])
+            p.whiteBalance = 1
+        }
+        if !a.isGradingNeutral {
+            let g = [a.shadowColour, a.midtoneColour, a.highlightColour].flatMap { s in
+                let v = ColourMath.gradeVector(s)
+                return [Float(v.x), Float(v.y), Float(v.z)]
+            }
+            p.grade = (g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8])
+            p.balance = Float(a.balance)
+            p.gradeOn = 1
+        }
         p.white = src.white
         p.clampWhite = src.isHDR ? 0 : 1
         p.outputEncoding = output == .display ? 1 : 0
