@@ -28,6 +28,7 @@ final class Preferences: ObservableObject {
         static let sessionFile = "sessionFile"
         static let toolbarBehavior = "toolbarBehavior"
         static let pillBehavior = "pillBehavior"
+        static let hiddenInspectorSections = "hiddenInspectorSections"
     }
 
     private let defaults: UserDefaults
@@ -54,6 +55,9 @@ final class Preferences: ObservableObject {
     @Published var restoreSession = true { didSet { store(restoreSession, Key.restoreSession) } }
     @Published var toolbarBehavior: ChromeBehavior = .autoHide { didSet { store(toolbarBehavior.rawValue, Key.toolbarBehavior) } }
     @Published var pillBehavior: ChromeBehavior = .autoHide { didSet { store(pillBehavior.rawValue, Key.pillBehavior) } }
+    @Published var hiddenInspectorSections: Set<InspectorSection> = [] {
+        didSet { store(hiddenInspectorSections.map(\.rawValue).sorted(), Key.hiddenInspectorSections) }
+    }
 
     /// `PICTTY_DEFAULTS_SUITE` keeps a developer's test runs out of the real preferences.
     nonisolated static var store: UserDefaults {
@@ -99,6 +103,13 @@ final class Preferences: ObservableObject {
         restoreSession = bool(Key.restoreSession, true)
         toolbarBehavior = defaults.string(forKey: Key.toolbarBehavior).flatMap(ChromeBehavior.init(rawValue:)) ?? .autoHide
         pillBehavior = defaults.string(forKey: Key.pillBehavior).flatMap(ChromeBehavior.init(rawValue:)) ?? .autoHide
+        hiddenInspectorSections = Set((defaults.stringArray(forKey: Key.hiddenInspectorSections) ?? []).compactMap(InspectorSection.init(rawValue:)))
+    }
+
+    func shows(_ section: InspectorSection) -> Bool { !hiddenInspectorSections.contains(section) }
+
+    func setShows(_ section: InspectorSection, _ on: Bool) {
+        if on { hiddenInspectorSections.remove(section) } else { hiddenInspectorSections.insert(section) }
     }
 
     /// The folder and picture on screen, so the next launch can come back to them.

@@ -1,6 +1,7 @@
 // The metadata panel. Camera, exposure, image, software/provenance, dates,
 // location and keywords — each section headed by an SF Symbol, each row a
-// label/value pair with tabular figures so numbers line up column-wise.
+// label/value pair with tabular figures so numbers line up column-wise. Every
+// section can be switched off, here in the header's menu or in Settings.
 //
 // The "Software" section is the one people rarely see and often need: it is
 // where the derivation trail lives — what produced the file, what toolkit
@@ -12,6 +13,7 @@ import SwiftUI
 
 struct InspectorView: View {
     @ObservedObject var model: ViewerModel
+    @ObservedObject var prefs: Preferences
     let controller: ViewerWindowController
 
     @State private var copiedRow: String?
@@ -28,7 +30,7 @@ struct InspectorView: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    if let analysis = model.analysis {
+                    if prefs.shows(.histogram), let analysis = model.analysis {
                         HistogramCard(analysis: analysis, showClipping: model.showClipping) {
                             controller.toggleClipping(nil)
                         }
@@ -40,11 +42,13 @@ struct InspectorView: View {
                             .foregroundStyle(.white.opacity(0.62))
                             .padding(.top, 12)
                     }
-                    ForEach(report.sections) { section in
+                    ForEach(report.sections.filter { InspectorSection(sectionTitle: $0.title).map(prefs.shows) ?? true }) { section in
                         SectionBlock(section: section, copiedRow: $copiedRow)
                     }
-                    KeywordsCard(keywords: report.keywords, tags: report.finderTags)
-                    technicalFooter
+                    if prefs.shows(.keywords) {
+                        KeywordsCard(keywords: report.keywords, tags: report.finderTags)
+                    }
+                    if prefs.shows(.renderer) { technicalFooter }
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -84,6 +88,7 @@ struct InspectorView: View {
                     .tracking(0.9)
                     .foregroundStyle(.white.opacity(0.62))
                 Spacer()
+                sectionMenu
                 GlyphButton(symbol: "xmark", help: "Close (I)") { controller.toggleInspector(nil) }
             }
 
@@ -120,6 +125,24 @@ struct InspectorView: View {
         .padding(.horizontal, 14)
         .padding(.top, 14)
         .padding(.bottom, 11)
+    }
+
+    /// Which sections the panel shows; the same switches as in Settings.
+    private var sectionMenu: some View {
+        Menu {
+            ForEach(InspectorSection.allCases) { section in
+                Toggle(isOn: Binding(get: { prefs.shows(section) }, set: { prefs.setShows(section, $0) })) {
+                    Label(L(section.title), systemImage: section.symbol)
+                }
+            }
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease")
+                .font(.system(size: 10.5, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 22)
+        .help("Choose the sections to show")
     }
 
     private var panePicker: some View {

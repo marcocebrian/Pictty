@@ -9,11 +9,12 @@ struct SettingsView: View {
     @ObservedObject var prefs: Preferences
 
     enum Section: String, CaseIterable, Identifiable {
-        case viewing, browsing, compare, defaults, inside, about
+        case viewing, information, browsing, compare, defaults, inside, about
         var id: String { rawValue }
         var title: String {
             switch self {
             case .viewing: "Viewing"
+            case .information: "Information"
             case .browsing: "Browsing"
             case .compare: "Compare"
             case .defaults: "Default Viewer"
@@ -24,6 +25,7 @@ struct SettingsView: View {
         var symbol: String {
             switch self {
             case .viewing: "eye"
+            case .information: "list.bullet.rectangle"
             case .browsing: "photo.stack"
             case .compare: "rectangle.split.2x1"
             case .defaults: "checkmark.seal"
@@ -34,6 +36,7 @@ struct SettingsView: View {
         var colors: [Color] {
             switch self {
             case .viewing: [Color(hex: 0x4285F4), Color(hex: 0x34A8F0)]
+            case .information: [Color(hex: 0x00ACC1), Color(hex: 0x34A853)]
             case .browsing: [Color(hex: 0xFBBC04), Color(hex: 0xF57C3B)]
             case .compare: [Color(hex: 0xA05CE0), Color(hex: 0x7B61FF)]
             case .defaults: [Color(hex: 0x34A853), Color(hex: 0x4285F4)]
@@ -52,6 +55,28 @@ struct SettingsView: View {
     }
 
     static let compareHelp = "D compares the next picture; ⌘-click thumbnails to add up to four, ⇧-click for a range. Tab picks the pane the keys act on.\n\nWipe lays one picture exactly over the other: left of the line is picture 1, right of it picture 2. Drag the line, or click anywhere, to slide between them.\n\nBlink stacks the two and shows one at a time; B flips between them, so anything that changed jumps out."
+
+    static let informationHelp = "This page lets you customise the floating information panel on the right of the window. Switch off what you don’t need and the rest moves up; changes show at once in every window."
+    static let panelHelp = "The floating panel that opens on the right with I, or the ⓘ button in the toolbar. Each switch shows or hides one of its cards. Some cards only appear when the picture has something to show, such as Location for a photo with GPS. The filter button at the top of the panel has the same switches."
+
+    /// A grey paragraph that explains a page or a group.
+    private func note(_ text: String) -> some View {
+        Text(L(text))
+            .font(.system(size: 11.5, design: .rounded))
+            .foregroundStyle(.white.opacity(0.55))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// A group's title, with what it is for below it.
+    private func heading(_ title: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L(title).uppercased())
+                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                .tracking(0.8)
+                .foregroundStyle(.white.opacity(0.7))
+            note(detail)
+        }
+    }
 
     /// The pill's two settings as one choice: hides by itself, always visible, or off.
     private var pillSetting: Binding<String> {
@@ -174,6 +199,17 @@ struct SettingsView: View {
                 }
                 Row("Crossfade", "Dissolve between pictures", "circle.lefthalf.filled") {
                     Toggle("", isOn: $prefs.animateTransitions).toggleStyle(.switch).labelsHidden()
+                }
+            }
+        case .information:
+            note(Self.informationHelp)
+            heading("Information panel (I)", Self.panelHelp)
+            Group_ {
+                ForEach(InspectorSection.allCases) { section in
+                    Row(section.title, section.detail, section.symbol) {
+                        Toggle("", isOn: Binding(get: { prefs.shows(section) }, set: { prefs.setShows(section, $0) }))
+                            .toggleStyle(.switch).labelsHidden()
+                    }
                 }
             }
         case .browsing:

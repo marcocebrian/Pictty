@@ -138,7 +138,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         container.addSubview(strip)
         filmstripHost = strip
 
-        let inspector = FadeHostingView(rootView: AnyView(InspectorView(model: model, controller: self)))
+        let inspector = FadeHostingView(rootView: AnyView(InspectorView(model: model, prefs: prefs, controller: self)))
         inspector.autoresizingMask = [.minXMargin, .height]
         inspector.wantsLayer = true
         inspector.alphaValue = 0

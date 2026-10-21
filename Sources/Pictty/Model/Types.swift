@@ -100,3 +100,63 @@ enum ChromeBehavior: String, CaseIterable, Identifiable, Codable {
         }
     }
 }
+
+// MARK: - Information panel
+
+/// The cards of the information panel, in the order they appear. Each can be switched off.
+enum InspectorSection: String, CaseIterable, Identifiable, Codable {
+    case histogram, capture, exposure, image, software, dates, location, provenance, keywords, renderer
+
+    var id: String { rawValue }
+
+    /// Also the title of the metadata section it stands for.
+    var title: String {
+        switch self {
+        case .histogram: "Histogram"
+        case .capture: "Capture"
+        case .exposure: "Exposure"
+        case .image: "Image"
+        case .software: "Software"
+        case .dates: "Dates"
+        case .location: "Location"
+        case .provenance: "Provenance"
+        case .keywords: "Keywords"
+        case .renderer: "Renderer"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .histogram: "chart.bar.xaxis"
+        case .capture: "camera.viewfinder"
+        case .exposure: "camera.aperture"
+        case .image: "photo"
+        case .software: "cpu"
+        case .dates: "calendar"
+        case .location: "map"
+        case .provenance: "doc.text.magnifyingglass"
+        case .keywords: "tag"
+        case .renderer: "sparkles"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .histogram: "Red, green and blue, with clipping at each end"
+        case .capture: "Camera, lens and serial number"
+        case .exposure: "Focal length, aperture, shutter, ISO and more"
+        case .image: "Dimensions, file size, format, bit depth, profile"
+        case .software: "What made the file, credit, artist and copyright"
+        case .dates: "Captured, digitised and modified"
+        case .location: "GPS coordinates and altitude"
+        case .provenance: "Container, metadata blocks and title"
+        case .keywords: "IPTC and XMP keywords, and Finder tags"
+        case .renderer: "How Pictty is drawing the picture"
+        }
+    }
+
+    init?(sectionTitle: String) {
+        guard let match = Self.allCases.first(where: { $0.title == sectionTitle }) else { return nil }
+        self = match
+    }
+}

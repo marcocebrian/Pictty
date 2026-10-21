@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     case "inside":
                         self.showSettings(at: .inside)
                     case "defaults": self.showSettings(at: .defaults)
+                    case "information": self.showSettings(at: .information)
                     case "about": self.showAbout()
                     case "clipping": controller.toggleClipping(nil)
                     case "loupe":
