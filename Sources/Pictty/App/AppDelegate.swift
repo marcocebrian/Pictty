@@ -80,6 +80,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             }
                             controller.setLight(a)
                         }
+                    case "stress":
+                        // Every slider and algorithm at 60 Hz for four seconds, zooming to 100 % and
+                        // back and flipping before/after on the way, the way hands do it.
+                        var tick = 0
+                        Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { timer in
+                            MainActor.assumeIsolated {
+                                tick += 1
+                                var a = controller.model.light
+                                let c = LightControl.allCases[tick % 5]
+                                c.set(sin(Double(tick) / 9) * (c == .exposure ? 3 : 1), in: &a)
+                                if tick % 23 == 0 { c.setAlgorithm(tick % 3 + 1, in: &a) }
+                                controller.setLight(a)
+                                if tick % 70 == 0 { controller.applyZoomMode(tick % 140 == 0 ? .bestFit : .actual) }
+                                if tick % 45 == 0 { controller.toggleOriginal(nil) }
+                                if tick > 240 { timer.invalidate(); NSLog("stress done") }
+                            }
+                        }
                     case let save where save.hasPrefix("save@") || save.hasPrefix("saveas@"):
                         // Save, or the Save As sheet, after a delay.
                         let delay = Double(save.split(separator: "@").last ?? "") ?? 4
@@ -97,6 +114,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         host.appearance = NSAppearance(named: .aqua)
                         host.frame.size = host.fittingSize
                         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+                        // ARC owns it; AppKit releasing it again on close crashed the run loop.
+                        window.isReleasedWhenClosed = false
                         window.contentView = host
                         window.orderBack(nil)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
