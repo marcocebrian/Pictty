@@ -479,21 +479,22 @@ private struct HistogramCard: View {
                           : L("Histogram: how many pixels at each brightness, shadows left, highlights right."))
                 }
                 Spacer()
+                // Only the symbol, so it fits beside both titles in every language; the yellow
+                // glow says it can be pressed, and grows when the warnings are on.
                 Button(action: toggle) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "exclamationmark.triangle\(showClipping ? ".fill" : "")")
-                        Text("Clipping")
-                            .lineLimit(1)
-                            .fixedSize()
-                    }
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(showClipping ? Color.orange.opacity(0.3) : .white.opacity(0.08)))
-                    .foregroundStyle(showClipping ? Color.orange : .white.opacity(0.7))
+                    Image(systemName: "exclamationmark.triangle\(showClipping ? ".fill" : "")")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Color(hex: 0xFBBC04).opacity(showClipping ? 1 : 0.85))
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 24, height: 22)
+                        .background(Circle().fill(Color(hex: 0xFBBC04).opacity(showClipping ? 0.26 : 0.1)))
+                        .overlay(Circle().strokeBorder(Color(hex: 0xFBBC04).opacity(showClipping ? 0.5 : 0.22), lineWidth: 0.5))
+                        .shadow(color: Color(hex: 0xFBBC04).opacity(showClipping ? 0.6 : 0.3), radius: showClipping ? 7 : 4)
+                        .contentShape(Circle())
                 }
                 .buttonStyle(PressScale())
                 .help("Clipping warnings (J)")
+                .accessibilityLabel(L("Clipping warnings"))
             }
 
             Group {
