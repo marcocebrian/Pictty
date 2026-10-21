@@ -52,7 +52,7 @@ final class LightEngineTests: XCTestCase {
         let src = try XCTUnwrap(engine.source(image))
         for n in 1...3 {
             var a = Adjustments()
-            a.exposureAlgorithm = n
+            a.contrastAlgorithm = min(n, 2); a.brightnessAlgorithm = min(n, 2)
             a.highlightsAlgorithm = n
             a.shadowsAlgorithm = n
             let out = try XCTUnwrap(engine.render(src, a, output: .linear)).image
@@ -60,46 +60,56 @@ final class LightEngineTests: XCTestCase {
         }
     }
 
-    func testLinearExposureDoublesTheLight() throws {
+    func testLoweredExposureHalvesTheLight() throws {
         let engine = try XCTUnwrap(LightEngine())
-        let image = flat(60)
+        let image = flat(160)
         let src = try XCTUnwrap(engine.source(image))
         var a = Adjustments()
-        a.exposure = 1
+        a.exposure = -1
         let before = linear(image)[0], after = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)[0]
-        XCTAssertEqual(after, before * 2, accuracy: 0.002)
+        XCTAssertEqual(after, before / 2, accuracy: 0.002)
     }
 
-    func testTheShouldersNeverPassWhite() throws {
+    func testRaisedExposureNeverPassesWhite() throws {
         let engine = try XCTUnwrap(LightEngine())
         let src = try XCTUnwrap(engine.source(ramp()))
-        for n in [2, 3] {
-            var a = Adjustments()
-            a.exposure = 2
-            a.exposureAlgorithm = n
-            let px = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
-            XCTAssertLessThanOrEqual(px.max() ?? 0, 1.0005, "algorithm \(n)")
-            // Monotonic along the ramp's top row.
-            let row = stride(from: 0, to: 256 * 4, by: 4).map { px[$0 + 1] }
-            XCTAssertTrue(zip(row, row.dropFirst()).allSatisfy { $0 <= $1 + 1e-4 }, "algorithm \(n)")
+        var a = Adjustments()
+        a.exposure = 4
+        let px = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
+        XCTAssertLessThanOrEqual(px.max() ?? 0, 1.0005)
+    }
+
+    /// Contrast and brightness by regions: black and white pictures stay as they are; on the ramp
+    /// brightness keeps its order, contrast raised darkens below the picture's middle and lightens
+    /// above it, and brightness raised lifts the middle.
+    func testContrastAndBrightnessByRegions() throws {
+        let engine = try XCTUnwrap(LightEngine())
+        for value: UInt8 in [0, 255] {
+            let src = try XCTUnwrap(engine.source(flat(value)))
+            for (c, b) in [(0.8, 0.0), (-0.8, 0.0), (0.0, 0.8), (0.0, -0.8)] {
+                var a = Adjustments()
+                a.contrast = c; a.brightness = b
+                let v = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)[0]
+                XCTAssertEqual(v, value == 0 ? 0 : 1, accuracy: 0.003, "\(value), contrast \(c), brightness \(b)")
+            }
         }
-    }
-
-    /// Linear exposure clips at white; the shoulders keep what is brighter than mid-grey apart.
-    func testLinearExposureClipsAndTheShouldersDoNot() throws {
-        let engine = try XCTUnwrap(LightEngine())
-        let src = try XCTUnwrap(engine.source(ramp()))
-        func row(_ n: Int) throws -> [Float] {
+        let image = ramp()
+        let src = try XCTUnwrap(engine.source(image))
+        let before = stride(from: 0, to: 256 * 4, by: 4).map { linear(image)[$0 + 1] }
+        func row(contrast: Double = 0, brightness: Double = 0) throws -> [Float] {
             var a = Adjustments()
-            a.exposure = 2
-            a.exposureAlgorithm = n
+            a.contrast = contrast; a.brightness = brightness
             let px = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
             return stride(from: 0, to: 256 * 4, by: 4).map { px[$0 + 1] }
         }
-        let clipped = try row(1), shoulder = try row(2), film = try row(3)
-        XCTAssertEqual(clipped[150], clipped[255], accuracy: 1e-4)
-        XCTAssertLessThan(shoulder[150], shoulder[255] - 0.01)
-        XCTAssertLessThan(film[150], film[255] - 0.01)
+        for r in [try row(contrast: 0.8), try row(contrast: -0.8), try row(brightness: 0.8), try row(brightness: -0.8)] {
+            XCTAssertTrue(zip(r, r.dropFirst()).allSatisfy { $0 <= $1 + 2e-3 })
+            XCTAssertLessThanOrEqual(r.max()!, 1.0005)
+        }
+        let contrast = try row(contrast: 0.8), brighter = try row(brightness: 0.8)
+        XCTAssertLessThan(contrast[50], before[50])
+        XCTAssertGreaterThan(contrast[220], before[220])
+        XCTAssertGreaterThan(brighter[128], before[128] * 1.1)
     }
 
     /// Local exposure gives a dark region all the stops and a lit one almost none, and a brighter
@@ -112,7 +122,6 @@ final class LightEngineTests: XCTestCase {
             let src = try XCTUnwrap(engine.source(image))
             var a = Adjustments()
             a.exposure = 2
-            a.exposureAlgorithm = 4
             let after = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)[0]
             let before = linear(image)[0]
             if value == 30 { XCTAssertEqual(after / before, 4, accuracy: 0.1, "dark: all the stops") }

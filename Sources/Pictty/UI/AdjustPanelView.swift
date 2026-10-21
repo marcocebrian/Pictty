@@ -2,8 +2,8 @@
 // first, then Light (exposure, contrast, brightness, highlights, shadows) and Colour: white
 // balance, with Auto and an eyedropper, vibrance and saturation, and colour grading on three wheels.
 //
-// Exposure, highlights and shadows still have numbered buttons: the candidates being compared.
-// The winner stays and the buttons go.
+// Contrast, brightness, highlights and shadows still have numbered buttons: the candidates being
+// compared. The winner stays and the buttons go.
 
 import PicttyCore
 import SwiftUI

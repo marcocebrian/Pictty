@@ -11,7 +11,7 @@ using namespace metal;
 
 struct Params {
     float exposure, contrast, brightness, highlights, shadows;
-    int exposureAlgorithm, highlightsAlgorithm, shadowsAlgorithm;
+    int highlightsAlgorithm, shadowsAlgorithm;
     /// Linear white: 1 for SDR, the content headroom for HDR.
     float white;
     /// 1 when the result is shown on an SDR scale: it is clamped to white at the end.
@@ -48,6 +48,10 @@ struct Params {
     int hasDenoised;
     /// −1…+1 each.
     float vibrance, saturation;
+    /// Contrast and brightness: 1 per pixel, 2 by regions. `key`: the picture's middle brightness
+    /// after exposure, encoded, 0…1, which they work around.
+    int contrastAlgorithm, brightnessAlgorithm;
+    float key;
 };
 
 constant float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
@@ -213,30 +217,46 @@ kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
         rgb = float3(dot(float3(p.wb0, p.wb1, p.wb2), rgb), dot(float3(p.wb3, p.wb4, p.wb5), rgb),
                      dot(float3(p.wb6, p.wb7, p.wb8), rgb));
     }
-    // Exposure multiplies the light. Raised, what passes white either clips (1), or the brightest
-    // channel rolls off into white keeping each colour's hue and saturation (2), or each channel
-    // rolls off on its own, so the brightest colours drift to white as on film (3). Local
-    // exposure (4) raised is its own pass, after this one.
-    float g = exp2(p.exposure);
-    if (!(p.exposureAlgorithm == 4 && p.exposure > 0.0)) rgb *= g;
-    if (p.exposure > 0.0 && p.exposureAlgorithm == 2) {
-        float m = max(rgb.r, max(rgb.g, rgb.b));
-        if (m > 0.0) rgb *= p.white * rolloff(m / p.white, g) / m;
-    } else if (p.exposure > 0.0 && p.exposureAlgorithm == 3) {
-        rgb = float3(rolloff(rgb.r / p.white, g), rolloff(rgb.g / p.white, g), rolloff(rgb.b / p.white, g)) * p.white;
-    }
+    // Exposure lowered multiplies the light; raised, it is its own pass by regions, after this one.
+    if (p.exposure < 0.0) rgb *= exp2(p.exposure);
     lit.write(float4(rgb, c.a), gid);
     luma.write(float4(enc(dot(rgb, lumaWeights))), gid);
 }
 
 // MARK: - Local exposure
 
+/// How lit a region already is, 0…1: none below 3 % of white, all from half of white, evenly in
+/// log brightness between.
+inline float litShare(float base) {
+    return clamp(log(max(base, 1e-5) / 0.03) / log(0.5 / 0.03), 0.0, 1.0);
+}
+
+/// Contrast's S-curve on brightness `l` (encoded, 0…1) around `pivot`: a sigmoid that holds 0 and 1
+/// in place, mixed in by `k` > 0; below 0, its inverse flattens instead.
+inline float contrastCurve(float l, float k, float pivot) {
+    const float steep = 8.0;
+    float lo = sigmoid(-steep * pivot), hi = sigmoid(steep * (1.0 - pivot));
+    if (k > 0.0) return mix(l, (sigmoid(steep * (l - pivot)) - lo) / (hi - lo), k);
+    float u = clamp(l * (hi - lo) + lo, 1e-6, 1.0 - 1e-6);
+    return mix(l, pivot + log(u / (1.0 - u)) / steep, -k);
+}
+
+/// Brightness by regions on `l` (encoded, 0…1): a lift that is greatest at the picture's own
+/// middle brightness `key` and nothing at black and white, gentle enough never to reverse order.
+inline float brightnessCurve(float l, float b, float key) {
+    float e = log(0.5) / log(clamp(key, 0.05, 0.95));
+    float m = pow(clamp(l, 0.0, 1.0), e);
+    // Raising a midtone lift to the power that puts the key at 0.5, and back.
+    float m1 = clamp(m + b * 0.35 * m * (1.0 - m), 0.0, 1.0);
+    return pow(m1, 1.0 / e);
+}
+
 /// Raises the light by regions: each pixel takes the gain its region (the guided filter's smooth,
 /// edge-aware base) is given, so the detail within a region rides along unchanged. A region darker
 /// than 3 % of white takes all the stops; from there to half of white, they fade out evenly in
 /// log brightness, so what is already lit (a face under a lamp) keeps its light and white stays
 /// white. The fade is gentle enough that a brighter region always stays brighter, up to +4 stops.
-/// A pixel brighter than its region that would still pass white rolls off into it, keeping its colour.
+/// A raised pixel near white rolls off into it on a shoulder, keeping its colour.
 kernel void localExposure(texture2d<float, access::read> lit [[texture(0)]],
                           texture2d<float, access::read> luma [[texture(1)]],
                           texture2d<float, access::sample> guided [[texture(2)]],
@@ -251,11 +271,11 @@ kernel void localExposure(texture2d<float, access::read> lit [[texture(0)]],
     constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
     float2 ab = guided.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
     float base = max(dec(clamp(ab.x * l + ab.y, 0.0, p.lumaWhite)) / p.white, 1e-5);
-    float lit_ = clamp(log(base / 0.03) / log(0.5 / 0.03), 0.0, 1.0);
-    float gain = exp2(p.exposure * (1.0 - lit_));
+    float gain = exp2(p.exposure * (1.0 - litShare(base)));
     float3 rgb = c.rgb * gain;
+    // The shoulder over every raised pixel, not only those past white, or the two would not meet.
     float m = max(rgb.r, max(rgb.g, rgb.b));
-    if (m > p.white) rgb *= p.white * rolloff(m / p.white, max(gain, 1.0001)) / m;
+    if (gain > 1.0 && m > 0.0) rgb *= p.white * rolloff(m / p.white, gain) / m;
     litOut.write(float4(rgb, c.a), gid);
     lumaOut.write(float4(enc(dot(rgb, lumaWeights))), gid);
 }
@@ -419,6 +439,7 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
                    texture2d<float, access::write> out [[texture(4)]],
                    texture2d<float, access::read> detailFine [[texture(5)]],
                    texture2d<float, access::read> detailCoarse [[texture(6)]],
+                   texture2d<float, access::sample> regions [[texture(7)]],
                    constant Params& p [[buffer(0)]],
                    uint2 gid [[thread_position_in_grid]]) {
     uint2 size = uint2(out.get_width(), out.get_height());
@@ -454,27 +475,34 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
     }
     if (l1 != l0) rgb = withLuminance(rgb, dec(l0), dec(l1));
 
-    // Contrast: an S-curve on brightness that holds black and white in place, keeping colours.
-    float k = p.contrast;
+    // Contrast and brightness by regions: the curves move the region's brightness (the guided
+    // filter's base, where the tone sliders have taken it), and the pixel follows as a ratio, so
+    // its texture keeps its own contrast. A raised pixel near white rolls off into it.
+    bool byRegions = (p.contrast != 0.0 && p.contrastAlgorithm == 2) || (p.brightness != 0.0 && p.brightnessAlgorithm == 2);
+    if (byRegions) {
+        constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+        float2 ab = regions.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
+        float b0 = clamp(ab.x * l0 + ab.y, 0.0, lw);
+        float b = clamp(b0 + toneOffset(b0, p, 1) + toneOffset(b0, p, 2) + toneOffset(b0, p, 3), 0.0, lw) / lw;
+        float b1 = b;
+        if (p.contrast != 0.0 && p.contrastAlgorithm == 2) b1 = contrastCurve(b1, p.contrast, p.key);
+        if (p.brightness != 0.0 && p.brightnessAlgorithm == 2) b1 = brightnessCurve(b1, p.brightness, p.key);
+        float gain = dec(b1 * lw) / max(dec(b * lw), 1e-6);
+        rgb *= gain;
+        float m = max(rgb.r, max(rgb.g, rgb.b));
+        if (gain > 1.0 && m > 0.0) rgb *= W * rolloff(m / W, gain) / m;
+    }
+
+    // Contrast per pixel: an S-curve on brightness that holds black and white in place, keeping colours.
+    float k = p.contrastAlgorithm == 1 ? p.contrast : 0.0;
     if (k != 0.0) {
         float y = dot(rgb, lumaWeights);
         float l = enc(y / W);
-        if (l > 0.0 && l < 1.0) {
-            const float pivot = 0.4613, steep = 8.0;
-            float lo = sigmoid(-steep * pivot), hi = sigmoid(steep * (1.0 - pivot));
-            float l1;
-            if (k > 0.0) {
-                l1 = mix(l, (sigmoid(steep * (l - pivot)) - lo) / (hi - lo), k);
-            } else {
-                float u = clamp(l * (hi - lo) + lo, 1e-6, 1.0 - 1e-6);
-                l1 = mix(l, pivot + log(u / (1.0 - u)) / steep, -k);
-            }
-            rgb = withLuminance(rgb, y, dec(clamp(l1, 0.0, 1.0)) * W);
-        }
+        if (l > 0.0 && l < 1.0) rgb = withLuminance(rgb, y, dec(clamp(contrastCurve(l, k, 0.4613), 0.0, 1.0)) * W);
     }
 
-    // Brightness: lightness raised in CIELAB; the colour coordinates stay where they are.
-    float b = p.brightness;
+    // Brightness per pixel: lightness raised in CIELAB; the colour coordinates stay where they are.
+    float b = p.brightnessAlgorithm == 1 ? p.brightness : 0.0;
     if (b != 0.0) {
         const float3x3 toXYZ = float3x3(float3(0.4124, 0.2126, 0.0193), float3(0.3576, 0.7152, 0.1192),
                                         float3(0.1805, 0.0722, 0.9505));

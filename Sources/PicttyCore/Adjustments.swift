@@ -26,7 +26,8 @@ public struct Adjustments: Equatable, Sendable {
     public var shadows: Double = 0
 
     /// The engine's own number for the method each tone slider uses, while candidates are compared.
-    public var exposureAlgorithm = 2
+    public var contrastAlgorithm = 2
+    public var brightnessAlgorithm = 2
     public var highlightsAlgorithm = 2
     public var shadowsAlgorithm = 1
 
@@ -79,7 +80,8 @@ public struct Adjustments: Equatable, Sendable {
     /// Every value back to zero; the algorithm choices stay.
     public var valuesReset: Adjustments {
         var a = Adjustments()
-        a.exposureAlgorithm = exposureAlgorithm
+        a.contrastAlgorithm = contrastAlgorithm
+        a.brightnessAlgorithm = brightnessAlgorithm
         a.highlightsAlgorithm = highlightsAlgorithm
         a.shadowsAlgorithm = shadowsAlgorithm
         return a
@@ -168,11 +170,12 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
     /// the winner, and no buttons.
     public var algorithms: [(id: Int, name: String, detail: String)] {
         switch self {
-        case .exposure:
-            [(1, "Linear", "Multiplies the light. Whatever passes white clips."),
-             (2, "Colour-keeping shoulder", "Multiplies the light, then rolls the brightest channel off into white, keeping each colour's hue and saturation."),
-             (3, "Film shoulder", "Multiplies the light, then rolls each channel off on its own, so the brightest colours drift to white as on film."),
-             (4, "Local", "Raises the light by regions, the dark ones most: what is already lit keeps its light, and the detail rides along. For night and backlit pictures.")]
+        case .contrast:
+            [(1, "Sigmoid", "An S-curve on each pixel's brightness around mid-grey, holding black and white in place."),
+             (2, "By regions", "The S-curve moves regions apart around the picture's own middle brightness; the texture in each keeps its own contrast, and nothing clips.")]
+        case .brightness:
+            [(1, "CIELAB L*", "Raises lightness in a perceptual space; colour coordinates stay where they are."),
+             (2, "By regions", "Lifts the picture's own midtones, region by region, holding black and white; the texture in each rides along.")]
         case .highlights:
             [(2, "Guided filter", "The curve moves a smooth, edge-aware base layer; the detail on top is kept."),
              (3, "Local Laplacian", "The curve applied scale by scale through a Laplacian pyramid: detail kept at every size, no halos.")]
@@ -225,7 +228,8 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
     /// The engine number of the method in use, or nil for a slider with only one.
     public func algorithm(_ a: Adjustments) -> Int? {
         switch self {
-        case .exposure: a.exposureAlgorithm
+        case .contrast: a.contrastAlgorithm
+        case .brightness: a.brightnessAlgorithm
         case .highlights: a.highlightsAlgorithm
         case .shadows: a.shadowsAlgorithm
         default: nil
@@ -235,7 +239,8 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
     public func setAlgorithm(_ id: Int, in a: inout Adjustments) {
         guard algorithms.contains(where: { $0.id == id }) else { return }
         switch self {
-        case .exposure: a.exposureAlgorithm = id
+        case .contrast: a.contrastAlgorithm = id
+        case .brightness: a.brightnessAlgorithm = id
         case .highlights: a.highlightsAlgorithm = id
         case .shadows: a.shadowsAlgorithm = id
         default: break

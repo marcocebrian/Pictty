@@ -28,15 +28,17 @@ public final class LightEngine: @unchecked Sendable {
         /// its edges, a Gaussian sigma in pixels: measured once, at upload.
         public let noise: Float
         public let blur: Float
+        /// The picture's middle brightness: the median of its encoded luminance, 0…1.
+        public let key: Float
         /// The same picture through the denoiser, once it has been.
         fileprivate(set) var denoised: MTLTexture?
         fileprivate var scratch: [String: MTLTexture] = [:]
 
         public var hasDenoised: Bool { denoised != nil }
 
-        init(width: Int, height: Int, white: Float, isHDR: Bool, input: MTLTexture, noise: Float, blur: Float) {
+        init(width: Int, height: Int, white: Float, isHDR: Bool, input: MTLTexture, noise: Float, blur: Float, key: Float) {
             self.width = width; self.height = height; self.white = white; self.isHDR = isHDR; self.input = input
-            self.noise = noise; self.blur = blur
+            self.noise = noise; self.blur = blur; self.key = key
         }
     }
 
@@ -81,8 +83,10 @@ public final class LightEngine: @unchecked Sendable {
         let hdr = headroom > 1.001
         let measured = PictureMeasure.noiseAndBlur(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
                                                    rowFloats: ctx.bytesPerRow / 2)
+        let key = PictureMeasure.medianLuma(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
+                                            rowFloats: ctx.bytesPerRow / 2, white: hdr ? headroom : 1)
         return Source(width: w, height: h, white: hdr ? headroom : 1, isHDR: hdr, input: texture,
-                      noise: measured.noise, blur: measured.blur)
+                      noise: measured.noise, blur: measured.blur, key: key)
     }
 
     /// Gives `src` its denoised counterpart, the same size, colour-managed the same way.
@@ -112,7 +116,7 @@ public final class LightEngine: @unchecked Sendable {
     /// Must match `Params` in the kernels, field for field.
     private struct Params {
         var exposure: Float = 0, contrast: Float = 0, brightness: Float = 0, highlights: Float = 0, shadows: Float = 0
-        var exposureAlgorithm: Int32 = 2, highlightsAlgorithm: Int32 = 2, shadowsAlgorithm: Int32 = 1
+        var highlightsAlgorithm: Int32 = 2, shadowsAlgorithm: Int32 = 1
         var white: Float = 1
         var clampWhite: Int32 = 1
         var outputEncoding: Int32 = 0
@@ -138,6 +142,8 @@ public final class LightEngine: @unchecked Sendable {
         var denoise: Float = 0
         var hasDenoised: Int32 = 0
         var vibrance: Float = 0, saturation: Float = 0
+        var contrastAlgorithm: Int32 = 2, brightnessAlgorithm: Int32 = 2
+        var key: Float = 0.46
     }
 
     /// Samples of the Laplacian remap across the brightness range.
@@ -154,7 +160,8 @@ public final class LightEngine: @unchecked Sendable {
         var p = Params()
         p.exposure = Float(a.exposure); p.contrast = Float(a.contrast); p.brightness = Float(a.brightness)
         p.highlights = Float(a.highlights); p.shadows = Float(a.shadows)
-        p.exposureAlgorithm = Int32(a.exposureAlgorithm)
+        p.contrastAlgorithm = Int32(a.contrastAlgorithm); p.brightnessAlgorithm = Int32(a.brightnessAlgorithm)
+        p.key = Self.key(src, exposure: Float(a.exposure))
         p.highlightsAlgorithm = Int32(a.highlightsAlgorithm); p.shadowsAlgorithm = Int32(a.shadowsAlgorithm)
         p.vibrance = Float(a.vibrance); p.saturation = Float(a.saturation)
         if !a.isWhiteBalanceNeutral {
@@ -201,7 +208,7 @@ public final class LightEngine: @unchecked Sendable {
         // Local exposure: the gain goes onto a smooth, edge-aware map of the picture's brightness,
         // full in the dark regions and less where the light already is; each pixel's detail rides
         // on its region. Everything after works on the result, as after any exposure.
-        if a.exposureAlgorithm == 4, a.exposure > 0 {
+        if a.exposure > 0 {
             guard let regions = self.guided(cb, src, luma, key: "e", radius: 0.04, eps: 0.01, &p),
                   let litE = scratch(src, "litE", .rgba16Float, w, h),
                   let lumaE = scratch(src, "lumaE", .r32Float, w, h) else { return nil }
@@ -308,13 +315,34 @@ public final class LightEngine: @unchecked Sendable {
             coarse = coarseLevels[0]
         }
 
-        dispatch(cb, "finish", [lit, luma, coefficients ?? lit, rebuilt ?? luma, out, fine ?? luma, coarse ?? luma],
-                 &p, w, h)
+        // Contrast and brightness by regions read the same kind of base as local exposure.
+        var regions: MTLTexture?
+        if (a.contrast != 0 && a.contrastAlgorithm == 2) || (a.brightness != 0 && a.brightnessAlgorithm == 2) {
+            guard let r = self.guided(cb, src, luma, key: "c", radius: 0.04, eps: 0.01, &p) else { return nil }
+            regions = r
+        }
+
+        dispatch(cb, "finish", [lit, luma, coefficients ?? lit, rebuilt ?? luma, out, fine ?? luma, coarse ?? luma,
+                                regions ?? lit], &p, w, h)
         cb.commit()
         cb.waitUntilCompleted()
         guard cb.status == .completed, let image = Self.image(from: out, output: output, headroom: src.isHDR ? src.white : 1)
         else { return nil }
         return Result(image: image, milliseconds: (CFAbsoluteTimeGetCurrent() - start) * 1000)
+    }
+
+    /// The picture's middle brightness after `exposure` (encoded, 0…1), for contrast and brightness
+    /// to work around: the median as measured, moved as local exposure moves a region that bright.
+    static func key(_ src: Source, exposure: Float) -> Float {
+        var y = Self.decode(src.key) * src.white
+        if exposure < 0 {
+            y *= exp2(exposure)
+        } else if exposure > 0 {
+            let base = max(y / src.white, 1e-5)
+            let lit = min(max(log(base / 0.03) / log(0.5 / 0.03), 0), 1)
+            y *= exp2(exposure * (1 - lit))
+        }
+        return min(max(encode(min(y / src.white, 1)), 0.2), 0.65)
     }
 
     /// How much each level of the pyramid carries of each slider. Sharpening sits where the
@@ -378,6 +406,10 @@ public final class LightEngine: @unchecked Sendable {
         enc.dispatchThreads(MTLSize(width: w, height: h, depth: 1),
                             threadsPerThreadgroup: MTLSize(width: tw, height: th, depth: 1))
         enc.endEncoding()
+    }
+
+    static func decode(_ e: Float) -> Float {
+        e <= 0.04045 ? e / 12.92 : pow((e + 0.055) / 1.055, 2.4)
     }
 
     static func encode(_ y: Float) -> Float {

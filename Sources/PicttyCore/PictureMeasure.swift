@@ -163,4 +163,28 @@ public enum PictureMeasure {
         }
         return (min(max(noise, 0.0005), 0.2), min(max(blur, 0.3), 4))
     }
+
+    /// The median of a picture's encoded luminance (0…1 of `white`), from about 65 000 pixels on
+    /// a grid. `pixels`: premultiplied linear RGBA half floats, `rowFloats` values per row.
+    public static func medianLuma(_ pixels: UnsafePointer<Float16>, width w: Int, height h: Int, rowFloats: Int,
+                                  white: Float) -> Float {
+        let step = max(1, Int((Double(w * h) / 65_536).squareRoot()))
+        var counts = [Int](repeating: 0, count: 256), n = 0
+        for y in stride(from: 0, to: h, by: step) {
+            for x in stride(from: 0, to: w, by: step) {
+                let p = pixels + y * rowFloats + x * 4
+                let a = max(Float(p[3]), 1e-4)
+                let l = (0.2126 * Float(p[0]) + 0.7152 * Float(p[1]) + 0.0722 * Float(p[2])) / a / white
+                let e = l <= 0.0031308 ? l * 12.92 : 1.055 * pow(max(l, 0), 1 / 2.4) - 0.055
+                counts[min(max(Int(e * 255), 0), 255)] += 1
+                n += 1
+            }
+        }
+        var seen = 0
+        for (i, c) in counts.enumerated() {
+            seen += c
+            if seen * 2 >= n { return (Float(i) + 0.5) / 255 }
+        }
+        return 0.46
+    }
 }
