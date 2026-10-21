@@ -19,6 +19,10 @@ final class LightSession {
     let pixelSize: CGSize
     let hasAlpha: Bool
     var editedFullRequested = false
+    /// Before and After: each side as it was last on screen, to swap back to without resampling or
+    /// rendering again. The edit's is good while its adjustments and crop are what they were.
+    var editedFrame: (frame: CanvasView.Frame, light: Adjustments, crop: CropBox?, analysis: ImageAnalysis?)?
+    var originalFrame: CanvasView.Frame?
 
     init(renderer: LightRenderer, preview: CGImage, pixelSize: CGSize, hasAlpha: Bool) {
         self.renderer = renderer
@@ -309,12 +313,44 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     func setShowingOriginal(_ on: Bool) {
         guard hasUnsavedAdjustments, model.showingOriginal != on else { return }
+        let session = lightSession
+        let current = canvas.frame(pane: 0)
         model.showingOriginal = on
         if on {
-            lightSession?.renderer.cancelAll()
-            showOriginalPixels()
+            session?.renderer.cancelAll()
+            if let current, let session {
+                session.editedFrame = (current, model.light, model.crop, model.analysis)
+            }
+            // The original as it was last shown, swapped in whole; the first time, from its decodes.
+            if let original = session?.originalFrame, original.url == session?.renderer.url {
+                swapIn(original)
+                if let known = analyses[original.url.path] { publish(known.analysis, for: original.url) }
+                updateStatus()
+            } else {
+                showOriginalPixels()
+            }
         } else {
-            refreshEdit()
+            session?.originalFrame = current
+            if let session, let edited = session.editedFrame, edited.light == model.light, edited.crop == model.crop,
+               edited.frame.url == session.renderer.url {
+                swapIn(edited.frame)
+                if let a = edited.analysis { model.analysis = a }
+                updateStatus()
+                updateDocumentEdited()
+            } else {
+                refreshEdit()
+            }
+        }
+    }
+
+    /// A side of Before and After back on the canvas; with a crop the two differ in size, and the
+    /// zoom and the window follow.
+    private func swapIn(_ frame: CanvasView.Frame) {
+        let resized = canvas.shown(pane: 0)?.pixelSize != frame.pixelSize
+        canvas.restore(frame, pane: 0)
+        if resized {
+            applyZoom(animated: false)
+            fitWindowToPicture(animated: true)
         }
     }
 

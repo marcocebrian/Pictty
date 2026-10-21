@@ -364,6 +364,54 @@ final class CanvasView: NSView {
         layoutPane(i, animated: false)
     }
 
+    /// Everything a pane has on screen, settled render and clipping marks included: what Before and
+    /// After swaps between, so neither side is resampled or rendered again.
+    struct Frame {
+        fileprivate let shown: Shown
+        fileprivate let displayed: CGImage?
+        fileprivate let base: Any?
+        fileprivate let sharp: Any?
+        fileprivate let sharpLayerPx: CGSize
+        fileprivate let sharpRegion: CGRect
+        fileprivate let sharpAdequate: Bool
+        fileprivate let refineInfo: String
+        fileprivate let clip: Any?
+
+        var url: URL { shown.url }
+        var pixelSize: CGSize { shown.pixelSize }
+    }
+
+    func frame(pane i: Int) -> Frame? {
+        guard panes.indices.contains(i), let s = panes[i].shown else { return nil }
+        let p = panes[i]
+        return Frame(shown: s, displayed: p.displayed, base: p.base.contents, sharp: p.sharp.contents,
+                     sharpLayerPx: p.sharpLayerPx, sharpRegion: p.sharpRegion, sharpAdequate: p.sharpAdequate,
+                     refineInfo: p.refineInfo, clip: p.clip.contents)
+    }
+
+    /// Puts a frame back exactly as it was taken, in one change on screen. A settled render that
+    /// no longer covers the view (the zoom has moved since) is redone as usual.
+    func restore(_ f: Frame, pane i: Int) {
+        guard panes.indices.contains(i), panes[i].shown?.url == f.shown.url else { return }
+        let p = panes[i]
+        // Whatever was being refined belongs to the frame going away.
+        p.refineGen += 1
+        p.refineWork?.cancel()
+        p.shown = f.shown
+        p.displayed = f.displayed
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        p.base.contents = f.base
+        p.sharp.contents = f.sharp
+        p.clip.contents = f.clip
+        CATransaction.commit()
+        p.sharpLayerPx = f.sharpLayerPx
+        p.sharpRegion = f.sharpRegion
+        p.sharpAdequate = f.sharpAdequate
+        p.refineInfo = f.refineInfo
+        layoutPane(i, animated: false)
+    }
+
     func clear(pane i: Int) {
         guard panes.indices.contains(i) else { return }
         let p = panes[i]
