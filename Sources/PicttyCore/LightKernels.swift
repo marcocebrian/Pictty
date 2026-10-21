@@ -1,0 +1,347 @@
+// The Light engine's GPU kernels, compiled once at run time. Everything works on linear light in
+// extended sRGB primaries (values past 1 are HDR, negatives are colours outside sRGB); tone
+// decisions are taken on luminance encoded with the sRGB curve, which is close to how bright
+// things look. Brightness changes go back onto the pixel as a ratio of luminance, so hue and
+// saturation stay where they were unless an algorithm says otherwise.
+
+enum LightKernels {
+    static let source = #"""
+#include <metal_stdlib>
+using namespace metal;
+
+struct Params {
+    float exposure, contrast, brightness, highlights, shadows;
+    int exposureAlgorithm, contrastAlgorithm, brightnessAlgorithm, highlightsAlgorithm, shadowsAlgorithm;
+    /// Linear white: 1 for SDR, the content headroom for HDR.
+    float white;
+    /// 1 when the result is shown on an SDR scale: it is clamped to white at the end.
+    int clampWhite;
+    /// 0: linear extended sRGB (float). 1: Display P3, sRGB curve, dithered (8-bit).
+    int outputEncoding;
+    /// Which local paths ran: bit 0 guided base, bit 1 Laplacian.
+    int localPaths;
+    /// Laplacian: which sliders it carries (bit 0 highlights, bit 1 shadows).
+    int laplacianMask;
+    float gamma;      // this sample's level, Laplacian remap
+    float gammaStep;  // spacing between samples
+    float sigma;      // detail range
+    int first;        // first sample: the output is written, not added to
+    int top;          // the pyramid's coarsest level: no finer residual to subtract
+    float lumaWhite;  // encoded white
+    float eps;        // guided filter regularisation
+    int radius;       // box radius, guided filter
+};
+
+constant float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
+
+inline float enc(float y) {
+    float a = fabs(y);
+    float e = a <= 0.0031308 ? a * 12.92 : 1.055 * pow(a, 1.0 / 2.4) - 0.055;
+    return copysign(e, y);
+}
+
+inline float dec(float e) {
+    float a = fabs(e);
+    float y = a <= 0.04045 ? a / 12.92 : pow((a + 0.055) / 1.055, 2.4);
+    return copysign(y, e);
+}
+
+inline float3 enc3(float3 c) { return float3(enc(c.r), enc(c.g), enc(c.b)); }
+inline float3 dec3(float3 c) { return float3(dec(c.r), dec(c.g), dec(c.b)); }
+
+/// Identity up to a knee, then a smooth shoulder that lands the old white (`X`, > 1) on 1.
+/// Continuous in value and slope at the knee; the knee drops from 1 towards 0.5 as X grows.
+inline float rolloff(float x, float X) {
+    if (X <= 1.0001) return x;
+    float k = 1.0 - 0.5 * (1.0 - 1.0 / X);
+    if (x <= k) return x;
+    float t = min((x - k) / (X - k), 1.0);
+    float p = (X - k) / (1.0 - k);
+    return k + (1.0 - k) * (1.0 - pow(1.0 - t, p));
+}
+
+/// Highlights: −1 pulls the bright end down to show what is in it, +1 lifts it towards white.
+/// `l` is encoded luminance on a 0…1 scale.
+inline float highlightCurve(float l, float h) {
+    if (h == 0.0) return 0.0;
+    float s = smoothstep(0.4, 1.0, l);
+    float d = h < 0.0 ? h * 0.32 * s : h * 0.6 * s * max(1.0 - l, 0.0);
+    return l > 1.0 && h > 0.0 ? 0.0 : d;
+}
+
+/// Shadows: +1 opens the dark end, −1 deepens it. Black stays black.
+inline float shadowCurve(float l, float s) {
+    if (s == 0.0 || l <= 0.0) return 0.0;
+    float w = 1.0 - smoothstep(0.0, 0.6, l);
+    return (s > 0.0 ? s * 1.6 : s * 0.6) * l * w * w;
+}
+
+/// Brightness offset (encoded, 0…1 scale) the tone sliders ask for at base level `b`, for the
+/// sliders whose algorithm is `algorithm`.
+inline float toneOffset(float b, constant Params& p, int algorithm) {
+    float lw = p.lumaWhite;
+    float n = b / lw, d = 0.0;
+    if (p.highlightsAlgorithm == algorithm) d += highlightCurve(n, p.highlights);
+    if (p.shadowsAlgorithm == algorithm) d += shadowCurve(n, p.shadows);
+    return d * lw;
+}
+
+inline float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
+
+/// Moves a pixel's luminance from `y0` to `y1`, keeping its colour.
+inline float3 withLuminance(float3 rgb, float y0, float y1) {
+    if (fabs(y0) > 1e-6) return rgb * (y1 / y0);
+    return rgb + (y1 - y0);
+}
+
+// MARK: - Exposure, and the luminance the tone sliders read
+
+kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
+                    texture2d<float, access::write> lit [[texture(1)]],
+                    texture2d<float, access::write> luma [[texture(2)]],
+                    constant Params& p [[buffer(0)]],
+                    uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= src.get_width() || gid.y >= src.get_height()) return;
+    float4 c = src.read(gid);
+    float3 rgb = c.a > 0.0 ? c.rgb / c.a : float3(0.0);
+    float g = exp2(p.exposure);
+    rgb *= g;
+    if (p.exposure > 0.0 && p.exposureAlgorithm == 2) {
+        float m = max(rgb.r, max(rgb.g, rgb.b));
+        if (m > 0.0) rgb *= p.white * rolloff(m / p.white, g) / m;
+    } else if (p.exposure > 0.0 && p.exposureAlgorithm == 3) {
+        rgb = float3(rolloff(rgb.r / p.white, g), rolloff(rgb.g / p.white, g), rolloff(rgb.b / p.white, g)) * p.white;
+    }
+    lit.write(float4(rgb, c.a), gid);
+    luma.write(float4(enc(dot(rgb, lumaWeights))), gid);
+}
+
+// MARK: - Pyramids
+
+/// Halves a single-channel image with the 5-tap binomial filter, edges extended.
+kernel void downsample(texture2d<float, access::read> src [[texture(0)]],
+                       texture2d<float, access::write> dst [[texture(1)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    const float w[5] = {1.0, 4.0, 6.0, 4.0, 1.0};
+    int2 size = int2(src.get_width(), src.get_height());
+    int2 c = int2(gid) * 2;
+    float sum = 0.0;
+    for (int j = -2; j <= 2; j++) {
+        int y = clamp(c.y + j, 0, size.y - 1);
+        float row = 0.0;
+        for (int i = -2; i <= 2; i++) {
+            int x = clamp(c.x + i, 0, size.x - 1);
+            row += w[i + 2] * src.read(uint2(x, y)).r;
+        }
+        sum += w[j + 2] * row;
+    }
+    dst.write(float4(sum / 256.0), gid);
+}
+
+/// The coarser level at a finer pixel: bilinear, centres aligned.
+inline float upsampled(texture2d<float, access::sample> coarse, uint2 gid, uint2 fineSize) {
+    constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+    float2 uv = (float2(gid) + 0.5) / float2(fineSize);
+    return coarse.sample(s, uv).r;
+}
+
+/// The Laplacian remap for one sample level γ: near γ (closer than σ) the pixel keeps its detail
+/// at full strength riding on the curve's value at γ; far from it (an edge) it follows the curve
+/// itself, which is what stops halos.
+kernel void remap(texture2d<float, access::read> luma [[texture(0)]],
+                  texture2d<float, access::write> dst [[texture(1)]],
+                  constant Params& p [[buffer(0)]],
+                  uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    float i = luma.read(gid).r;
+    float g = p.gamma;
+    float tg = g + toneOffset(g, p, 3);
+    float ti = i + toneOffset(i, p, 3);
+    float near = tg + (i - g);
+    float far = smoothstep(p.sigma, 2.0 * p.sigma, fabs(i - g));
+    dst.write(float4(mix(near, ti, far)), gid);
+}
+
+/// Adds sample γ's share of one output level: its remapped image's Laplacian coefficient there,
+/// weighted by how close the input's own Gaussian level is to γ.
+kernel void accumulate(texture2d<float, access::read> level [[texture(0)]],
+                       texture2d<float, access::sample> coarser [[texture(1)]],
+                       texture2d<float, access::read> guide [[texture(2)]],
+                       texture2d<float, access::read_write> out [[texture(3)]],
+                       constant Params& p [[buffer(0)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+    uint2 size = uint2(out.get_width(), out.get_height());
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    float coefficient = level.read(gid).r - (p.top ? 0.0 : upsampled(coarser, gid, size));
+    float g = clamp(guide.read(gid).r, 0.0, p.lumaWhite);
+    float weight = max(0.0, 1.0 - fabs(g - p.gamma) / p.gammaStep);
+    float before = p.first ? 0.0 : out.read(gid).r;
+    out.write(float4(before + weight * coefficient), gid);
+}
+
+/// Puts a level back together: its coefficients plus the coarser level, already rebuilt.
+kernel void collapse(texture2d<float, access::read_write> level [[texture(0)]],
+                     texture2d<float, access::sample> coarser [[texture(1)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+    uint2 size = uint2(level.get_width(), level.get_height());
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    level.write(float4(level.read(gid).r + upsampled(coarser, gid, size)), gid);
+}
+
+// MARK: - Guided filter (He, Sun and Tang), on a reduced copy of the luminance
+
+/// Packs (I, I²) for the box means.
+kernel void guidedMoments(texture2d<float, access::read> src [[texture(0)]],
+                          texture2d<float, access::write> dst [[texture(1)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    float i = src.read(gid).r;
+    dst.write(float4(i, i * i, 0.0, 0.0), gid);
+}
+
+kernel void boxHorizontal(texture2d<float, access::read> src [[texture(0)]],
+                          texture2d<float, access::write> dst [[texture(1)]],
+                          constant Params& p [[buffer(0)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    int w = src.get_width();
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    float4 sum = 0.0;
+    for (int i = -p.radius; i <= p.radius; i++) sum += src.read(uint2(clamp(int(gid.x) + i, 0, w - 1), gid.y));
+    dst.write(sum / float(2 * p.radius + 1), gid);
+}
+
+kernel void boxVertical(texture2d<float, access::read> src [[texture(0)]],
+                        texture2d<float, access::write> dst [[texture(1)]],
+                        constant Params& p [[buffer(0)]],
+                        uint2 gid [[thread_position_in_grid]]) {
+    int h = src.get_height();
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    float4 sum = 0.0;
+    for (int i = -p.radius; i <= p.radius; i++) sum += src.read(uint2(gid.x, clamp(int(gid.y) + i, 0, h - 1)));
+    dst.write(sum / float(2 * p.radius + 1), gid);
+}
+
+/// The local linear model q = a·I + b from the box means of I and I².
+kernel void guidedCoefficients(texture2d<float, access::read> moments [[texture(0)]],
+                               texture2d<float, access::write> dst [[texture(1)]],
+                               constant Params& p [[buffer(0)]],
+                               uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    float4 m = moments.read(gid);
+    float variance = max(m.y - m.x * m.x, 0.0);
+    float a = variance / (variance + p.eps);
+    dst.write(float4(a, m.x - a * m.x, 0.0, 0.0), gid);
+}
+
+// MARK: - Everything else, and the output
+
+kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
+                   texture2d<float, access::read> luma [[texture(1)]],
+                   texture2d<float, access::sample> guided [[texture(2)]],
+                   texture2d<float, access::read> laplacian [[texture(3)]],
+                   texture2d<float, access::write> out [[texture(4)]],
+                   constant Params& p [[buffer(0)]],
+                   uint2 gid [[thread_position_in_grid]]) {
+    uint2 size = uint2(out.get_width(), out.get_height());
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    float4 c = lit.read(gid);
+    float3 rgb = c.rgb;
+    float lw = p.lumaWhite, W = p.white;
+
+    // Highlights and shadows: each slider's offset from its own algorithm, added up.
+    float l0 = luma.read(gid).r;
+    float l1 = l0 + toneOffset(l0, p, 1);
+    if (p.localPaths & 1) {
+        constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+        float2 ab = guided.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
+        float base = ab.x * l0 + ab.y;
+        l1 += toneOffset(base, p, 2);
+    }
+    if (p.localPaths & 2) l1 += laplacian.read(gid).r - l0;
+    if (l1 != l0) rgb = withLuminance(rgb, dec(l0), dec(l1));
+
+    // Contrast.
+    float k = p.contrast;
+    if (k != 0.0) {
+        if (p.contrastAlgorithm == 1) {
+            const float pivot = 0.4613;
+            float3 e = (enc3(rgb / W) - pivot) * (1.0 + k) + pivot;
+            rgb = max(dec3(e), 0.0) * W;
+        } else if (p.contrastAlgorithm == 2) {
+            float y = dot(rgb, lumaWeights);
+            if (y > 0.0) {
+                float y1 = 0.18 * W * pow(y / (0.18 * W), 1.0 + k);
+                if (k > 0.0) {
+                    float X = 0.18 * pow(1.0 / 0.18, 1.0 + k);
+                    y1 = W * rolloff(y1 / W, X);
+                }
+                rgb = withLuminance(rgb, y, y1);
+            }
+        } else {
+            float y = dot(rgb, lumaWeights);
+            float l = enc(y / W);
+            if (l > 0.0 && l < 1.0) {
+                const float pivot = 0.4613, steep = 8.0;
+                float lo = sigmoid(-steep * pivot), hi = sigmoid(steep * (1.0 - pivot));
+                float l1;
+                if (k > 0.0) {
+                    l1 = mix(l, (sigmoid(steep * (l - pivot)) - lo) / (hi - lo), k);
+                } else {
+                    float u = clamp(l * (hi - lo) + lo, 1e-6, 1.0 - 1e-6);
+                    l1 = mix(l, pivot + log(u / (1.0 - u)) / steep, -k);
+                }
+                rgb = withLuminance(rgb, y, dec(clamp(l1, 0.0, 1.0)) * W);
+            }
+        }
+    }
+
+    // Brightness.
+    float b = p.brightness;
+    if (b != 0.0) {
+        if (p.brightnessAlgorithm == 1) {
+            float y = dot(rgb, lumaWeights);
+            float l = enc(y) / lw;
+            if (l > 0.0 && l < 1.0) rgb = withLuminance(rgb, y, dec(pow(l, exp2(-0.9 * b)) * lw));
+        } else if (p.brightnessAlgorithm == 2) {
+            rgb = dec3(enc3(rgb / W) + 0.22 * b) * W;
+        } else {
+            // Linear sRGB → XYZ (D65) → CIELAB, lightness moved, and back.
+            const float3x3 toXYZ = float3x3(float3(0.4124, 0.2126, 0.0193), float3(0.3576, 0.7152, 0.1192),
+                                            float3(0.1805, 0.0722, 0.9505));
+            const float3x3 toRGB = float3x3(float3(3.2406, -0.9689, 0.0557), float3(-1.5372, 1.8758, -0.2040),
+                                            float3(-0.4986, 0.0415, 1.0570));
+            const float3 white = float3(0.95047, 1.0, 1.08883);
+            float3 xyz = toXYZ * (rgb / W) / white;
+            float3 f = select(xyz * 7.787 + 16.0 / 116.0, pow(max(xyz, 0.0), 1.0 / 3.0), xyz > 0.008856);
+            float L = 116.0 * f.y - 16.0, A = 500.0 * (f.x - f.y), B = 200.0 * (f.y - f.z);
+            if (L > 0.0 && L < 100.0) {
+                L = clamp(L + b * 0.8 * L * (100.0 - L) / 100.0, 0.0, 100.0);
+                float fy = (L + 16.0) / 116.0;
+                float3 f1 = float3(fy + A / 500.0, fy, fy - B / 200.0);
+                float3 xyz1 = select((f1 - 16.0 / 116.0) / 7.787, f1 * f1 * f1, f1 > 0.206893) * white;
+                rgb = toRGB * xyz1 * W;
+            }
+        }
+    }
+
+    // Out: premultiplied, in the encoding the texture asks for.
+    const float3x3 toP3 = float3x3(float3(0.8225, 0.0332, 0.0171), float3(0.1774, 0.9669, 0.0724),
+                                   float3(0.0000, 0.0000, 0.9108));
+    const float3x3 fromP3 = float3x3(float3(1.2249, -0.0420, -0.0196), float3(-0.2247, 1.0419, -0.0786),
+                                     float3(0.0, 0.0, 1.0982));
+    if (p.outputEncoding == 1) {
+        float3 p3 = clamp(toP3 * rgb, 0.0, 1.0);
+        float3 e = enc3(p3);
+        // Triangular dither, one 8-bit step wide, so smooth skies stay smooth.
+        float n1 = fract(sin(dot(float2(gid), float2(12.9898, 78.233))) * 43758.5453);
+        float n2 = fract(sin(dot(float2(gid), float2(39.3468, 11.135))) * 24634.6345);
+        e = clamp(e + (n1 + n2 - 1.0) / 255.0, 0.0, 1.0);
+        out.write(float4(e * c.a, c.a), gid);
+    } else {
+        if (p.clampWhite) rgb = fromP3 * clamp(toP3 * rgb, 0.0, 1.0);
+        out.write(float4(rgb * c.a, c.a), gid);
+    }
+}
+"""#
+}
