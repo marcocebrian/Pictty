@@ -129,8 +129,9 @@ final class LightRenderer: @unchecked Sendable {
     /// Every pixel the GPU can hold, with `a`: for zooming in past the preview.
     func renderFull(_ original: CGImage, _ a: Adjustments, done: @escaping @MainActor (Rendered) -> Void) {
         let ticket = bump(&latestFull)
+        timingMark("every pixel: asked (\(ticket))")
         queue.async {
-            guard self.isLatest(ticket, self.latestFull) else { return }
+            guard self.isLatest(ticket, self.latestFull) else { return timingMark("every pixel: \(ticket) moot before it began") }
             let start = CFAbsoluteTimeGetCurrent()
             let report = self.onDenoiseProgress
             guard let image = Self.renderWhole(original, url: self.url, engine: self.engine, isHDR: self.isHDR, a, output: nil,
@@ -139,7 +140,7 @@ final class LightRenderer: @unchecked Sendable {
                                                }, renderer: self,
                                                // A newer request makes this one moot: the network stops at the next tile.
                                                cancelled: { !self.isLatest(ticket, self.latestFull) }),
-                  self.isLatest(ticket, self.latestFull) else { return }
+                  self.isLatest(ticket, self.latestFull) else { return timingMark("every pixel: \(ticket) stopped") }
             let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
             DispatchQueue.main.async { MainActor.assumeIsolated { done(Rendered(image: image, milliseconds: ms, adjustments: a)) } }
         }

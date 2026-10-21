@@ -86,7 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     case "light": controller.toggleLight(nil)
                     case let light where light.hasPrefix("light="):
                         // light=<exposure>/<contrast>/<brightness>/<highlights>/<shadows>[/<temperature>/<tint>[/<balance>]]
-                        //   [;grade=<hue>:<amount>/<hue>:<amount>/<hue>:<amount>]
+                        //   [;colour=<dehaze>/<vibrance>/<saturation>][;detail=…][;grade=<hue>:<amount>/<hue>:<amount>/<hue>:<amount>]
                         let parts = light.dropFirst(6).split(separator: ";").map(String.init)
                         let f = parts[0].split(separator: "/").map(String.init)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
@@ -95,7 +95,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                               .temperature, .tint, .balance]
                             for (i, c) in order.enumerated() where i < f.count { c.set(Double(f[i]) ?? 0, in: &a) }
                             for extra in parts.dropFirst() {
-                                if extra.hasPrefix("detail=") {
+                                if extra.hasPrefix("colour=") {
+                                    // colour=<dehaze>/<vibrance>/<saturation>
+                                    let v = extra.dropFirst(7).split(separator: "/").compactMap { Double($0) }
+                                    for (c, x) in zip([AdjustmentControl.dehaze, .vibrance, .saturation], v) { c.set(x, in: &a) }
+                                } else if extra.hasPrefix("detail=") {
                                     // detail=<texture>/<clarity>/<sharpening>/<denoise>
                                     let v = extra.dropFirst(7).split(separator: "/").compactMap { Double($0) }
                                     for (c, x) in zip([AdjustmentControl.texture, .clarity, .sharpening, .denoise], v) { c.set(x, in: &a) }
