@@ -144,13 +144,12 @@ extension ViewerWindowController: NSMenuItemValidation {
         guard model.lightUnavailable == nil, let url = model.current?.url, let shown = canvas.shown(pane: 0),
               let image = originalPreview(shown) else { return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let noise = PictureMeasure.noiseAndBlur(image).noise
+            let levels = PictureMeasure.noiseLevels(image)
+            let amount = PictureMeasure.denoiseAmount(levels)
+            let steps = Double(max(levels.full, levels.half, levels.quarter))
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, self.model.current?.url == url else { return }
-                    // In 8-bit steps: about one is clean; five and more is a lot.
-                    let steps = Double(noise) * 255
-                    let amount = (min(max((steps - 1) / 4, 0), 1) * 20).rounded() / 20
                     var a = self.model.light
                     a.denoise = amount
                     self.setLight(a)
@@ -261,6 +260,9 @@ extension ViewerWindowController: NSMenuItemValidation {
     /// Zoomed in past the screen-sized edit: every pixel, through the same engine.
     func requestEditedFull(_ url: URL) {
         guard let session = lightSession, !session.editedFullRequested else { return }
+        // Every pixel waits for the screen-sized noise reduction: they would only compete for the
+        // GPU, and the larger one takes its coarse grain from the smaller. Asked again when it is done.
+        guard !(model.denoising && model.light.denoise > 0 && !model.denoiseFull) else { return }
         session.editedFullRequested = true
         let a = model.light
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
@@ -538,6 +540,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         let crop = model.crop
         let turn = orientationChange
         let engine = lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .appleRAW : .pictty)
+        let renderer = lightSession?.renderer
         let inPlace = dest.standardizedFileURL == url.standardizedFileURL
         model.isSaving = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -554,7 +557,7 @@ extension ViewerWindowController: NSMenuItemValidation {
                                                     DispatchQueue.main.async {
                                                         MainActor.assumeIsolated { self?.denoiseProgressed(fraction, full: true) }
                                                     }
-                                                })
+                                                }, renderer: renderer)
                 if let crop, let p = picture { picture = crop.apply(to: p) }
                 if let turn, let p = picture { picture = ImageExporter.oriented(p, quarterTurns: turn.quarterTurns, mirror: turn.mirror) }
                 var o = options

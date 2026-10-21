@@ -120,6 +120,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         }
                     case let done where done.hasPrefix("cropdone@"):
                         DispatchQueue.main.asyncAfter(deadline: .now() + (Double(done.dropFirst(9)) ?? 4)) { controller.commitCrop() }
+                    case let auto where auto.hasPrefix("autodenoise@"):
+                        DispatchQueue.main.asyncAfter(deadline: .now() + (Double(auto.dropFirst(12)) ?? 2)) { controller.autoDenoise(nil) }
                     case let auto where auto.hasPrefix("autowb@"):
                         DispatchQueue.main.asyncAfter(deadline: .now() + (Double(auto.dropFirst(7)) ?? 2)) { controller.autoWhiteBalance(nil) }
                     case let turn where turn.hasPrefix("rotate@"):

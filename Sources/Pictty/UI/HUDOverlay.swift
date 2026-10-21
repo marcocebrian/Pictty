@@ -431,6 +431,9 @@ struct RawBadge: View {
                         PicttyBuddy(time: context.date.timeIntervalSinceReferenceDate)
                     }
                     .frame(width: 38, height: 38)
+                    // Only the character floats; the words and the capsule stay put.
+                    .offset(y: floating ? -2.5 : 2.5)
+                    .animation(.easeInOut(duration: 1.7).repeatForever(autoreverses: true), value: floating)
                     Text("developing")
                         .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white.opacity(0.85))
@@ -440,8 +443,6 @@ struct RawBadge: View {
                                         removal: .scale(scale: 1.3).combined(with: .opacity).combined(with: .offset(y: -10))))
             }
         }
-        .offset(y: floating ? -2.5 : 2.5)
-        .animation(.easeInOut(duration: 1.7).repeatForever(autoreverses: true), value: floating)
         .onAppear { floating = true }
     }
 }
@@ -478,6 +479,9 @@ struct DenoiseBadge: View {
                         PicttyBuddy(time: context.date.timeIntervalSinceReferenceDate)
                     }
                     .frame(width: 38, height: 38)
+                    // Only the character floats; the words and the capsule stay put.
+                    .offset(y: floating ? -2.5 : 2.5)
+                    .animation(.easeInOut(duration: 1.7).repeatForever(autoreverses: true), value: floating)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 5) {
                             Text(everyPixel ? "reducing noise in every pixel" : "reducing noise")
@@ -514,8 +518,6 @@ struct DenoiseBadge: View {
                     .transition(.opacity)
             }
         }
-        .offset(y: floating ? -2.5 : 2.5)
-        .animation(.easeInOut(duration: 1.7).repeatForever(autoreverses: true), value: floating)
         .animation(Chrome.spring, value: progress == nil)
         .onAppear { floating = true }
     }
