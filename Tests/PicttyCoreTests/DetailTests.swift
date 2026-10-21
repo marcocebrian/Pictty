@@ -126,3 +126,57 @@ final class DetailTests: XCTestCase {
         XCTAssertGreaterThan(half.max()! - half.min()!, 0.05, "half: some of the pattern left")
     }
 }
+
+final class GrainTests: XCTestCase {
+    private struct Rand {
+        var s: UInt64 = 42
+        mutating func g() -> Float {
+            s = s &* 6364136223846793005 &+ 1442695040888963407
+            let u = max(Double(s >> 11) / Double(1 << 53), 1e-12)
+            s = s &* 6364136223846793005 &+ 1442695040888963407
+            let v = Double(s >> 11) / Double(1 << 53)
+            return Float((-2 * log(u)).squareRoot() * cos(2 * .pi * v))
+        }
+    }
+
+    private func levels(_ l: [Float], _ w: Int, _ h: Int) -> (full: Float, half: Float, quarter: Float) {
+        let half = PictureMeasure.shrink(l, width: w, height: h, by: 2)
+        let quarter = PictureMeasure.shrink(half.plane, width: half.width, height: half.height, by: 2)
+        return (PictureMeasure.flatNoise(l, width: w, height: h),
+                PictureMeasure.flatNoise(half.plane, width: half.width, height: half.height),
+                PictureMeasure.flatNoise(quarter.plane, width: quarter.width, height: quarter.height))
+    }
+
+    func testFineNoiseIsFineAndCoarseGrainIsCoarse() {
+        let w = 1024, h = 768
+        var r = Rand()
+        // Fine: independent per pixel, 3 levels.
+        let fine = (0..<(w * h)).map { _ in 0.5 + 3 / 255 * r.g() }
+        let f = levels(fine, w, h)
+        XCTAssertEqual(f.full, 3, accuracy: 0.8)
+        XCTAssertEqual(PictureMeasure.grainScales(f), [], "fine noise needs no coarse pass")
+        // Coarse: noise drawn at a third of the size and enlarged, as an editor's grain is (blobs
+        // of a few pixels, like the photo this was calibrated on).
+        let k: Float = 3
+        let gw = w / 3 + 2, gh = h / 3 + 2
+        let grid = (0..<(gw * gh)).map { _ in 6 / 255 * r.g() }
+        let coarse = (0..<(w * h)).map { i -> Float in
+            let x = Float(i % w) / k, y = Float(i / w) / k
+            let x0 = min(Int(x), gw - 2), y0 = min(Int(y), gh - 2), tx = x - Float(x0), ty = y - Float(y0)
+            let v = grid[y0 * gw + x0] * (1 - tx) * (1 - ty) + grid[y0 * gw + x0 + 1] * tx * (1 - ty)
+                + grid[(y0 + 1) * gw + x0] * (1 - tx) * ty + grid[(y0 + 1) * gw + x0 + 1] * tx * ty
+            return 0.5 + v
+        }
+        let c = levels(coarse, w, h)
+        XCTAssertFalse(PictureMeasure.grainScales(c).isEmpty, "coarse grain is taken out at a smaller scale: \(c)")
+    }
+
+    func testAutoLeavesCleanPicturesAlone() {
+        let w = 512, h = 512
+        let clean = (0..<(w * h)).map { i in Float(i % w) / Float(w) * 0.6 + 0.2 }
+        XCTAssertEqual(PictureMeasure.denoiseAmount(levels(clean, w, h)), 0)
+        var r = Rand()
+        let noisy = (0..<(w * h)).map { _ in 0.5 + 4 / 255 * r.g() }
+        XCTAssertGreaterThan(PictureMeasure.denoiseAmount(levels(noisy, w, h)), 0.6)
+    }
+}

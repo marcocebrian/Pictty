@@ -283,7 +283,8 @@ public final class LightEngine: @unchecked Sendable {
                 if l <= fineTop {
                     p.top = l == fineTop ? 1 : 0
                     p.detailS = Float(a.sharpening) * 1.6 * weights.sharpen[l]
-                    p.detailT = Float(a.texture) * 1.1 * weights.texture[l]
+                    // Texture at three quarters of its first strength: finer steps along the slider.
+                    p.detailT = Float(a.texture) * 0.825 * weights.texture[l]
                     p.detailC = 0
                     p.edgeLow = 0.10; p.edgeHigh = 0.32
                     dispatch(cb, "detailBand", [gauss[l], coarser, fineLevels[l]], &p, sizes[l].0, sizes[l].1)

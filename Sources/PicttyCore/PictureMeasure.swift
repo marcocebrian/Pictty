@@ -5,6 +5,87 @@ import Foundation
 /// how soft its edges are. Both are measured on its own pixels, on a sample of rows, in the
 /// encoded luminance the detail sliders work on.
 public enum PictureMeasure {
+    /// Noise read from the flattest parts of a luminance plane (encoded, 0…1), in 8-bit levels.
+    ///
+    /// Immerkær's operator (which cancels anything smooth or straight) is averaged over 16-pixel
+    /// blocks; the 15th percentile of those blocks is the noise: in skin, sky and walls whatever
+    /// varies is noise, while texture (foliage, fabric) only adds to the busier blocks. Near-black
+    /// and blown blocks, where noise cannot show, are left out.
+    public static func flatNoise(_ l: [Float], width w: Int, height h: Int) -> Float {
+        let b = 16
+        guard w > b + 2, h > b + 2 else { return 0 }
+        var blocks: [Float] = []
+        blocks.reserveCapacity((w / b) * (h / b))
+        for by in 0..<((h - 2) / b) {
+            for bx in 0..<((w - 2) / b) {
+                var sum: Float = 0, mean: Float = 0
+                for y in (by * b + 1)...(by * b + b) {
+                    for x in (bx * b + 1)...(bx * b + b) {
+                        let i = y * w + x
+                        let n = l[i - w - 1] - 2 * l[i - w] + l[i - w + 1]
+                            - 2 * (l[i - 1] - 2 * l[i] + l[i + 1])
+                            + l[i + w - 1] - 2 * l[i + w] + l[i + w + 1]
+                        sum += abs(n)
+                        mean += l[i]
+                    }
+                }
+                mean /= Float(b * b)
+                if mean > 0.06, mean < 0.94 { blocks.append(sum / Float(b * b)) }
+            }
+        }
+        guard blocks.count >= 8 else { return 0 }
+        blocks.sort()
+        return blocks[blocks.count * 15 / 100] * Float((Double.pi / 2).squareRoot()) / 6 * 255
+    }
+
+    /// Each `k` × `k` block of a plane averaged.
+    public static func shrink(_ l: [Float], width w: Int, height h: Int, by k: Int) -> (plane: [Float], width: Int, height: Int) {
+        let ow = max(1, w / k), oh = max(1, h / k)
+        var out = [Float](repeating: 0, count: ow * oh)
+        let n = Float(k * k)
+        for y in 0..<oh {
+            for x in 0..<ow {
+                var s: Float = 0
+                for j in 0..<k { let row = (y * k + j) * w + x * k; for i in 0..<k { s += l[row + i] } }
+                out[y * ow + x] = s / n
+            }
+        }
+        return (out, ow, oh)
+    }
+
+    /// A picture's noise at full, half and quarter size, in 8-bit levels: fine noise shows at full
+    /// size and averages away below; coarse grain (from an editor, or an enlargement) grows instead.
+    public static func noiseLevels(_ image: CGImage) -> (full: Float, half: Float, quarter: Float) {
+        let w = image.width, h = image.height
+        guard let space = CGColorSpace(name: CGColorSpace.genericGrayGamma2_2) ?? CGColorSpace(name: CGColorSpace.linearGray),
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 32, bytesPerRow: w * 4, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.none.rawValue | CGBitmapInfo.floatComponents.rawValue
+                                    | CGBitmapInfo.byteOrder32Little.rawValue),
+              let data = ctx.data else { return (0, 0, 0) }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let l = Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: Float.self), count: w * h))
+        let half = shrink(l, width: w, height: h, by: 2)
+        let quarter = shrink(half.plane, width: half.width, height: half.height, by: 2)
+        return (flatNoise(l, width: w, height: h), flatNoise(half.plane, width: half.width, height: half.height),
+                flatNoise(quarter.plane, width: quarter.width, height: quarter.height))
+    }
+
+    /// The scales coarse grain needs to be taken out at, coarsest first ([4, 2], [2] or none), from
+    /// `noiseLevels`. Calibrated on seventeen photos: coarse grain read 0.5 / 1.2 / 2.1 levels;
+    /// fine noise and clean pictures fall or hold as they shrink.
+    public static func grainScales(_ n: (full: Float, half: Float, quarter: Float)) -> [Int] {
+        guard n.half > 0.6, n.half / max(n.full, 0.05) > 1.4 else { return [] }
+        return n.quarter > 0.8 && n.quarter / max(n.half, 0.05) > 1.3 ? [4, 2] : [2]
+    }
+
+    /// How much noise reduction a picture wants, 0…1, from `noiseLevels`: the strongest of the three
+    /// readings, from about 0.7 levels (clean below) to about 2.5 (full strength).
+    public static func denoiseAmount(_ n: (full: Float, half: Float, quarter: Float)) -> Double {
+        let strongest = Double(max(n.full, n.half, n.quarter))
+        let amount = min(max((strongest - 0.5) / 2, 0), 1)
+        return amount < 0.1 ? 0 : (amount * 20).rounded() / 20
+    }
+
     /// The same, for any picture: drawn into linear half floats first.
     public static func noiseAndBlur(_ image: CGImage) -> (noise: Float, blur: Float) {
         let w = image.width, h = image.height
