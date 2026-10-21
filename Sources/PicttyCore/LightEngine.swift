@@ -112,7 +112,7 @@ public final class LightEngine: @unchecked Sendable {
     /// Must match `Params` in the kernels, field for field.
     private struct Params {
         var exposure: Float = 0, contrast: Float = 0, brightness: Float = 0, highlights: Float = 0, shadows: Float = 0
-        var highlightsAlgorithm: Int32 = 2, shadowsAlgorithm: Int32 = 1
+        var exposureAlgorithm: Int32 = 2, highlightsAlgorithm: Int32 = 2, shadowsAlgorithm: Int32 = 1
         var white: Float = 1
         var clampWhite: Int32 = 1
         var outputEncoding: Int32 = 0
@@ -137,6 +137,7 @@ public final class LightEngine: @unchecked Sendable {
         var edgeLow: Float = 0.1, edgeHigh: Float = 0.32
         var denoise: Float = 0
         var hasDenoised: Int32 = 0
+        var vibrance: Float = 0, saturation: Float = 0
     }
 
     /// Samples of the Laplacian remap across the brightness range.
@@ -153,7 +154,9 @@ public final class LightEngine: @unchecked Sendable {
         var p = Params()
         p.exposure = Float(a.exposure); p.contrast = Float(a.contrast); p.brightness = Float(a.brightness)
         p.highlights = Float(a.highlights); p.shadows = Float(a.shadows)
+        p.exposureAlgorithm = Int32(a.exposureAlgorithm)
         p.highlightsAlgorithm = Int32(a.highlightsAlgorithm); p.shadowsAlgorithm = Int32(a.shadowsAlgorithm)
+        p.vibrance = Float(a.vibrance); p.saturation = Float(a.saturation)
         if !a.isWhiteBalanceNeutral {
             // By rows; simd's own storage is by columns.
             let m = ColourMath.whiteBalance(temperature: a.temperature, tint: a.tint).transpose
@@ -291,7 +294,8 @@ public final class LightEngine: @unchecked Sendable {
                 }
                 p.top = l == n ? 1 : 0
                 p.detailS = 0; p.detailT = 0
-                p.detailC = Float(a.clarity) * 0.75 * weights.clarity[l]
+                // Clarity at 85 % of its first strength: finer steps along the slider.
+                p.detailC = Float(a.clarity) * 0.6375 * weights.clarity[l]
                 p.edgeLow = 0.14; p.edgeHigh = 0.45
                 dispatch(cb, "detailBand", [gauss[l], coarser, coarseLevels[l]], &p, sizes[l].0, sizes[l].1)
             }

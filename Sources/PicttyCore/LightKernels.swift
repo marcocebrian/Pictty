@@ -11,7 +11,7 @@ using namespace metal;
 
 struct Params {
     float exposure, contrast, brightness, highlights, shadows;
-    int highlightsAlgorithm, shadowsAlgorithm;
+    int exposureAlgorithm, highlightsAlgorithm, shadowsAlgorithm;
     /// Linear white: 1 for SDR, the content headroom for HDR.
     float white;
     /// 1 when the result is shown on an SDR scale: it is clamped to white at the end.
@@ -46,6 +46,8 @@ struct Params {
     /// Noise reduction: how much of the denoised picture, and whether there is one.
     float denoise;
     int hasDenoised;
+    /// −1…+1 each.
+    float vibrance, saturation;
 };
 
 constant float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
@@ -102,6 +104,89 @@ inline float toneOffset(float b, constant Params& p, int algorithm) {
     return d * lw;
 }
 
+// MARK: - Oklab (Ottosson), for vibrance and saturation
+
+inline float3 toOklab(float3 c) {
+    float3 lms = float3(dot(float3(0.4122214708, 0.5363325363, 0.0514459929), c),
+                        dot(float3(0.2119034982, 0.6806995451, 0.1073969566), c),
+                        dot(float3(0.0883024619, 0.2817188376, 0.6299787005), c));
+    lms = sign(lms) * pow(fabs(lms), 1.0 / 3.0);
+    return float3(dot(float3(0.2104542553, 0.7936177850, -0.0040720468), lms),
+                  dot(float3(1.9779984951, -2.4285922050, 0.4505937099), lms),
+                  dot(float3(0.0259040371, 0.7827717662, -0.8086757660), lms));
+}
+
+inline float3 fromOklab(float3 o) {
+    float3 lms = float3(o.x + 0.3963377774 * o.y + 0.2158037573 * o.z,
+                        o.x - 0.1055613458 * o.y - 0.0638541728 * o.z,
+                        o.x - 0.0894841775 * o.y - 1.2914855480 * o.z);
+    lms = lms * lms * lms;
+    return float3(dot(float3(4.0767416621, -3.3077115913, 0.2309699292), lms),
+                  dot(float3(-1.2684380046, 2.6097574011, -0.3413193965), lms),
+                  dot(float3(-0.0041960863, -0.7034186147, 1.7076147010), lms));
+}
+
+/// Inside Display P3, the widest the screen shows, with a hair of slack (`c` on a 0…1 scale).
+inline bool inP3(float3 c) {
+    const float3x3 toP3 = float3x3(float3(0.8225, 0.0332, 0.0171), float3(0.1774, 0.9669, 0.0724),
+                                   float3(0.0000, 0.0000, 0.9108));
+    float3 q = toP3 * c;
+    return all(q >= -1e-4) && all(q <= 1.0001);
+}
+
+/// How much a colour is skin, 0…1: the orange hues from rose to tan (Oklab hue about 20–85°),
+/// at the moderate chroma skin has for its lightness, and not in deep shadow.
+inline float skinLikeness(float3 o) {
+    float c = length(o.yz);
+    if (c < 1e-5) return 0.0;
+    float h = atan2(o.z, o.y) * 57.29578;
+    float dh = (h - 52.0) / 24.0;
+    float relative = c / max(o.x, 1e-3);
+    return exp(-0.5 * dh * dh) * smoothstep(0.015, 0.045, relative) * (1.0 - smoothstep(0.2, 0.3, relative))
+         * smoothstep(0.2, 0.35, o.x);
+}
+
+/// Vibrance and saturation on a linear sRGB colour (0…1 scale), in Oklab: lightness and hue stay,
+/// chroma is scaled. Vibrance raises a colour by how muted it is and skin barely at all; saturation
+/// raises every colour alike and skin by half. Lowered, saturation greys everything evenly and
+/// vibrance the most saturated colours first. A raised colour comes softly to rest at the edge of
+/// Display P3 instead of clipping there, which would change its hue.
+inline float3 vibranceAndSaturation(float3 c, float vibrance, float saturation) {
+    float3 o = toOklab(c);
+    float chroma = length(o.yz);
+    if (chroma < 1e-6) return c;
+    float skin = skinLikeness(o);
+    // Oklab's chroma reaches about 0.33 in sRGB; past a quarter, a colour is a strong one.
+    float strength = clamp(chroma / 0.25, 0.0, 1.0);
+    float k = 1.0;
+    if (vibrance > 0.0) {
+        k *= 1.0 + vibrance * 1.3 * (1.0 - strength) * (1.0 - strength) * (1.0 - 0.85 * skin);
+    } else if (vibrance < 0.0) {
+        k *= 1.0 + vibrance * (0.35 + 0.65 * strength);
+    }
+    if (saturation > 0.0) {
+        k *= 1.0 + saturation * (1.0 - 0.5 * skin);
+    } else if (saturation < 0.0) {
+        k *= 1.0 + saturation;
+    }
+    if (k > 1.0 && inP3(c)) {
+        // The furthest chroma that stays inside, by bisection, then a soft knee towards it.
+        float lo = 1.0, hi = k;
+        if (!inP3(fromOklab(float3(o.x, o.yz * k)))) {
+            for (int i = 0; i < 10; i++) {
+                float mid = 0.5 * (lo + hi);
+                if (inP3(fromOklab(float3(o.x, o.yz * mid)))) lo = mid; else hi = mid;
+            }
+            float limit = lo, knee = 1.0 + 0.7 * (limit - 1.0);
+            if (k > knee) k = knee + (limit - knee) * (1.0 - exp(-(k - knee) / max(limit - knee, 1e-4)));
+        }
+    } else if (k > 1.0) {
+        // Already outside the screen's colours: no further.
+        k = 1.0;
+    }
+    return fromOklab(float3(o.x, o.yz * k));
+}
+
 inline float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
 
 /// Moves a pixel's luminance from `y0` to `y1`, keeping its colour.
@@ -128,13 +213,16 @@ kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
         rgb = float3(dot(float3(p.wb0, p.wb1, p.wb2), rgb), dot(float3(p.wb3, p.wb4, p.wb5), rgb),
                      dot(float3(p.wb6, p.wb7, p.wb8), rgb));
     }
-    // Exposure multiplies the light, then rolls the brightest channel off into white, keeping
-    // each colour's hue and saturation.
+    // Exposure multiplies the light. Raised, what passes white either clips (1), or the brightest
+    // channel rolls off into white keeping each colour's hue and saturation (2), or each channel
+    // rolls off on its own, so the brightest colours drift to white as on film (3).
     float g = exp2(p.exposure);
     rgb *= g;
-    if (p.exposure > 0.0) {
+    if (p.exposure > 0.0 && p.exposureAlgorithm == 2) {
         float m = max(rgb.r, max(rgb.g, rgb.b));
         if (m > 0.0) rgb *= p.white * rolloff(m / p.white, g) / m;
+    } else if (p.exposure > 0.0 && p.exposureAlgorithm == 3) {
+        rgb = float3(rolloff(rgb.r / p.white, g), rolloff(rgb.g / p.white, g), rolloff(rgb.b / p.white, g)) * p.white;
     }
     lit.write(float4(rgb, c.a), gid);
     luma.write(float4(enc(dot(rgb, lumaWeights))), gid);
@@ -371,6 +459,11 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
             float3 xyz1 = select((f1 - 16.0 / 116.0) / 7.787, f1 * f1 * f1, f1 > 0.206893) * white;
             rgb = toRGB * xyz1 * W;
         }
+    }
+
+    // Vibrance and saturation.
+    if (p.vibrance != 0.0 || p.saturation != 0.0) {
+        rgb = vibranceAndSaturation(rgb / W, p.vibrance, p.saturation) * W;
     }
 
     // Colour grading: each pixel takes the colours of the ranges it belongs to, by its brightness

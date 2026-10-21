@@ -96,7 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             for extra in parts.dropFirst() {
                                 if extra.hasPrefix("algos="), extra.count >= 8 {
                                     let d = Array(extra.dropFirst(6)).compactMap { Int(String($0)) }
+                                    // algos=<highlights><shadows>, or <exposure><highlights><shadows>
                                     if d.count == 2 { a.highlightsAlgorithm = d[0]; a.shadowsAlgorithm = d[1] }
+                                    if d.count == 3 { a.exposureAlgorithm = d[0]; a.highlightsAlgorithm = d[1]; a.shadowsAlgorithm = d[2] }
                                 } else if extra.hasPrefix("detail=") {
                                     // detail=<texture>/<clarity>/<sharpening>/<denoise>
                                     let v = extra.dropFirst(7).split(separator: "/").compactMap { Double($0) }

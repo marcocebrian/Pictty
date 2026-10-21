@@ -52,6 +52,7 @@ final class LightEngineTests: XCTestCase {
         let src = try XCTUnwrap(engine.source(image))
         for n in 1...3 {
             var a = Adjustments()
+            a.exposureAlgorithm = n
             a.highlightsAlgorithm = n
             a.shadowsAlgorithm = n
             let out = try XCTUnwrap(engine.render(src, a, output: .linear)).image
@@ -69,16 +70,92 @@ final class LightEngineTests: XCTestCase {
         XCTAssertEqual(after, before * 2, accuracy: 0.002)
     }
 
-    func testTheShoulderNeverPassesWhite() throws {
+    func testTheShouldersNeverPassWhite() throws {
         let engine = try XCTUnwrap(LightEngine())
         let src = try XCTUnwrap(engine.source(ramp()))
+        for n in [2, 3] {
+            var a = Adjustments()
+            a.exposure = 2
+            a.exposureAlgorithm = n
+            let px = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
+            XCTAssertLessThanOrEqual(px.max() ?? 0, 1.0005, "algorithm \(n)")
+            // Monotonic along the ramp's top row.
+            let row = stride(from: 0, to: 256 * 4, by: 4).map { px[$0 + 1] }
+            XCTAssertTrue(zip(row, row.dropFirst()).allSatisfy { $0 <= $1 + 1e-4 }, "algorithm \(n)")
+        }
+    }
+
+    /// Linear exposure clips at white; the shoulders keep what is brighter than mid-grey apart.
+    func testLinearExposureClipsAndTheShouldersDoNot() throws {
+        let engine = try XCTUnwrap(LightEngine())
+        let src = try XCTUnwrap(engine.source(ramp()))
+        func row(_ n: Int) throws -> [Float] {
+            var a = Adjustments()
+            a.exposure = 2
+            a.exposureAlgorithm = n
+            let px = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
+            return stride(from: 0, to: 256 * 4, by: 4).map { px[$0 + 1] }
+        }
+        let clipped = try row(1), shoulder = try row(2), film = try row(3)
+        XCTAssertEqual(clipped[150], clipped[255], accuracy: 1e-4)
+        XCTAssertLessThan(shoulder[150], shoulder[255] - 0.01)
+        XCTAssertLessThan(film[150], film[255] - 0.01)
+    }
+
+    /// One flat colour, 8-bit sRGB.
+    private func colour(_ r: UInt8, _ g: UInt8, _ b: UInt8) -> CGImage {
+        let ctx = CGContext(data: nil, width: 32, height: 32, bitsPerComponent: 8, bytesPerRow: 128,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(CGColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        return ctx.makeImage()!
+    }
+
+    /// How colourful a linear pixel is: its channels' spread over their mean.
+    private func colourfulness(_ p: ArraySlice<Float>) -> Float {
+        let c = Array(p.prefix(3))
+        return (c.max()! - c.min()!) / max(c.reduce(0, +) / 3, 1e-6)
+    }
+
+    private func adjusted(_ image: CGImage, vibrance: Double = 0, saturation: Double = 0) throws -> ArraySlice<Float> {
+        let engine = try XCTUnwrap(LightEngine())
+        let src = try XCTUnwrap(engine.source(image))
         var a = Adjustments()
-        a.exposure = 2
-        let px = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
-        XCTAssertLessThanOrEqual(px.max() ?? 0, 1.0005)
-        // Monotonic along the ramp's top row.
-        let row = stride(from: 0, to: 256 * 4, by: 4).map { px[$0 + 1] }
-        XCTAssertTrue(zip(row, row.dropFirst()).allSatisfy { $0 <= $1 + 1e-4 })
+        a.vibrance = vibrance; a.saturation = saturation
+        return linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)[0..<4]
+    }
+
+    func testSaturationAtMinusOneIsGrey() throws {
+        let p = try adjusted(colour(40, 120, 200), saturation: -1)
+        XCTAssertEqual(p[p.startIndex], p[p.startIndex + 1], accuracy: 0.004)
+        XCTAssertEqual(p[p.startIndex + 2], p[p.startIndex + 1], accuracy: 0.004)
+    }
+
+    /// Saturation raises skin by about half as much as another colour equally colourful; vibrance
+    /// barely touches skin, and raises a muted colour more than a strong one.
+    func testSkinIsProtectedAndVibranceFavoursMutedColours() throws {
+        let skin = colour(224, 172, 150), muted = colour(150, 170, 200), strong = colour(30, 90, 220)
+        func gain(_ image: CGImage, vibrance: Double = 0, saturation: Double = 0) throws -> Float {
+            try colourfulness(adjusted(image, vibrance: vibrance, saturation: saturation)) / colourfulness(adjusted(image))
+        }
+        let skinSat = try gain(skin, saturation: 0.6), mutedSat = try gain(muted, saturation: 0.6)
+        XCTAssertGreaterThan(skinSat, 1.05)
+        XCTAssertLessThan(skinSat - 1, 0.75 * (mutedSat - 1))
+        let skinVib = try gain(skin, vibrance: 0.8), mutedVib = try gain(muted, vibrance: 0.8)
+        let strongVib = try gain(strong, vibrance: 0.8)
+        XCTAssertLessThan(skinVib - 1, 0.35 * (mutedVib - 1))
+        XCTAssertGreaterThan(mutedVib, strongVib)
+        XCTAssertGreaterThanOrEqual(strongVib, 0.999)
+    }
+
+    /// A strong colour pushed hard stays inside what the screen shows (Display P3) instead of
+    /// clipping a channel.
+    func testSaturationStaysInsideTheGamut() throws {
+        let p = Array(try adjusted(colour(200, 40, 30), saturation: 1).prefix(3))
+        let p3 = [0.8225 * p[0] + 0.1774 * p[1], 0.0332 * p[0] + 0.9669 * p[1], 0.0171 * p[0] + 0.0724 * p[1] + 0.9108 * p[2]]
+        XCTAssertGreaterThanOrEqual(p3.min()!, -0.005)
+        XCTAssertLessThanOrEqual(p3.max()!, 1.005)
+        XCTAssertGreaterThan(colourfulness(p[...]), colourfulness(try adjusted(colour(200, 40, 30))))
     }
 
     func testColourGradingKeepsLuminance() throws {

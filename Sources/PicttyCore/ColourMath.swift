@@ -69,7 +69,13 @@ public enum ColourMath {
     /// The slider values that make `neutral` (linear sRGB, the colour of something that should be
     /// grey) come out grey. Clamped to the sliders' range.
     public static func whiteBalance(neutral: SIMD3<Double>) -> (temperature: Double, tint: Double) {
-        guard neutral.x > 0, neutral.y > 0, neutral.z > 0 else { return (0, 0) }
+        guard let (t, duv) = kelvin(neutral) else { return (0, 0) }
+        return (min(max(log2(t / baseKelvin), -1), 1), min(max((duv - duvD65) / tintSpan, -1), 1))
+    }
+
+    /// The colour temperature of a light (linear sRGB) and how far it sits off the locus (Δuv).
+    static func kelvin(_ neutral: SIMD3<Double>) -> (kelvin: Double, duv: Double)? {
+        guard neutral.x > 0, neutral.y > 0, neutral.z > 0 else { return nil }
         let target = uv(xyz: rgbToXYZ * neutral)
         // The temperature whose locus point is nearest, by golden section on log T; then Δuv.
         var lo = log(1500.0), hi = log(15000.0)
@@ -80,8 +86,18 @@ public enum ColourMath {
             if distance(a) < distance(b) { hi = b } else { lo = a }
         }
         let t = exp((lo + hi) / 2)
-        let duv = simd_dot(target - locus(t), normal(t))
-        return (min(max(log2(t / baseKelvin), -1), 1), min(max((duv - duvD65) / tintSpan, -1), 1))
+        return (t, simd_dot(target - locus(t), normal(t)))
+    }
+
+    /// How likely `light` is to be a real light, 0…1: candle and tungsten to open shade (about
+    /// 2500–9000 K) near the Planckian locus count fully; a blue sky or a green lawn taken for the
+    /// light falls away fast.
+    static func plausibility(_ light: SIMD3<Double>) -> Double {
+        guard let (t, duv) = kelvin(light) else { return 0 }
+        let mired = 1e6 / t
+        let outside = max(111 - mired, mired - 400, 0)
+        let off = max(abs(duv - duvD65) - 0.015, 0)
+        return exp(-pow(outside / 25, 2)) * exp(-pow(off / 0.01, 2))
     }
 
     // MARK: Colour grading
@@ -111,41 +127,74 @@ public enum ColourMath {
 
     /// Estimates the light a picture was taken under, as linear sRGB.
     ///
-    /// Grey points (Huo et al. 2006): pixels already close to neutral are the best witnesses of the
-    /// light, so the estimate starts from all of them, white-balances, and asks again with a
-    /// tighter idea of "close to neutral", eight times. Blown pixels (they say nothing about the
-    /// light) and near-black ones (noise) never vote. If too few grey points are left, the answer
-    /// falls back to Shades of Grey (Finlayson and Trezzi 2004, p = 6), which leans on the brighter
-    /// pixels without trusting the single brightest one.
+    /// Grey points (Huo et al. 2006): pixels close to neutral once the light is taken out are the
+    /// best witnesses of the light, so the estimate white-balances, collects them, and asks again
+    /// with a tighter idea of "close to neutral", ten times. Where the search starts matters: from
+    /// the picture as shot, a strong cast is only half found, because the pixels that look neutral
+    /// then are coloured things the cast happens to cancel; from Shades of Grey (Finlayson and
+    /// Trezzi 2004, p = 4), a picture full of one colour is mistaken for a cast. So it runs from
+    /// both, and the answer that leaves more of the picture truly grey wins (as shot, on a tie),
+    /// each count weighed by how plausible the answer is as a light: a blue sky is not one. A win
+    /// for the deeper search is met halfway, which keeps some of a warm scene's warmth.
+    /// Blown pixels (they say nothing about the light) and near-black ones (noise) never vote. If
+    /// neither search keeps enough grey points, Shades of Grey is the answer.
     public static func estimateIlluminant(_ image: CGImage) -> SIMD3<Double>? {
         let px = linearPixels(image, maxSide: 384)
         guard !px.isEmpty else { return nil }
         let usable = px.filter { max($0.x, $0.y, $0.z) < 0.92 && simd_dot($0, SIMD3(0.2126, 0.7152, 0.0722)) > 0.012 }
         guard usable.count > 64 else { return nil }
 
-        var gains = SIMD3<Double>(1, 1, 1)
-        var estimate: SIMD3<Double>?
-        for i in 0..<8 {
-            let threshold = 0.32 - Double(i) * 0.025
+        var acc = SIMD3<Double>.zero
+        for p in usable { acc += SIMD3(pow(p.x, 4), pow(p.y, 4), pow(p.z, 4)) }
+        let shades = SIMD3(pow(acc.x, 0.25), pow(acc.y, 0.25), pow(acc.z, 0.25))
+        guard shades.min() > 0 else { return nil }
+
+        let minimum = max(usable.count / 200, 32)
+        func gains(_ light: SIMD3<Double>) -> SIMD3<Double> { SIMD3(light.y / light.x, 1, light.y / light.z) }
+        /// The pixels within `threshold` of neutral once `g` is applied: their count and mean.
+        func greys(_ g: SIMD3<Double>, _ threshold: Double) -> (n: Int, mean: SIMD3<Double>) {
             var sum = SIMD3<Double>.zero, n = 0
             for p in usable {
-                let q = p * gains
+                let q = p * g
                 let y = simd_dot(q, SIMD3(0.299, 0.587, 0.114))
                 let u = -0.147 * q.x - 0.289 * q.y + 0.436 * q.z
                 let v = 0.615 * q.x - 0.515 * q.y - 0.100 * q.z
                 if (abs(u) + abs(v)) / y < threshold { sum += p; n += 1 }
             }
-            guard n >= max(usable.count / 200, 32) else { break }
-            let m = sum / Double(n)
-            estimate = m
-            gains = SIMD3(m.y / m.x, 1, m.y / m.z)
+            return (n, n > 0 ? sum / Double(n) : .zero)
         }
-        if let estimate { return estimate / estimate.max() }
+        func search(from start: SIMD3<Double>) -> (light: SIMD3<Double>, support: Int)? {
+            var g = gains(start)
+            var estimate: SIMD3<Double>?
+            for i in 0..<10 {
+                let found = greys(g, 0.4 - Double(i) * 0.03)
+                guard found.n >= minimum else { break }
+                estimate = found.mean
+                g = gains(found.mean)
+            }
+            guard let estimate else { return nil }
+            return (estimate, greys(gains(estimate), 0.1).n)
+        }
 
-        var acc = SIMD3<Double>.zero
-        for p in usable { acc += SIMD3(pow(p.x, 6), pow(p.y, 6), pow(p.z, 6)) }
-        let m = SIMD3(pow(acc.x, 1.0 / 6), pow(acc.y, 1.0 / 6), pow(acc.z, 1.0 / 6))
-        return m.max() > 0 ? m / m.max() : nil
+        let asShot = search(from: SIMD3(1, 1, 1)), fromShades = search(from: shades)
+        let light: SIMD3<Double>
+        switch (asShot, fromShades) {
+        case let (a?, s?):
+            let score = (asShot: Double(a.support) * plausibility(a.light), shades: Double(s.support) * plausibility(s.light))
+            // Even when the deeper search wins, it is met halfway (the geometric mean of the two
+            // lights): taken all the way, a warm evening or a lamp-lit room turns cold and grey,
+            // which is not what the eye saw there either.
+            if score.shades > score.asShot {
+                let x = a.light / a.light.max(), y = s.light / s.light.max()
+                light = SIMD3(sqrt(x.x * y.x), sqrt(x.y * y.y), sqrt(x.z * y.z))
+            } else {
+                light = a.light
+            }
+        case let (a?, nil): light = a.light
+        case let (nil, s?): light = s.light
+        case (nil, nil): light = shades
+        }
+        return light / light.max()
     }
 
     /// The average colour of a small square of a picture, linear sRGB: what the eyedropper reads.

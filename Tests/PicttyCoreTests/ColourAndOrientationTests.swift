@@ -49,6 +49,55 @@ final class ColourAndOrientationTests: XCTestCase {
         XCTAssertEqual(grey.z / grey.y, 1, accuracy: 0.06)
     }
 
+    /// A strong cast over a scene that is mostly colour, with a little grey in it: Auto takes out
+    /// most of it (grey points alone, from the picture as shot, left R/G 1.28 and B/G 0.56 under
+    /// tungsten), keeps a little of the light's own colour, and never goes past neutral.
+    func testAutoWhiteBalanceTakesOutAStrongCast() throws {
+        let surfaces: [SIMD3<Double>] = [SIMD3(0.55, 0.38, 0.3), SIMD3(0.12, 0.3, 0.1), SIMD3(0.45, 0.3, 0.18),
+                                         SIMD3(0.5, 0.5, 0.5), SIMD3(0.2, 0.25, 0.45), SIMD3(0.6, 0.48, 0.38),
+                                         SIMD3(0.3, 0.3, 0.3), SIMD3(0.15, 0.4, 0.2), SIMD3(0.5, 0.2, 0.15)]
+        for light in [SIMD3<Double>(1, 0.66, 0.36), SIMD3(0.68, 0.84, 1), SIMD3(0.9, 1, 0.78)] {
+            let w = 120, h = 120
+            let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+            let ctx = try XCTUnwrap(CGContext(data: nil, width: w, height: h, bitsPerComponent: 32, bytesPerRow: w * 16,
+                                              space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                                                | CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+            for (i, s) in surfaces.enumerated() {
+                let c = s * light
+                ctx.setFillColor(CGColor(colorSpace: space, components: [c.x, c.y, c.z, 1])!)
+                ctx.fill(CGRect(x: (i % 3) * 40, y: (i / 3) * 40, width: 40, height: 40))
+            }
+            let estimate = try XCTUnwrap(ColourMath.estimateIlluminant(try XCTUnwrap(ctx.makeImage())))
+            let (t, tint) = ColourMath.whiteBalance(neutral: estimate)
+            let grey = ColourMath.whiteBalance(temperature: t, tint: tint) * (SIMD3(0.5, 0.5, 0.5) * light)
+            let cast = SIMD2(light.x / light.y - 1, light.z / light.y - 1)
+            let left = SIMD2(grey.x / grey.y - 1, grey.z / grey.y - 1)
+            XCTAssertLessThan(simd_length(left), 0.45 * simd_length(cast), "\(light): most of the cast is out")
+            XCTAssertGreaterThanOrEqual(simd_dot(left, cast), -0.002, "\(light): not past neutral")
+        }
+    }
+
+    /// A neutral light over a scene full of one colour (a lawn, some sky, a little grey): Auto must
+    /// not mistake the colour for a cast.
+    func testAutoWhiteBalanceLeavesAColourfulSceneAlone() throws {
+        let w = 120, h = 120
+        let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: w, height: h, bitsPerComponent: 32, bytesPerRow: w * 16,
+                                          space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                                            | CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        let surfaces: [SIMD3<Double>] = [SIMD3(0.1, 0.32, 0.06), SIMD3(0.14, 0.38, 0.08), SIMD3(0.08, 0.25, 0.05),
+                                         SIMD3(0.12, 0.35, 0.07), SIMD3(0.3, 0.45, 0.7), SIMD3(0.1, 0.3, 0.06),
+                                         SIMD3(0.4, 0.4, 0.4), SIMD3(0.09, 0.28, 0.05), SIMD3(0.35, 0.5, 0.75)]
+        for (i, c) in surfaces.enumerated() {
+            ctx.setFillColor(CGColor(colorSpace: space, components: [c.x, c.y, c.z, 1])!)
+            ctx.fill(CGRect(x: (i % 3) * 40, y: (i / 3) * 40, width: 40, height: 40))
+        }
+        let estimate = try XCTUnwrap(ColourMath.estimateIlluminant(try XCTUnwrap(ctx.makeImage())))
+        let (t, tint) = ColourMath.whiteBalance(neutral: estimate)
+        XCTAssertEqual(t, 0, accuracy: 0.08)
+        XCTAssertEqual(tint, 0, accuracy: 0.12)
+    }
+
     // MARK: Orientation
 
     func testOrientationsCompose() {

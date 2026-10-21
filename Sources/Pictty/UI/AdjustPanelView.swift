@@ -1,9 +1,9 @@
 // The Adjust panel, on the right of the window, which makes room for it. The live histogram
 // first, then Light (exposure, contrast, brightness, highlights, shadows) and Colour: white
-// balance, with Auto and an eyedropper, and colour grading on three wheels.
+// balance, with Auto and an eyedropper, vibrance and saturation, and colour grading on three wheels.
 //
-// Highlights and shadows still have numbered buttons: the candidates being compared. The winner
-// stays and the buttons go.
+// Exposure, highlights and shadows still have numbered buttons: the candidates being compared.
+// The winner stays and the buttons go.
 
 import PicttyCore
 import SwiftUI
@@ -133,7 +133,7 @@ struct AdjustPanelView: View {
 
     private var colourSection: some View {
         SectionCard(title: "Colour", symbol: "paintpalette.fill", colors: [Color(hex: 0xA05CE0), Color(hex: 0xEA4335)],
-                    canReset: !a.isWhiteBalanceNeutral || !a.isGradingNeutral, reset: { change(a.colourReset) }) {
+                    canReset: !a.isWhiteBalanceNeutral || !a.isSaturationNeutral || !a.isGradingNeutral, reset: { change(a.colourReset) }) {
             HStack(spacing: 6) {
                 SubHeading("WHITE BALANCE")
                 Spacer()
@@ -146,6 +146,16 @@ struct AdjustPanelView: View {
                 }
             }
             ForEach(AdjustmentControl.whiteBalance) { control in
+                SliderRow(control: control, adjustments: a, showsAlgorithms: false, change: change)
+            }
+
+            Rectangle().fill(.white.opacity(0.07)).frame(height: 0.5).padding(.vertical, 2)
+
+            HStack {
+                SubHeading("SATURATION")
+                Spacer()
+            }
+            ForEach(AdjustmentControl.saturationControls) { control in
                 SliderRow(control: control, adjustments: a, showsAlgorithms: false, change: change)
             }
 
@@ -406,6 +416,8 @@ private struct SliderRow: View {
         case .shadows: [Color(white: 0), Color(white: 0.5)]
         case .temperature: [Color(hex: 0x3F7DFF), Color(white: 0.82), Color(hex: 0xFFAE3A)]
         case .tint: [Color(hex: 0x39C85A), Color(white: 0.82), Color(hex: 0xE24BD3)]
+        case .vibrance: [Color(white: 0.5), Color(hex: 0xC9A27E), Color(hex: 0x2FB4E8), Color(hex: 0xA44CE8)]
+        case .saturation: [Color(white: 0.5), Color(hex: 0xE8504A), Color(hex: 0xF6C343), Color(hex: 0x3DC46A)]
         case .balance: [Color(white: 0.08), Color(white: 0.5), Color(white: 0.95)]
         case .texture: [Color(white: 0.35), Color(hex: 0x8D9BA8), Color(hex: 0xD7E3EC)]
         case .clarity: [Color(white: 0.3), Color(hex: 0x9FB6C9), Color(white: 0.95)]
