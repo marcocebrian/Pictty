@@ -163,6 +163,8 @@ public struct ExportOptions: Equatable, Codable, Sendable {
     public var hdr: ExportHDR = .gainMap
     /// What a JPEG puts behind transparent pixels.
     public var matteWhite = true
+    /// Save over a JPEG: re-encode at the quality the original was made with, read from its tables.
+    public var matchQuality = false
 
     public init() {}
 }
@@ -289,5 +291,90 @@ public enum ImageExporter {
             return true
         }
         for p in paths { CGImageMetadataRemoveTagWithPath(meta, nil, p as CFString) }
+    }
+}
+
+/// EXIF orientations as what they do to the stored picture to show it: a 2×2 matrix on y-down
+/// coordinates. Turns and mirrors made on screen compose with the file's own orientation into
+/// another of the eight, so they can be saved by changing one tag and no pixel.
+public enum Orientation {
+    typealias M = (Int, Int, Int, Int)  // a b / c d
+
+    static let matrices: [Int: M] = [
+        1: (1, 0, 0, 1), 2: (-1, 0, 0, 1), 3: (-1, 0, 0, -1), 4: (1, 0, 0, -1),
+        5: (0, 1, 1, 0), 6: (0, -1, 1, 0), 7: (0, -1, -1, 0), 8: (0, 1, -1, 0),
+    ]
+
+    static func multiply(_ x: M, _ y: M) -> M {
+        (x.0 * y.0 + x.1 * y.2, x.0 * y.1 + x.1 * y.3, x.2 * y.0 + x.3 * y.2, x.2 * y.1 + x.3 * y.3)
+    }
+
+    /// The orientation that shows the picture turned `quarterTurns` clockwise and then mirrored
+    /// left to right, on top of `exif`.
+    public static func compose(_ exif: Int, quarterTurns: Int, mirror: Bool) -> Int {
+        var m = matrices[exif] ?? matrices[1]!
+        for _ in 0..<(((quarterTurns % 4) + 4) % 4) { m = multiply((0, -1, 1, 0), m) }
+        if mirror { m = multiply((-1, 0, 0, 1), m) }
+        return matrices.first { $0.value == m }?.key ?? 1
+    }
+}
+
+extension ImageExporter {
+    /// Turns and mirrors a file by rewriting its orientation tag alone: every pixel stays exactly as
+    /// it was, and so does the rest of the metadata. False when the format cannot be copied that way;
+    /// the caller then re-encodes.
+    public static func reorient(_ url: URL, quarterTurns: Int, mirror: Bool) -> Bool {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil), let type = CGImageSourceGetType(src),
+              CGImageSourceGetCount(src) == 1 else { return false }
+        let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
+        let current = props?[kCGImagePropertyOrientation] as? Int ?? 1
+        let next = Orientation.compose(current, quarterTurns: quarterTurns, mirror: mirror)
+        let temp = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.deletingPathExtension().lastPathComponent)-pictty-\(UUID().uuidString.prefix(8)).\(url.pathExtension)")
+        guard let dest = CGImageDestinationCreateWithURL(temp as CFURL, type, 1, nil) else { return false }
+        let options = [kCGImageDestinationOrientation: next, kCGImageDestinationMergeMetadata: true] as CFDictionary
+        guard CGImageDestinationCopyImageSource(dest, src, options, nil) else {
+            try? FileManager.default.removeItem(at: temp)
+            return false
+        }
+        // Copied, not re-encoded: the image data must be byte for byte the same size or more or less
+        // so; a format that re-encodes on copy would show here as a different orientation not taken.
+        guard let check = CGImageSourceCreateWithURL(temp as CFURL, nil),
+              (CGImageSourceCopyPropertiesAtIndex(check, 0, nil) as? [CFString: Any])?[kCGImagePropertyOrientation] as? Int ?? 1 == next
+        else {
+            try? FileManager.default.removeItem(at: temp)
+            return false
+        }
+        do {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: temp)
+            return true
+        } catch {
+            try? FileManager.default.removeItem(at: temp)
+            return false
+        }
+    }
+
+    /// The pixels themselves turned `quarterTurns` clockwise, then mirrored left to right.
+    public static func oriented(_ image: CGImage, quarterTurns: Int, mirror: Bool) -> CGImage? {
+        let r = ((quarterTurns % 4) + 4) % 4
+        guard r != 0 || mirror else { return image }
+        let w = image.width, h = image.height
+        let (ow, oh) = r % 2 == 0 ? (w, h) : (h, w)
+        guard let space = image.colorSpace,
+              let ctx = CGContext(data: nil, width: ow, height: oh, bitsPerComponent: image.bitsPerComponent, bytesPerRow: 0,
+                                  space: space, bitmapInfo: image.bitmapInfo.rawValue)
+                ?? CGContext(data: nil, width: ow, height: oh, bitsPerComponent: 16, bytesPerRow: 0,
+                             space: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+                                | CGBitmapInfo.byteOrder16Little.rawValue) else { return nil }
+        ctx.interpolationQuality = .none
+        // Bottom-up coordinates: a clockwise turn on screen is a negative angle here.
+        ctx.translateBy(x: CGFloat(ow) / 2, y: CGFloat(oh) / 2)
+        if mirror { ctx.scaleBy(x: -1, y: 1) }
+        ctx.rotate(by: -CGFloat(r) * .pi / 2)
+        ctx.draw(image, in: CGRect(x: -CGFloat(w) / 2, y: -CGFloat(h) / 2, width: CGFloat(w), height: CGFloat(h)))
+        guard let out = ctx.makeImage() else { return nil }
+        if image.contentHeadroom > 1 { return CGImageCreateCopyWithContentHeadroom(image.contentHeadroom, out) ?? out }
+        return out
     }
 }
