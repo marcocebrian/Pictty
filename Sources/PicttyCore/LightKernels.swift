@@ -37,6 +37,15 @@ struct Params {
     float gs0, gs1, gs2, gm0, gm1, gm2, gh0, gh1, gh2;
     float balance;
     int grade;
+    /// Detail: this level's gains for sharpening, texture and clarity (already weighted), the
+    /// picture's noise (encoded luminance), the level, and where edges begin and end.
+    float detailS, detailT, detailC;
+    float noise;
+    int level;
+    float edgeLow, edgeHigh;
+    /// Noise reduction: how much of the denoised picture, and whether there is one.
+    float denoise;
+    int hasDenoised;
 };
 
 constant float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
@@ -106,10 +115,13 @@ inline float3 withLuminance(float3 rgb, float y0, float y1) {
 kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
                     texture2d<float, access::write> lit [[texture(1)]],
                     texture2d<float, access::write> luma [[texture(2)]],
+                    texture2d<float, access::read> denoised [[texture(3)]],
                     constant Params& p [[buffer(0)]],
                     uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= src.get_width() || gid.y >= src.get_height()) return;
     float4 c = src.read(gid);
+    // Noise reduction first: the denoised picture mixed in, before anything else is done.
+    if (p.hasDenoised && p.denoise > 0.0) c = mix(c, denoised.read(gid), p.denoise);
     float3 rgb = c.a > 0.0 ? c.rgb / c.a : float3(0.0);
     // White balance first: the light the picture was taken under, adapted to the display's.
     if (p.whiteBalance) {
@@ -201,6 +213,38 @@ kernel void collapse(texture2d<float, access::read_write> level [[texture(0)]],
     level.write(float4(level.read(gid).r + upsampled(coarser, gid, size)), gid);
 }
 
+// MARK: - Detail
+
+/// One level of detail: this level's band of the luminance (the level minus the coarser one),
+/// boosted by what the sliders ask for, but only where it is detail. A band no larger than the
+/// picture's noise at this scale is grain and is left alone; a band as large as an edge is left
+/// alone too, which is what keeps halos away; the deepest shadows, where noise lives, get less.
+/// Negative texture and clarity soften instead, without guards. Writes the change only.
+kernel void detailBand(texture2d<float, access::read> level [[texture(0)]],
+                       texture2d<float, access::sample> coarser [[texture(1)]],
+                       texture2d<float, access::write> out [[texture(2)]],
+                       constant Params& p [[buffer(0)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+    uint2 size = uint2(out.get_width(), out.get_height());
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    if (p.top) { out.write(float4(0.0), gid); return; }
+    float up = upsampled(coarser, gid, size);
+    float c = level.read(gid).r - up;
+    float base = clamp(up / p.lumaWhite, 0.0, 1.0);
+    float a = fabs(c) / p.lumaWhite;
+    float sigma = p.noise * pow(0.55, float(p.level));
+    // From two to four times the noise: Gaussian grain rarely reaches past twice its own spread,
+    // so what is boosted is almost all picture.
+    float aboveNoise = smoothstep(2.0 * sigma, 4.0 * sigma + 1e-4, a);
+    float notEdge = 1.0 - smoothstep(p.edgeLow, p.edgeHigh, a);
+    float lit = smoothstep(0.02, 0.12, base);
+    float midtones = 1.0 - (2.0 * base - 1.0) * (2.0 * base - 1.0);
+    float boost = (max(p.detailS, 0.0) + max(p.detailT, 0.0)) * aboveNoise * notEdge * lit
+                + max(p.detailC, 0.0) * midtones * aboveNoise * notEdge;
+    float soften = max(min(p.detailT, 0.0) + min(p.detailC, 0.0) * midtones, -1.0);
+    out.write(float4((boost + soften) * c), gid);
+}
+
 // MARK: - Guided filter (He, Sun and Tang), on a reduced copy of the luminance
 
 /// Packs (I, I²) for the box means.
@@ -253,6 +297,8 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
                    texture2d<float, access::sample> guided [[texture(2)]],
                    texture2d<float, access::read> laplacian [[texture(3)]],
                    texture2d<float, access::write> out [[texture(4)]],
+                   texture2d<float, access::read> detailFine [[texture(5)]],
+                   texture2d<float, access::read> detailCoarse [[texture(6)]],
                    constant Params& p [[buffer(0)]],
                    uint2 gid [[thread_position_in_grid]]) {
     uint2 size = uint2(out.get_width(), out.get_height());
@@ -271,6 +317,21 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
         l1 += toneOffset(base, p, 2);
     }
     if (p.localPaths & 2) l1 += laplacian.read(gid).r - l0;
+    if (p.localPaths & 4) {
+        // Fine detail (sharpening, texture) never takes a pixel past its neighbours, plus a hair:
+        // no overshoot, no ringing halo. Clarity works at a larger scale and is edge-stopped instead.
+        float lo = l0, hi = l0;
+        for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+                uint2 q = uint2(clamp(int(gid.x) + i, 0, int(size.x) - 1), clamp(int(gid.y) + j, 0, int(size.y) - 1));
+                float v = luma.read(q).r;
+                lo = min(lo, v); hi = max(hi, v);
+            }
+        }
+        float hair = 0.015 * lw;
+        float fine = clamp(detailFine.read(gid).r, lo - l0 - hair, hi - l0 + hair);
+        l1 += fine + detailCoarse.read(gid).r;
+    }
     if (l1 != l0) rgb = withLuminance(rgb, dec(l0), dec(l1));
 
     // Contrast: an S-curve on brightness that holds black and white in place, keeping colours.

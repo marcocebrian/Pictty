@@ -39,6 +39,16 @@ public struct Adjustments: Equatable, Sendable {
     public var highlightColour = ColourShift()
     public var balance: Double = 0
 
+    // Detail
+    /// −1…+1: surface detail, the middle scales.
+    public var texture: Double = 0
+    /// −1…+1: local contrast, the coarse scales, in the midtones.
+    public var clarity: Double = 0
+    /// 0…1: the finest scales, at the radius the picture's own blur calls for.
+    public var sharpening: Double = 0
+    /// 0…1: how much of the denoised picture replaces the picture.
+    public var denoise: Double = 0
+
     public init() {}
 
     public static let neutral = Adjustments()
@@ -53,8 +63,10 @@ public struct Adjustments: Equatable, Sendable {
         shadowColour.isNeutral && midtoneColour.isNeutral && highlightColour.isNeutral
     }
 
+    public var isDetailNeutral: Bool { texture == 0 && clarity == 0 && sharpening == 0 && denoise == 0 }
+
     /// True when nothing would change the picture, whatever the algorithms.
-    public var isNeutral: Bool { isLightNeutral && isWhiteBalanceNeutral && isGradingNeutral }
+    public var isNeutral: Bool { isLightNeutral && isWhiteBalanceNeutral && isGradingNeutral && isDetailNeutral }
 
     /// Every value back to zero; the algorithm choices stay.
     public var valuesReset: Adjustments {
@@ -70,6 +82,12 @@ public struct Adjustments: Equatable, Sendable {
         return a
     }
 
+    public var detailReset: Adjustments {
+        var a = self
+        a.texture = 0; a.clarity = 0; a.sharpening = 0; a.denoise = 0
+        return a
+    }
+
     public var colourReset: Adjustments {
         var a = self
         a.temperature = 0; a.tint = 0
@@ -82,9 +100,11 @@ public struct Adjustments: Equatable, Sendable {
 /// One slider of the Adjust panel, for the panel and the engine alike.
 public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
     case exposure, contrast, brightness, highlights, shadows, temperature, tint, balance
+    case texture, clarity, sharpening, denoise
 
     public static let light: [AdjustmentControl] = [.exposure, .contrast, .brightness, .highlights, .shadows]
     public static let whiteBalance: [AdjustmentControl] = [.temperature, .tint]
+    public static let detail: [AdjustmentControl] = [.texture, .clarity, .sharpening]
 
     public var id: String { rawValue }
 
@@ -98,6 +118,10 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .temperature: "Temperature"
         case .tint: "Tint"
         case .balance: "Balance"
+        case .texture: "Texture"
+        case .clarity: "Clarity"
+        case .sharpening: "Sharpening"
+        case .denoise: "Amount"
         }
     }
 
@@ -111,10 +135,20 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .temperature: "thermometer.medium"
         case .tint: "drop.halffull"
         case .balance: "scalemass"
+        case .texture: "circle.hexagongrid"
+        case .clarity: "sun.haze"
+        case .sharpening: "scope"
+        case .denoise: "wand.and.sparkles"
         }
     }
 
-    public var range: ClosedRange<Double> { self == .exposure ? -4...4 : -1...1 }
+    public var range: ClosedRange<Double> {
+        switch self {
+        case .exposure: -4...4
+        case .sharpening, .denoise: 0...1
+        default: -1...1
+        }
+    }
 
     /// The candidates still being compared, as (engine number, name, what it does). One entry:
     /// the winner, and no buttons.
@@ -141,6 +175,10 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .temperature: a.temperature
         case .tint: a.tint
         case .balance: a.balance
+        case .texture: a.texture
+        case .clarity: a.clarity
+        case .sharpening: a.sharpening
+        case .denoise: a.denoise
         }
     }
 
@@ -155,6 +193,10 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .temperature: a.temperature = v
         case .tint: a.tint = v
         case .balance: a.balance = v
+        case .texture: a.texture = v
+        case .clarity: a.clarity = v
+        case .sharpening: a.sharpening = v
+        case .denoise: a.denoise = v
         }
     }
 

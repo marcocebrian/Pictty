@@ -24,10 +24,19 @@ public final class LightEngine: @unchecked Sendable {
         public let white: Float
         public let isHDR: Bool
         let input: MTLTexture
+        /// The picture's noise, a standard deviation in encoded luminance (0…1), and the blur of
+        /// its edges, a Gaussian sigma in pixels: measured once, at upload.
+        public let noise: Float
+        public let blur: Float
+        /// The same picture through the denoiser, once it has been.
+        fileprivate(set) var denoised: MTLTexture?
         fileprivate var scratch: [String: MTLTexture] = [:]
 
-        init(width: Int, height: Int, white: Float, isHDR: Bool, input: MTLTexture) {
+        public var hasDenoised: Bool { denoised != nil }
+
+        init(width: Int, height: Int, white: Float, isHDR: Bool, input: MTLTexture, noise: Float, blur: Float) {
             self.width = width; self.height = height; self.white = white; self.isHDR = isHDR; self.input = input
+            self.noise = noise; self.blur = blur
         }
     }
 
@@ -43,7 +52,7 @@ public final class LightEngine: @unchecked Sendable {
         self.device = device
         self.queue = queue
         for name in ["prepare", "downsample", "remap", "accumulate", "collapse", "guidedMoments", "boxHorizontal",
-                     "boxVertical", "guidedCoefficients", "finish"] {
+                     "boxVertical", "guidedCoefficients", "detailBand", "finish"] {
             guard let f = library.makeFunction(name: name),
                   let state = try? device.makeComputePipelineState(function: f) else { return nil }
             pipelines[name] = state
@@ -68,13 +77,34 @@ public final class LightEngine: @unchecked Sendable {
                                   space: space, bitmapInfo: info) else { return nil }
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
         guard let data = ctx.data else { return nil }
+        guard let texture = upload(data, rowBytes: ctx.bytesPerRow, w, h) else { return nil }
+        let hdr = headroom > 1.001
+        let measured = PictureMeasure.noiseAndBlur(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
+                                                   rowFloats: ctx.bytesPerRow / 2)
+        return Source(width: w, height: h, white: hdr ? headroom : 1, isHDR: hdr, input: texture,
+                      noise: measured.noise, blur: measured.blur)
+    }
+
+    /// Gives `src` its denoised counterpart, the same size, colour-managed the same way.
+    public func setDenoised(_ image: CGImage, on src: Source) {
+        guard image.width == src.width, image.height == src.height,
+              let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { return }
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+            | CGBitmapInfo.byteOrder16Little.rawValue
+        guard let ctx = CGContext(data: nil, width: src.width, height: src.height, bitsPerComponent: 16,
+                                  bytesPerRow: src.width * 8, space: space, bitmapInfo: info) else { return }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: src.width, height: src.height))
+        guard let data = ctx.data else { return }
+        src.denoised = upload(data, rowBytes: ctx.bytesPerRow, src.width, src.height)
+    }
+
+    private func upload(_ data: UnsafeMutableRawPointer, rowBytes: Int, _ w: Int, _ h: Int) -> MTLTexture? {
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: w, height: h, mipmapped: false)
         d.usage = [.shaderRead]
         d.storageMode = .shared
         guard let texture = device.makeTexture(descriptor: d) else { return nil }
-        texture.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: data, bytesPerRow: ctx.bytesPerRow)
-        let hdr = headroom > 1.001
-        return Source(width: w, height: h, white: hdr ? headroom : 1, isHDR: hdr, input: texture)
+        texture.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: data, bytesPerRow: rowBytes)
+        return texture
     }
 
     // MARK: - Render
@@ -101,6 +131,12 @@ public final class LightEngine: @unchecked Sendable {
         var grade: (Float, Float, Float, Float, Float, Float, Float, Float, Float) = (0, 0, 0, 0, 0, 0, 0, 0, 0)
         var balance: Float = 0
         var gradeOn: Int32 = 0
+        var detailS: Float = 0, detailT: Float = 0, detailC: Float = 0
+        var noise: Float = 0.004
+        var level: Int32 = 0
+        var edgeLow: Float = 0.1, edgeHigh: Float = 0.32
+        var denoise: Float = 0
+        var hasDenoised: Int32 = 0
     }
 
     /// Samples of the Laplacian remap across the brightness range.
@@ -143,7 +179,13 @@ public final class LightEngine: @unchecked Sendable {
             (a.highlights != 0 && a.highlightsAlgorithm == algorithm) || (a.shadows != 0 && a.shadowsAlgorithm == algorithm)
         }
         let guided = uses(2), laplacian = uses(3)
-        p.localPaths = (guided ? 1 : 0) | (laplacian ? 2 : 0)
+        let detail = a.texture != 0 || a.clarity != 0 || a.sharpening != 0
+        p.localPaths = (guided ? 1 : 0) | (laplacian ? 2 : 0) | (detail ? 4 : 0)
+        p.noise = src.noise
+        if a.denoise > 0, src.denoised != nil {
+            p.denoise = Float(a.denoise)
+            p.hasDenoised = 1
+        }
 
         guard let cb = queue.makeCommandBuffer() else { return nil }
         let lit = scratch(src, "lit", .rgba16Float, w, h)
@@ -152,7 +194,22 @@ public final class LightEngine: @unchecked Sendable {
         let out = scratch(src, output == .display ? "out8" : "outF", outFormat, w, h, shared: true)
         guard let lit, let luma, let out else { return nil }
 
-        dispatch(cb, "prepare", [src.input, lit, luma], &p, w, h)
+        dispatch(cb, "prepare", [src.input, lit, luma, src.denoised ?? src.input], &p, w, h)
+
+        // The Gaussian pyramid of the luminance, for the local Laplacian and for detail.
+        var sizes = [(w, h)]
+        while let last = sizes.last, min(last.0, last.1) > 12, sizes.count < 11 {
+            sizes.append(((last.0 + 1) / 2, (last.1 + 1) / 2))
+        }
+        let n = sizes.count - 1
+        var gauss: [MTLTexture] = [luma]
+        if laplacian || detail {
+            for l in stride(from: 1, through: n, by: 1) {
+                guard let t = scratch(src, "G\(l)", .r32Float, sizes[l].0, sizes[l].1) else { return nil }
+                gauss.append(t)
+                dispatch(cb, "downsample", [gauss[l - 1], gauss[l]], &p, sizes[l].0, sizes[l].1)
+            }
+        }
 
         // Guided base: on a quarter-size luminance, its coefficients smoothed and sampled back up.
         var coefficients: MTLTexture?
@@ -178,20 +235,11 @@ public final class LightEngine: @unchecked Sendable {
         // copies of the luminance, each contributing where the input's own level is close to it.
         var rebuilt: MTLTexture?
         if laplacian {
-            var sizes = [(w, h)]
-            while let last = sizes.last, min(last.0, last.1) > 12, sizes.count < 11 {
-                sizes.append(((last.0 + 1) / 2, (last.1 + 1) / 2))
-            }
-            let n = sizes.count - 1
-            var gauss: [MTLTexture] = [luma], remapped: [MTLTexture] = [], outs: [MTLTexture] = []
+            var remapped: [MTLTexture] = [], outs: [MTLTexture] = []
             for (l, s) in sizes.enumerated() {
-                if l > 0 { guard let t = scratch(src, "G\(l)", .r32Float, s.0, s.1) else { return nil }; gauss.append(t) }
                 guard let r = scratch(src, "R\(l)", .r32Float, s.0, s.1),
                       let o = scratch(src, "O\(l)", .r32Float, s.0, s.1) else { return nil }
                 remapped.append(r); outs.append(o)
-            }
-            for l in stride(from: 1, through: n, by: 1) {
-                dispatch(cb, "downsample", [gauss[l - 1], gauss[l]], &p, sizes[l].0, sizes[l].1)
             }
             let k = Self.laplacianSamples
             p.gammaStep = p.lumaWhite / Float(k - 1)
@@ -213,14 +261,73 @@ public final class LightEngine: @unchecked Sendable {
                 dispatch(cb, "collapse", [outs[l], outs[l + 1]], &p, sizes[l].0, sizes[l].1)
             }
             rebuilt = outs[0]
+            p.top = 0
         }
 
-        dispatch(cb, "finish", [lit, luma, coefficients ?? lit, rebuilt ?? luma, out], &p, w, h)
+        // Detail: the bands of the luminance pyramid, boosted where they are detail and not noise
+        // or edges, put back together twice: the fine bands (sharpening and texture), which the
+        // finish keeps within each pixel's neighbourhood, and the coarse ones (clarity).
+        var fine: MTLTexture?, coarse: MTLTexture?
+        if detail {
+            let weights = Self.detailWeights(blur: src.blur, levels: n)
+            var fineLevels: [MTLTexture] = [], coarseLevels: [MTLTexture] = []
+            for (l, s) in sizes.enumerated() {
+                guard let f = scratch(src, "DF\(l)", .r32Float, s.0, s.1),
+                      let c = scratch(src, "DC\(l)", .r32Float, s.0, s.1) else { return nil }
+                fineLevels.append(f); coarseLevels.append(c)
+            }
+            let fineTop = min(3, n)
+            for l in 0...n {
+                p.level = Int32(l)
+                let coarser = l < n ? gauss[l + 1] : gauss[l]
+                if l <= fineTop {
+                    p.top = l == fineTop ? 1 : 0
+                    p.detailS = Float(a.sharpening) * 1.6 * weights.sharpen[l]
+                    p.detailT = Float(a.texture) * 1.1 * weights.texture[l]
+                    p.detailC = 0
+                    p.edgeLow = 0.10; p.edgeHigh = 0.32
+                    dispatch(cb, "detailBand", [gauss[l], coarser, fineLevels[l]], &p, sizes[l].0, sizes[l].1)
+                }
+                p.top = l == n ? 1 : 0
+                p.detailS = 0; p.detailT = 0
+                p.detailC = Float(a.clarity) * 0.75 * weights.clarity[l]
+                p.edgeLow = 0.14; p.edgeHigh = 0.45
+                dispatch(cb, "detailBand", [gauss[l], coarser, coarseLevels[l]], &p, sizes[l].0, sizes[l].1)
+            }
+            p.top = 0
+            for l in stride(from: fineTop - 1, through: 0, by: -1) {
+                dispatch(cb, "collapse", [fineLevels[l], fineLevels[l + 1]], &p, sizes[l].0, sizes[l].1)
+            }
+            for l in stride(from: n - 1, through: 0, by: -1) {
+                dispatch(cb, "collapse", [coarseLevels[l], coarseLevels[l + 1]], &p, sizes[l].0, sizes[l].1)
+            }
+            fine = fineLevels[0]
+            coarse = coarseLevels[0]
+        }
+
+        dispatch(cb, "finish", [lit, luma, coefficients ?? lit, rebuilt ?? luma, out, fine ?? luma, coarse ?? luma],
+                 &p, w, h)
         cb.commit()
         cb.waitUntilCompleted()
         guard cb.status == .completed, let image = Self.image(from: out, output: output, headroom: src.isHDR ? src.white : 1)
         else { return nil }
         return Result(image: image, milliseconds: (CFAbsoluteTimeGetCurrent() - start) * 1000)
+    }
+
+    /// How much each level of the pyramid carries of each slider. Sharpening sits where the
+    /// picture's own blur is: a crisp picture's softness is in the finest level, a softer one's
+    /// spreads to the next. Texture is the middle levels, clarity the coarse ones.
+    static func detailWeights(blur: Float, levels n: Int) -> (sharpen: [Float], texture: [Float], clarity: [Float]) {
+        var sharpen: [Float]
+        switch blur {
+        case ..<0.8: sharpen = [1.0, 0.25, 0]
+        case ..<1.6: sharpen = [0.7, 0.8, 0.2]
+        default: sharpen = [0.4, 0.9, 0.6]
+        }
+        let texture: [Float] = [0.25, 0.75, 1.0]
+        let clarity: [Float] = [0, 0, 0, 0.8, 1.0, 1.0, 0.75, 0.45, 0.25, 0.1, 0]
+        func padded(_ a: [Float]) -> [Float] { (0...max(n, 3)).map { $0 < a.count ? a[$0] : 0 } }
+        return (padded(sharpen), padded(texture), padded(clarity))
     }
 
     // MARK: - Plumbing
