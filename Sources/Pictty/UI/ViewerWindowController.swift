@@ -20,16 +20,17 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     private(set) var canvas: CanvasView!
     private var glass: NSVisualEffectView?
-    private let store = ImageStore()
+    let store = ImageStore()
     private var memoryPressure: DispatchSourceMemoryPressure?
 
     private var hudHost: PassthroughHostingView?
     private var toolbarHost: FadeHostingView?
     private var filmstripHost: FadeHostingView?
     private var inspectorHost: FadeHostingView?
+    private var lightHost: FadeHostingView?
     private var nudgeHost: FadeHostingView?
 
-    private var probes: [String: ImageProbe] = [:]
+    var probes: [String: ImageProbe] = [:]
     private var probing: Set<String> = []
     private var scanGeneration = 0
     private var cancellables = Set<AnyCancellable>()
@@ -40,8 +41,11 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private var requestedFull: Set<String> = []
     private var requestedDetail: Set<String> = []
     /// Histogram and clipping per file, and whether it was measured on a RAW's camera preview.
-    private var analyses: [String: (analysis: ImageAnalysis, embedded: Bool)] = [:]
+    var analyses: [String: (analysis: ImageAnalysis, embedded: Bool)] = [:]
     private var analysing: Set<String> = []
+    /// The picture being edited in the Light panel, if any.
+    var lightSession: LightSession?
+    var lightAnalysisTicket = 0
 
     /// The user's own zoom for pane 0 (device pixels per image pixel), or nil to follow the
     /// zoom mode. In Remember mode it survives navigation.
@@ -146,6 +150,14 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         container.addSubview(inspector)
         inspectorHost = inspector
 
+        let light = FadeHostingView(rootView: AnyView(LightPanelView(model: model, prefs: prefs, controller: self)))
+        light.autoresizingMask = [.minXMargin, .height]
+        light.wantsLayer = true
+        light.alphaValue = 0
+        light.isInteractive = false
+        container.addSubview(light)
+        lightHost = light
+
         window.contentView = container
         container.registerForDraggedTypes([.fileURL])
 
@@ -248,6 +260,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let inspectorWidth: CGFloat = 318
         inspectorHost?.frame = NSRect(x: bounds.maxX - inspectorWidth - 6, y: 0,
                                       width: inspectorWidth, height: max(0, bounds.height - 48))
+        lightHost?.frame = inspectorHost?.frame ?? .zero
         filmstripHost?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: FilmstripView.dockedHeight)
         nudgeHost?.frame = NSRect(x: 0, y: 24, width: bounds.width, height: 110)
         // A pinned strip takes its own room: the picture ends at the strip's top edge.
@@ -267,6 +280,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         set(toolbarHost, visible: !model.items.isEmpty && (model.chromeVisible || prefs.toolbarBehavior == .always))
         set(filmstripHost, visible: model.filmstripVisible)
         set(inspectorHost, visible: model.showInspector, slide: 28)
+        set(lightHost, visible: model.showLight, slide: 28)
         set(nudgeHost, visible: model.items.isEmpty && !DefaultViewer.shared.opensJPEG
             && !Preferences.store.bool(forKey: DefaultNudgeView.dismissedKey), duration: 0.4)
     }
@@ -411,6 +425,11 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func loadFolder(_ folder: URL, selecting target: URL?) {
+        // Another folder or another picture leaves the edits behind: they are settled first.
+        if hasUnsavedEdits, folder != model.folderURL || (target != nil && target != model.current?.url) {
+            settleEdits { [weak self] in self?.loadFolder(folder, selecting: target) }
+            return
+        }
         model.isScanning = true
         prefs.noteRecentFolder(folder)
 
@@ -503,6 +522,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
         if !ImageFormats.isRaw(url) { model.rawStatus = nil }
         model.analysis = analyses[url.path]?.analysis
+        updateLightAvailability()
         prefetchNeighbours()
         warmThumbnails()
         updateStatus()
@@ -511,12 +531,14 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     /// Resets the per-picture camera after the selection moved.
     private func navigated() {
+        endLight()
         model.loadingText = nil
         if !prefs.zoomMode.keepsZoom { override = nil }
     }
 
     func select(_ index: Int) {
         guard model.items.indices.contains(index), index != model.index else { return }
+        guard !hasUnsavedEdits else { return settleEdits { [weak self] in self?.select(index) } }
         model.setPrimary(index)
         model.pruneSelection()
         navigated()
@@ -540,7 +562,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     /// Puts a decode into every pane showing that file. A new picture gets a fresh camera:
     /// the zoom mode's scale, centred, unrotated (Remember mode keeps zoom and centre).
-    private func deliver(_ d: DecodedImage, animated: Bool) {
+    func deliver(_ d: DecodedImage, animated: Bool) {
+        // The picture being edited keeps its edited pixels; sharper decodes go through the Light engine.
+        if keepsEdits(d.url) { return }
         CATransaction.begin()
         defer { CATransaction.commit() }
         for pane in 0..<model.paneCount where model.item(forPane: pane)?.url == d.url {
@@ -579,7 +603,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     /// Measures histogram and clipping on a screen-sized decode, once per file (again when a
     /// RAW's real develop replaces its camera preview), off the main thread.
-    private func analyse(_ d: DecodedImage) {
+    func analyse(_ d: DecodedImage) {
         let path = d.url.path
         // A picture measured before gets its mask back whatever decode arrives: coming back to
         // it usually delivers the cached full decode, which is never measured itself, and the
@@ -606,7 +630,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func publish(_ a: ImageAnalysis, for url: URL) {
+    func publish(_ a: ImageAnalysis, for url: URL) {
         for pane in 0..<model.paneCount where model.item(forPane: pane)?.url == url {
             canvas.setClipMask(a.mask, pane: pane)
         }
@@ -629,7 +653,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func requestFullDecode(for url: URL) {
+    func requestFullDecode(for url: URL) {
         guard !requestedFull.contains(url.path), store.cached(url, full: true) == nil else { return }
         // A RAW develops at screen size first; a full-size develop on top would only compete with it.
         guard !store.isDeveloping(url) else { return }
@@ -719,7 +743,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Spinner, inspector footer and zoom label for what is on screen now.
-    private func updateStatus() {
+    func updateStatus() {
         let pane = min(model.activePane, max(0, model.paneCount - 1))
         if let s = canvas.shown(pane: 0) {
             let preview = s.preview.map { CGFloat($0.width) } ?? 0
@@ -806,6 +830,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     private func movePane(_ delta: Int, pane: Int) {
         guard let current = model.index(forPane: pane) else { return }
+        if pane == 0, hasUnsavedEdits { return settleEdits { [weak self] in self?.movePane(delta, pane: pane) } }
         let count = model.items.count
         let taken = Set((0..<model.paneCount).compactMap { model.index(forPane: $0) })
         var next = current
@@ -828,6 +853,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     private func moveAllPanes(_ delta: Int) {
         guard let next = model.advance(delta, loop: prefs.loopFolder) else { return }
+        if hasUnsavedEdits { return settleEdits { [weak self] in self?.moveAllPanes(delta) } }
         let shift = next - model.index, count = model.items.count
         model.setPrimary(next)
         model.compareIndices = model.compareIndices.map { (($0 + shift) % count + count) % count }
@@ -1039,7 +1065,11 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Panels
 
     @objc func toggleInspector(_ sender: Any?) {
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { model.showInspector.toggle() }
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            model.showInspector.toggle()
+            // One card on the right at a time; the Light panel has its own histogram.
+            if model.showInspector { model.showLight = false }
+        }
         updateStatus()
         revealChrome()
     }
@@ -1230,6 +1260,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func moveToTrash(_ sender: Any?) {
         guard let item = targetItem else { return }
+        if item.url == model.current?.url, hasUnsavedEdits { return settleEdits { [weak self] in self?.moveToTrash(sender) } }
         NSWorkspace.shared.recycle([item.url]) { [weak self] _, error in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -1314,6 +1345,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         case 53:
             if model.showShortcuts { toggleShortcuts(nil) }
             else if model.isComparing { toggleCompare(nil) }
+            else if model.showLight { toggleLight(nil) }
             else if model.showInspector { toggleInspector(nil) }
             else if slideshowTimer != nil { stopSlideshow() }
             else if window?.styleMask.contains(.fullScreen) == true { window?.toggleFullScreen(nil) }
@@ -1327,6 +1359,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         case "1", "2", "3", "4", "5": applyZoomMode(Self.zoomModes[Int(chars)! - 1])
         case "z", "Z": toggleActualSize(nil)
         case "i", "I": toggleInspector(nil)
+        case "e", "E": toggleLight(nil)
+        case "\\": toggleOriginal(nil)
         case "t", "T": toggleFilmstrip(nil)
         case "s", "S": toggleSlideshow(nil)
         case "d", "D": compareNext()
@@ -1390,7 +1424,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
                 withAnimation(.easeOut(duration: 0.25)) { model.filmstripRevealed = false }
             }
         }
-        if idleSeconds > Self.chromeGrace, model.chromeVisible, !model.showInspector, !model.items.isEmpty,
+        if idleSeconds > Self.chromeGrace, model.chromeVisible, !model.showInspector, !model.showLight, !model.items.isEmpty,
            !(model.filmstripRevealed && !filmstripRested) {
             setChromeVisible(false)
             if window.styleMask.contains(.fullScreen) { NSCursor.setHiddenUntilMouseMoves(true) }
@@ -1449,6 +1483,12 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidBecomeKey(_ notification: Notification) { window?.makeFirstResponder(canvas) }
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard hasUnsavedEdits else { return true }
+        settleEdits { [weak sender] in sender?.close() }
+        return false
+    }
+
     func windowWillClose(_ notification: Notification) {
         if let frame = window?.frame { prefs.saveWindowFrame(frame) }
         slideshowTimer?.invalidate()
@@ -1473,9 +1513,13 @@ extension ViewerWindowController: CanvasDelegate {
         userZoomed()
     }
 
-    func canvasNeedsFull(_ url: URL) { requestFullDecode(for: url) }
+    func canvasNeedsFull(_ url: URL) {
+        if keepsEdits(url) { return requestEditedFull(url) }
+        requestFullDecode(for: url)
+    }
 
     func canvasNeedsDetail(_ url: URL) {
+        if keepsEdits(url) { return }
         guard !requestedDetail.contains(url.path), store.cachedDetail(url) == nil else { return }
         requestedDetail.insert(url.path)
         // Debounced and re-checked like the full decode: this one can be gigabytes.

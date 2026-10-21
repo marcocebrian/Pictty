@@ -63,6 +63,20 @@ final class ViewerModel: ObservableObject {
     @Published var showClipping = false
     @Published var mirrored = false
 
+    // MARK: Light
+
+    @Published var showLight = false
+    /// The Light panel's values. Algorithm choices outlive the picture; values do not.
+    @Published var light = LightAdjustments()
+    /// Which engine edits the picture on screen, or why it cannot be edited.
+    @Published var lightEngine: LightRenderer.Engine?
+    @Published var lightUnavailable: String?
+    /// "Pictty engine · 12 ms", for the panel's footer.
+    @Published var lightTiming = ""
+    /// Showing the picture as it was, for a before-and-after.
+    @Published var showingOriginal = false
+    @Published var isSaving = false
+
     // MARK: Metadata
 
     @Published var report: MetadataReport = .empty

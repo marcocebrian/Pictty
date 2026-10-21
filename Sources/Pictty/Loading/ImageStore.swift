@@ -142,4 +142,6 @@ final class ThumbStore: @unchecked Sendable {
     }
 
     func removeAll() { cache.removeAllObjects() }
+
+    func forget(_ url: URL) { cache.removeObject(forKey: url as NSURL) }
 }

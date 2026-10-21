@@ -1,5 +1,7 @@
 import AppKit
+import ImageIO
 import PicttyCore
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -66,6 +68,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         }
                     case "shortcuts": controller.toggleShortcuts(nil)
                     case "loading": controller.model.loadingText = "Developing RAW…"
+                    case "light": controller.toggleLight(nil)
+                    case let light where light.hasPrefix("light="):
+                        // light=<exposure>/<contrast>/<brightness>/<highlights>/<shadows>[/<five algorithm digits>]
+                        let f = light.dropFirst(6).split(separator: "/").map(String.init)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            var a = LightAdjustments()
+                            for (i, c) in LightControl.allCases.enumerated() where i < f.count { c.set(Double(f[i]) ?? 0, in: &a) }
+                            if f.count > 5 {
+                                for (c, d) in zip(LightControl.allCases, f[5]) { c.setAlgorithm(Int(String(d)) ?? 1, in: &a) }
+                            }
+                            controller.setLight(a)
+                        }
+                    case let save where save.hasPrefix("save@") || save.hasPrefix("saveas@"):
+                        // Save, or the Save As sheet, after a delay.
+                        let delay = Double(save.split(separator: "@").last ?? "") ?? 4
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                            save.hasPrefix("saveas") ? controller.saveEditsAs(nil) : controller.saveEdits(nil)
+                        }
+                    case let view where view.hasPrefix("exportview="):
+                        // The Save As settings on their own, as a PNG: exportview=<path>[@<format>]
+                        let spec = view.dropFirst(11).split(separator: "@")
+                        var o = ExportOptions()
+                        if spec.count > 1, let f = ExportFormat(rawValue: String(spec[1])) { o.format = f }
+                        let settings = ExportSettings(options: o, isHDR: true, hasAlpha: true,
+                                                      pixelSize: CGSize(width: 6000, height: 4000), edited: true)
+                        let host = NSHostingView(rootView: ExportSettingsView(settings: settings))
+                        host.appearance = NSAppearance(named: .aqua)
+                        host.frame.size = host.fittingSize
+                        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+                        window.contentView = host
+                        window.orderBack(nil)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+                            host.cacheDisplay(in: host.bounds, to: rep)
+                            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: String(spec[0])))
+                            window.close()
+                        }
+                    case let dump where dump.hasPrefix("dump="):
+                        // The picture the canvas shows, as a PNG: dump=<path>[@seconds]
+                        let spec = dump.dropFirst(5).split(separator: "@")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + (spec.count > 1 ? Double(spec[1]) ?? 4 : 4)) {
+                            guard let image = controller.canvas.shown(pane: 0)?.preview,
+                                  let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: String(spec[0])) as CFURL,
+                                                                             "public.png" as CFString, 1, nil) else { return }
+                            CGImageDestinationAddImage(dest, image, nil)
+                            CGImageDestinationFinalize(dest)
+                        }
                     case let all where all.hasPrefix("snapall="):
                         // Every window, as <prefix>-<n>.png.
                         let prefix = String(all.dropFirst(8))
@@ -164,6 +213,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// Edits only on screen are settled first, one window at a time; then quitting asks again.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let edited = controllers.first(where: \.hasUnsavedEdits) else { return .terminateNow }
+        edited.window?.makeKeyAndOrderFront(nil)
+        edited.settleEdits(cancelled: { sender.reply(toApplicationShouldTerminate: false) }) {
+            sender.reply(toApplicationShouldTerminate: false)
+            DispatchQueue.main.async { sender.terminate(nil) }
+        }
+        return .terminateLater
+    }
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
 
     // MARK: - Menu
@@ -211,6 +271,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             recent.submenu = recentMenu
             m.addItem(recent)
             m.addItem(.separator())
+            add(m, "Save", #selector(C.saveEdits(_:)), "s")
+            add(m, "Save As…", #selector(C.saveEditsAs(_:)), "s", [.command, .shift])
+            m.addItem(.separator())
             add(m, "Copy Image", #selector(C.copyCurrentImage(_:)), "c")
             add(m, "Reveal in Finder", #selector(C.revealInFinder(_:)), "r")
             add(m, "Open With Default App", #selector(C.openInDefaultApp(_:)), "o", [.command, .shift])
@@ -249,6 +312,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             m.addItem(.separator())
             add(m, "Show Filmstrip", #selector(C.toggleFilmstrip(_:)), "t", [])
             add(m, "Show Information", #selector(C.toggleInspector(_:)), "i", [])
+            add(m, "Adjust", #selector(C.toggleLight(_:)), "e", [])
+            add(m, "Show Original", #selector(C.toggleOriginal(_:)), "\\", [])
             add(m, "Show Info Pill", #selector(C.toggleHUD(_:)), "/", [])
             add(m, "Clipping Warnings", #selector(C.toggleClipping(_:)), "j", [])
             m.addItem(.separator())
@@ -308,6 +373,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "Next Image": "chevron.right", "Previous Image": "chevron.left",
         "First Image": "backward.end", "Last Image": "forward.end",
         "Minimize": "minus.rectangle", "Zoom": "plus.rectangle", "Keyboard Shortcuts": "keyboard", "Make Pictty the Default Viewer…": "checkmark.seal", "Inside Pictty": "sparkles", "Pictty Website": "safari", "More Apps at noxdrop.com": "square.grid.2x2", "Clipping Warnings": "exclamationmark.triangle",
+        "Save": "square.and.arrow.down", "Save As…": "square.and.arrow.down.on.square", "Adjust": "slider.horizontal.3",
+        "Show Original": "rectangle.lefthalf.inset.filled",
     ]
 
     func menuNeedsUpdate(_ menu: NSMenu) {

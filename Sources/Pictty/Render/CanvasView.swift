@@ -318,6 +318,26 @@ final class CanvasView: NSView {
         layoutPane(i, animated: false)
     }
 
+    /// The Light panel's result for the picture already in pane `i`, swapped in with no fade.
+    /// A screen-sized edit drops the sharper decodes, which no longer match it; the canvas asks
+    /// for them again (`canvasNeedsFull`) if the zoom needs them, and the edited full one comes
+    /// back here with `full`.
+    func showEdited(_ image: CGImage, full: Bool, pane i: Int) {
+        guard panes.indices.contains(i), var s = panes[i].shown else { return }
+        let p = panes[i]
+        if full {
+            s.full = image
+        } else {
+            s.preview = image
+            s.full = nil
+        }
+        s.detail = nil
+        p.shown = s
+        dropSharp(p)
+        p.displayed = nil
+        layoutPane(i, animated: false)
+    }
+
     func clear(pane i: Int) {
         guard panes.indices.contains(i) else { return }
         let p = panes[i]

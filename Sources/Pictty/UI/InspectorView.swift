@@ -449,7 +449,7 @@ struct Badge: View {
 /// Red, green and blue added together over the luminance, the way light adds; with how much
 /// is clipped at each end and the switch for the warnings. The title switches to the waveform,
 /// which shows where across the picture the highlights and shadows are.
-private struct HistogramCard: View {
+struct HistogramCard: View {
     let analysis: ImageAnalysis
     let showClipping: Bool
     @Binding var style: HistogramStyle

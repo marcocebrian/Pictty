@@ -31,6 +31,7 @@ final class Preferences: ObservableObject {
         static let hiddenInspectorSections = "hiddenInspectorSections"
         static let pillFields = "pillFields"
         static let histogramStyle = "histogramStyle"
+        static let exportOptions = "exportOptions"
     }
 
     private let defaults: UserDefaults
@@ -63,6 +64,8 @@ final class Preferences: ObservableObject {
     /// In the pill's own order, whatever order they were switched on in.
     @Published var pillFields: [PillField] = PillField.standard { didSet { store(pillFields.map(\.rawValue), Key.pillFields) } }
     @Published var histogramStyle: HistogramStyle = .histogram { didSet { store(histogramStyle.rawValue, Key.histogramStyle) } }
+    /// The last Save As settings, which the next one starts from.
+    @Published var exportOptions = ExportOptions() { didSet { store(try? JSONEncoder().encode(exportOptions), Key.exportOptions) } }
 
     /// `PICTTY_DEFAULTS_SUITE` keeps a developer's test runs out of the real preferences.
     nonisolated static var store: UserDefaults {
@@ -111,6 +114,7 @@ final class Preferences: ObservableObject {
         hiddenInspectorSections = Set((defaults.stringArray(forKey: Key.hiddenInspectorSections) ?? []).compactMap(InspectorSection.init(rawValue:)))
         pillFields = defaults.stringArray(forKey: Key.pillFields).map { $0.compactMap(PillField.init(rawValue:)) } ?? PillField.standard
         histogramStyle = defaults.string(forKey: Key.histogramStyle).flatMap(HistogramStyle.init(rawValue:)) ?? .histogram
+        exportOptions = defaults.data(forKey: Key.exportOptions).flatMap { try? JSONDecoder().decode(ExportOptions.self, from: $0) } ?? ExportOptions()
     }
 
     func shows(_ section: InspectorSection) -> Bool { !hiddenInspectorSections.contains(section) }
