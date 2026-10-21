@@ -28,6 +28,8 @@ public struct Adjustments: Equatable, Sendable {
     /// The engine's own number for the method each tone slider uses, while candidates are compared.
     public var contrastAlgorithm = 2
     public var brightnessAlgorithm = 2
+    /// Vibrance and saturation share one: 1 per pixel, 2 by regions.
+    public var saturationAlgorithm = 2
     public var highlightsAlgorithm = 2
     public var shadowsAlgorithm = 1
 
@@ -82,6 +84,7 @@ public struct Adjustments: Equatable, Sendable {
         var a = Adjustments()
         a.contrastAlgorithm = contrastAlgorithm
         a.brightnessAlgorithm = brightnessAlgorithm
+        a.saturationAlgorithm = saturationAlgorithm
         a.highlightsAlgorithm = highlightsAlgorithm
         a.shadowsAlgorithm = shadowsAlgorithm
         return a
@@ -173,6 +176,9 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .contrast:
             [(1, "Sigmoid", "An S-curve on each pixel's brightness around mid-grey, holding black and white in place."),
              (2, "By regions", "The S-curve moves regions apart around the picture's own middle brightness; the texture in each keeps its own contrast, and nothing clips.")]
+        case .vibrance, .saturation:
+            [(1, "Per pixel", "Each pixel's colour judged and raised on its own, its colour noise with it."),
+             (2, "By regions", "Each region's colour raised whole, more in a dull picture and less in a vivid one; texture and colour noise within it are raised less.")]
         case .brightness:
             [(1, "CIELAB L*", "Raises lightness in a perceptual space; colour coordinates stay where they are."),
              (2, "By regions", "Lifts the picture's own midtones, region by region, holding black and white; the texture in each rides along.")]
@@ -230,6 +236,7 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .contrast: a.contrastAlgorithm
         case .brightness: a.brightnessAlgorithm
+        case .vibrance, .saturation: a.saturationAlgorithm
         case .highlights: a.highlightsAlgorithm
         case .shadows: a.shadowsAlgorithm
         default: nil
@@ -241,6 +248,7 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .contrast: a.contrastAlgorithm = id
         case .brightness: a.brightnessAlgorithm = id
+        case .vibrance, .saturation: a.saturationAlgorithm = id
         case .highlights: a.highlightsAlgorithm = id
         case .shadows: a.shadowsAlgorithm = id
         default: break

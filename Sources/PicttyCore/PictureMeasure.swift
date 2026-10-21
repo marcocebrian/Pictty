@@ -164,27 +164,44 @@ public enum PictureMeasure {
         return (min(max(noise, 0.0005), 0.2), min(max(blur, 0.3), 4))
     }
 
-    /// The median of a picture's encoded luminance (0…1 of `white`), from about 65 000 pixels on
-    /// a grid. `pixels`: premultiplied linear RGBA half floats, `rowFloats` values per row.
-    public static func medianLuma(_ pixels: UnsafePointer<Float16>, width w: Int, height h: Int, rowFloats: Int,
-                                  white: Float) -> Float {
+    /// The medians of a picture's encoded luminance (0…1 of `white`) and of its Oklab chroma, from
+    /// about 65 000 pixels on a grid. `pixels`: premultiplied linear RGBA half floats, `rowFloats`
+    /// values per row.
+    public static func medians(_ pixels: UnsafePointer<Float16>, width w: Int, height h: Int, rowFloats: Int,
+                               white: Float) -> (luma: Float, chroma: Float) {
         let step = max(1, Int((Double(w * h) / 65_536).squareRoot()))
-        var counts = [Int](repeating: 0, count: 256), n = 0
+        var counts = [Int](repeating: 0, count: 256), chromas = [Int](repeating: 0, count: 256), n = 0
         for y in stride(from: 0, to: h, by: step) {
             for x in stride(from: 0, to: w, by: step) {
                 let p = pixels + y * rowFloats + x * 4
                 let a = max(Float(p[3]), 1e-4)
-                let l = (0.2126 * Float(p[0]) + 0.7152 * Float(p[1]) + 0.0722 * Float(p[2])) / a / white
+                let r = Float(p[0]) / a / white, g = Float(p[1]) / a / white, b = Float(p[2]) / a / white
+                let l = 0.2126 * r + 0.7152 * g + 0.0722 * b
                 let e = l <= 0.0031308 ? l * 12.92 : 1.055 * pow(max(l, 0), 1 / 2.4) - 0.055
                 counts[min(max(Int(e * 255), 0), 255)] += 1
+                chromas[min(max(Int(oklabChroma(r, g, b) / 0.4 * 255), 0), 255)] += 1
                 n += 1
             }
         }
-        var seen = 0
-        for (i, c) in counts.enumerated() {
-            seen += c
-            if seen * 2 >= n { return (Float(i) + 0.5) / 255 }
+        func median(_ c: [Int]) -> Float? {
+            var seen = 0
+            for (i, k) in c.enumerated() {
+                seen += k
+                if seen * 2 >= n { return (Float(i) + 0.5) / 255 }
+            }
+            return nil
         }
-        return 0.46
+        return (median(counts) ?? 0.46, (median(chromas) ?? 0.1) * 0.4)
+    }
+
+    /// The chroma of a linear sRGB colour in Oklab (Ottosson).
+    static func oklabChroma(_ r: Float, _ g: Float, _ b: Float) -> Float {
+        func cbrt(_ x: Float) -> Float { x < 0 ? -pow(-x, 1 / 3) : pow(x, 1 / 3) }
+        let l = cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+        let m = cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+        let s = cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+        let A = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s
+        let B = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s
+        return (A * A + B * B).squareRoot()
     }
 }

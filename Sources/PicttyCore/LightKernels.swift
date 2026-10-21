@@ -52,6 +52,10 @@ struct Params {
     /// after exposure, encoded, 0…1, which they work around.
     int contrastAlgorithm, brightnessAlgorithm;
     float key;
+    /// Vibrance and saturation: 1 per pixel, 2 by regions; `vibranceScale`, how much vibrance this
+    /// picture's own colourfulness calls for (by regions).
+    int saturationAlgorithm;
+    float vibranceScale;
 };
 
 constant float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
@@ -155,11 +159,17 @@ inline float skinLikeness(float3 o) {
 /// raises every colour alike and skin by half. Lowered, saturation greys everything evenly and
 /// vibrance the most saturated colours first. A raised colour comes softly to rest at the edge of
 /// Display P3 instead of clipping there, which would change its hue.
-inline float3 vibranceAndSaturation(float3 c, float vibrance, float saturation) {
+///
+/// `region`: the colour (Oklab a, b) of the region the pixel belongs to, when it works by regions.
+/// Then how muted and how skin-like are the region's, the region's colour takes the whole gain, and
+/// the pixel's own variation around it (texture, and colour noise) a quarter of it, so neither is
+/// amplified.
+inline float3 vibranceAndSaturation(float3 c, float vibrance, float saturation, bool byRegion, float2 region) {
     float3 o = toOklab(c);
-    float chroma = length(o.yz);
-    if (chroma < 1e-6) return c;
-    float skin = skinLikeness(o);
+    if (length(o.yz) < 1e-6 && !byRegion) return c;
+    float3 judged = byRegion ? float3(o.x, region) : o;
+    float chroma = length(judged.yz);
+    float skin = skinLikeness(judged);
     // Oklab's chroma reaches about 0.33 in sRGB; past a quarter, a colour is a strong one.
     float strength = clamp(chroma / 0.25, 0.0, 1.0);
     float k = 1.0;
@@ -173,22 +183,57 @@ inline float3 vibranceAndSaturation(float3 c, float vibrance, float saturation) 
     } else if (saturation < 0.0) {
         k *= 1.0 + saturation;
     }
+    float2 target = o.yz * k;
+    if (byRegion && k > 1.0) target = region * k + (o.yz - region) * (1.0 + 0.25 * (k - 1.0));
     if (k > 1.0 && inP3(c)) {
-        // The furthest chroma that stays inside, by bisection, then a soft knee towards it.
-        float lo = 1.0, hi = k;
-        if (!inP3(fromOklab(float3(o.x, o.yz * k)))) {
+        // The furthest along the way that stays inside, by bisection, then a soft knee towards it.
+        if (!inP3(fromOklab(float3(o.x, target)))) {
+            float lo = 0.0, hi = 1.0;
             for (int i = 0; i < 10; i++) {
                 float mid = 0.5 * (lo + hi);
-                if (inP3(fromOklab(float3(o.x, o.yz * mid)))) lo = mid; else hi = mid;
+                if (inP3(fromOklab(float3(o.x, mix(o.yz, target, mid))))) lo = mid; else hi = mid;
             }
-            float limit = lo, knee = 1.0 + 0.7 * (limit - 1.0);
-            if (k > knee) k = knee + (limit - knee) * (1.0 - exp(-(k - knee) / max(limit - knee, 1e-4)));
+            float knee = 0.7 * lo;
+            float t = knee + (lo - knee) * (1.0 - exp(-(1.0 - knee) / max(lo - knee, 1e-4)));
+            target = mix(o.yz, target, t);
         }
     } else if (k > 1.0) {
         // Already outside the screen's colours: no further.
-        k = 1.0;
+        target = o.yz;
     }
-    return fromOklab(float3(o.x, o.yz * k));
+    return fromOklab(float3(o.x, target));
+}
+
+// MARK: - Colour by regions: Oklab a and b, each through a guided filter guided by itself
+
+/// On a quarter-size grid: the Oklab a and b of each cell's mean colour, packed for the box means
+/// as (a, a², b, b²).
+kernel void colourMoments(texture2d<float, access::read> lit [[texture(0)]],
+                          texture2d<float, access::write> moments [[texture(1)]],
+                          constant Params& p [[buffer(0)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= moments.get_width() || gid.y >= moments.get_height()) return;
+    int2 size = int2(lit.get_width(), lit.get_height());
+    float3 rgb = 0.0;
+    for (int j = 0; j < 4; j++) {
+        for (int i = 0; i < 4; i++) {
+            rgb += lit.read(uint2(min(int(gid.x) * 4 + i, size.x - 1), min(int(gid.y) * 4 + j, size.y - 1))).rgb;
+        }
+    }
+    float2 ab = toOklab(max(rgb / 16.0, 0.0) / p.white).yz;
+    moments.write(float4(ab.x, ab.x * ab.x, ab.y, ab.y * ab.y), gid);
+}
+
+/// The guided filter's linear models for a and b from their box means: (αa, βa, αb, βb).
+kernel void colourCoefficients(texture2d<float, access::read> moments [[texture(0)]],
+                               texture2d<float, access::write> dst [[texture(1)]],
+                               constant Params& p [[buffer(0)]],
+                               uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
+    float4 m = moments.read(gid);
+    float va = max(m.y - m.x * m.x, 0.0), vb = max(m.w - m.z * m.z, 0.0);
+    float aa = va / (va + p.eps), ab = vb / (vb + p.eps);
+    dst.write(float4(aa, m.x - aa * m.x, ab, m.z - ab * m.z), gid);
 }
 
 inline float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
@@ -440,6 +485,7 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
                    texture2d<float, access::read> detailFine [[texture(5)]],
                    texture2d<float, access::read> detailCoarse [[texture(6)]],
                    texture2d<float, access::sample> regions [[texture(7)]],
+                   texture2d<float, access::sample> colourRegions [[texture(8)]],
                    constant Params& p [[buffer(0)]],
                    uint2 gid [[thread_position_in_grid]]) {
     uint2 size = uint2(out.get_width(), out.get_height());
@@ -521,9 +567,20 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
         }
     }
 
-    // Vibrance and saturation.
+    // Vibrance and saturation. By regions, the region's colour was measured on the picture as it
+    // came in; Oklab's a and b scale with lightness, so it follows the pixel's lightness since.
     if (p.vibrance != 0.0 || p.saturation != 0.0) {
-        rgb = vibranceAndSaturation(rgb / W, p.vibrance, p.saturation) * W;
+        bool byRegion = p.saturationAlgorithm == 2;
+        float2 region = 0.0;
+        if (byRegion) {
+            constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+            float4 m = colourRegions.sample(s, (float2(gid) + 0.5) / float2(size));
+            float3 was = toOklab(max(c.rgb, 0.0) / W);
+            float now = toOklab(max(rgb, 0.0) / W).x;
+            region = float2(m.x * was.y + m.y, m.z * was.z + m.w) * (was.x > 1e-4 ? now / was.x : 1.0);
+        }
+        rgb = vibranceAndSaturation(rgb / W, byRegion ? p.vibrance * p.vibranceScale : p.vibrance, p.saturation,
+                                    byRegion, region) * W;
     }
 
     // Colour grading: each pixel takes the colours of the ranges it belongs to, by its brightness

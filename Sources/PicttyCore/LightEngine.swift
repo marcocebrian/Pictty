@@ -30,15 +30,18 @@ public final class LightEngine: @unchecked Sendable {
         public let blur: Float
         /// The picture's middle brightness: the median of its encoded luminance, 0…1.
         public let key: Float
+        /// How colourful the picture is: the median Oklab chroma of its pixels.
+        public let chroma: Float
         /// The same picture through the denoiser, once it has been.
         fileprivate(set) var denoised: MTLTexture?
         fileprivate var scratch: [String: MTLTexture] = [:]
 
         public var hasDenoised: Bool { denoised != nil }
 
-        init(width: Int, height: Int, white: Float, isHDR: Bool, input: MTLTexture, noise: Float, blur: Float, key: Float) {
+        init(width: Int, height: Int, white: Float, isHDR: Bool, input: MTLTexture, noise: Float, blur: Float, key: Float,
+             chroma: Float) {
             self.width = width; self.height = height; self.white = white; self.isHDR = isHDR; self.input = input
-            self.noise = noise; self.blur = blur; self.key = key
+            self.noise = noise; self.blur = blur; self.key = key; self.chroma = chroma
         }
     }
 
@@ -54,7 +57,7 @@ public final class LightEngine: @unchecked Sendable {
         self.device = device
         self.queue = queue
         for name in ["prepare", "downsample", "remap", "accumulate", "collapse", "guidedMoments", "boxHorizontal",
-                     "boxVertical", "guidedCoefficients", "detailBand", "localExposure", "finish"] {
+                     "boxVertical", "guidedCoefficients", "detailBand", "localExposure", "colourMoments", "colourCoefficients", "finish"] {
             guard let f = library.makeFunction(name: name),
                   let state = try? device.makeComputePipelineState(function: f) else { return nil }
             pipelines[name] = state
@@ -83,10 +86,10 @@ public final class LightEngine: @unchecked Sendable {
         let hdr = headroom > 1.001
         let measured = PictureMeasure.noiseAndBlur(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
                                                    rowFloats: ctx.bytesPerRow / 2)
-        let key = PictureMeasure.medianLuma(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
-                                            rowFloats: ctx.bytesPerRow / 2, white: hdr ? headroom : 1)
+        let medians = PictureMeasure.medians(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
+                                             rowFloats: ctx.bytesPerRow / 2, white: hdr ? headroom : 1)
         return Source(width: w, height: h, white: hdr ? headroom : 1, isHDR: hdr, input: texture,
-                      noise: measured.noise, blur: measured.blur, key: key)
+                      noise: measured.noise, blur: measured.blur, key: medians.luma, chroma: medians.chroma)
     }
 
     /// Gives `src` its denoised counterpart, the same size, colour-managed the same way.
@@ -144,6 +147,8 @@ public final class LightEngine: @unchecked Sendable {
         var vibrance: Float = 0, saturation: Float = 0
         var contrastAlgorithm: Int32 = 2, brightnessAlgorithm: Int32 = 2
         var key: Float = 0.46
+        var saturationAlgorithm: Int32 = 2
+        var vibranceScale: Float = 1
     }
 
     /// Samples of the Laplacian remap across the brightness range.
@@ -162,6 +167,9 @@ public final class LightEngine: @unchecked Sendable {
         p.highlights = Float(a.highlights); p.shadows = Float(a.shadows)
         p.contrastAlgorithm = Int32(a.contrastAlgorithm); p.brightnessAlgorithm = Int32(a.brightnessAlgorithm)
         p.key = Self.key(src, exposure: Float(a.exposure))
+        p.saturationAlgorithm = Int32(a.saturationAlgorithm)
+        // A dull picture is given more vibrance, a vivid one less: about 0.08 of Oklab chroma is typical.
+        p.vibranceScale = min(max((0.08 / max(src.chroma, 0.02)).squareRoot(), 0.75), 1.3)
         p.highlightsAlgorithm = Int32(a.highlightsAlgorithm); p.shadowsAlgorithm = Int32(a.shadowsAlgorithm)
         p.vibrance = Float(a.vibrance); p.saturation = Float(a.saturation)
         if !a.isWhiteBalanceNeutral {
@@ -322,8 +330,26 @@ public final class LightEngine: @unchecked Sendable {
             regions = r
         }
 
+        // Vibrance and saturation by regions: each region's colour, edge-aware, on a quarter-size grid.
+        var colourRegions: MTLTexture?
+        if !a.isSaturationNeutral, a.saturationAlgorithm == 2 {
+            let w4 = (w + 3) / 4, h4 = (h + 3) / 4
+            guard let m = scratch(src, "km", .rgba32Float, w4, h4), let t = scratch(src, "kt", .rgba32Float, w4, h4),
+                  let ab = scratch(src, "kab", .rgba32Float, w4, h4) else { return nil }
+            dispatch(cb, "colourMoments", [lit, m], &p, w4, h4)
+            p.radius = Int32(max(2, Double(max(w4, h4)) * 0.03))
+            // Colour edges of about 0.03 in Oklab chroma and up hold; less than that is smoothed.
+            p.eps = 0.0009
+            dispatch(cb, "boxHorizontal", [m, t], &p, w4, h4)
+            dispatch(cb, "boxVertical", [t, m], &p, w4, h4)
+            dispatch(cb, "colourCoefficients", [m, ab], &p, w4, h4)
+            dispatch(cb, "boxHorizontal", [ab, t], &p, w4, h4)
+            dispatch(cb, "boxVertical", [t, ab], &p, w4, h4)
+            colourRegions = ab
+        }
+
         dispatch(cb, "finish", [lit, luma, coefficients ?? lit, rebuilt ?? luma, out, fine ?? luma, coarse ?? luma,
-                                regions ?? lit], &p, w, h)
+                                regions ?? lit, colourRegions ?? lit], &p, w, h)
         cb.commit()
         cb.waitUntilCompleted()
         guard cb.status == .completed, let image = Self.image(from: out, output: output, headroom: src.isHDR ? src.white : 1)

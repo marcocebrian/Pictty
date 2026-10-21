@@ -2,8 +2,8 @@
 // first, then Light (exposure, contrast, brightness, highlights, shadows) and Colour: white
 // balance, with Auto and an eyedropper, vibrance and saturation, and colour grading on three wheels.
 //
-// Contrast, brightness, highlights and shadows still have numbered buttons: the candidates being
-// compared. The winner stays and the buttons go.
+// Contrast, brightness, highlights, shadows, vibrance and saturation still have numbered buttons:
+// the candidates being compared. The winner stays and the buttons go.
 
 import PicttyCore
 import SwiftUI
@@ -156,7 +156,7 @@ struct AdjustPanelView: View {
                 Spacer()
             }
             ForEach(AdjustmentControl.saturationControls) { control in
-                SliderRow(control: control, adjustments: a, showsAlgorithms: false, change: change)
+                SliderRow(control: control, adjustments: a, showsAlgorithms: true, change: change)
             }
 
             Rectangle().fill(.white.opacity(0.07)).frame(height: 0.5).padding(.vertical, 2)

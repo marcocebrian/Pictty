@@ -177,6 +177,35 @@ final class LightEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(strongVib, 0.999)
     }
 
+    /// By regions, vibrance raises a grey picture's colour noise far less than per pixel, which
+    /// takes each speck for a muted colour and raises it most.
+    func testVibranceByRegionsLeavesColourNoiseAlone() throws {
+        let w = 96, h = 96
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let px = ctx.data!.assumingMemoryBound(to: UInt8.self)
+        var seed: UInt32 = 7
+        func noise() -> Int { seed = seed &* 1_664_525 &+ 1_013_904_223; return Int(seed >> 28) - 8 }
+        for i in 0..<(w * h) {
+            px[i * 4] = UInt8(128 + noise()); px[i * 4 + 1] = UInt8(128 + noise()); px[i * 4 + 2] = UInt8(128 + noise())
+            px[i * 4 + 3] = 255
+        }
+        let image = ctx.makeImage()!
+        let engine = try XCTUnwrap(LightEngine())
+        let src = try XCTUnwrap(engine.source(image))
+        func spread(_ algorithm: Int?) throws -> Float {
+            var a = Adjustments()
+            if let algorithm { a.vibrance = 1; a.saturationAlgorithm = algorithm }
+            let p = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
+            var sum: Float = 0
+            for i in 0..<(w * h) { sum += abs(p[i * 4] - p[i * 4 + 1]) + abs(p[i * 4 + 2] - p[i * 4 + 1]) }
+            return sum / Float(w * h)
+        }
+        let before = try spread(nil), perPixel = try spread(1), byRegions = try spread(2)
+        XCTAssertGreaterThan(perPixel, before * 1.8)
+        XCTAssertLessThan(byRegions, before * 1.5)
+    }
+
     /// A strong colour pushed hard stays inside what the screen shows (Display P3) instead of
     /// clipping a channel.
     func testSaturationStaysInsideTheGamut() throws {
