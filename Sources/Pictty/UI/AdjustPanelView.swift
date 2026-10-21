@@ -1,13 +1,14 @@
-// The editing panel, in the inspector's place on the right. Its first section is Light:
-// exposure, contrast, brightness, highlights and shadows, with the live histogram above them.
+// The Adjust panel, on the right of the window, which makes room for it. The live histogram
+// first, then Light (exposure, contrast, brightness, highlights, shadows) and Colour: white
+// balance, with Auto and an eyedropper, and colour grading on three wheels.
 //
-// While the algorithms are being compared, each slider has three small numbered buttons: the
-// candidates. The winner stays and the buttons go.
+// Highlights and shadows still have numbered buttons: the candidates being compared. The winner
+// stays and the buttons go.
 
 import PicttyCore
 import SwiftUI
 
-struct LightPanelView: View {
+struct AdjustPanelView: View {
     @ObservedObject var model: ViewerModel
     @ObservedObject var prefs: Preferences
     let controller: ViewerWindowController
@@ -26,15 +27,14 @@ struct LightPanelView: View {
                                 controller.toggleClipping(nil)
                             }
                         }
-                        lightCard
+                        lightSection
+                        colourSection
                         engineFooter
                     }
                     .padding(.horizontal, 14)
                     .padding(.top, 12)
                     .padding(.bottom, 16)
                 }
-                Divider().overlay(.white.opacity(0.08))
-                actions
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -42,7 +42,9 @@ struct LightPanelView: View {
         .padding(EdgeInsets(top: 4, leading: 14, bottom: 14, trailing: 4))
     }
 
-    private var edited: Bool { !model.light.isNeutral }
+    private var a: Adjustments { model.light }
+    private var edited: Bool { !a.isNeutral }
+    private func change(_ new: Adjustments) { controller.setLight(new) }
 
     // MARK: Header
 
@@ -74,7 +76,7 @@ struct LightPanelView: View {
                                 Label("Showing the original", systemImage: "eye")
                                     .foregroundStyle(Color(hex: 0xFBBC04))
                             } else if edited {
-                                Label("Edited · only on screen until saved", systemImage: "circle.fill")
+                                Label("Edited · ⌘S to save", systemImage: "circle.fill")
                                     .foregroundStyle(Color(hex: 0xF57C3B).opacity(0.95))
                             } else {
                                 Label("Untouched", systemImage: "checkmark.circle")
@@ -111,30 +113,54 @@ struct LightPanelView: View {
 
     // MARK: Light
 
-    private var lightCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                SymbolTile(symbol: "sun.max.fill", colors: [Color(hex: 0xFBBC04), Color(hex: 0xEA4335)], size: 22)
-                Text("Light")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.92))
-                Spacer()
-                if model.lightEngine == .pictty {
-                    Text("ALGORITHM")
-                        .font(.system(size: 8.5, weight: .heavy, design: .rounded))
-                        .tracking(0.7)
-                        .foregroundStyle(.white.opacity(0.38))
-                }
-            }
-            ForEach(LightControl.allCases) { control in
-                LightRow(control: control, adjustments: model.light, showsAlgorithms: model.lightEngine == .pictty) {
-                    controller.setLight($0)
-                }
+    private var lightSection: some View {
+        SectionCard(title: "Light", symbol: "sun.max.fill", colors: [Color(hex: 0xFBBC04), Color(hex: 0xEA4335)],
+                    canReset: !a.isLightNeutral, reset: { change(a.lightReset) }) {
+            ForEach(AdjustmentControl.light) { control in
+                SliderRow(control: control, adjustments: a, showsAlgorithms: model.lightEngine == .pictty, change: change)
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.045)))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
+    }
+
+    // MARK: Colour
+
+    private var colourSection: some View {
+        SectionCard(title: "Colour", symbol: "paintpalette.fill", colors: [Color(hex: 0xA05CE0), Color(hex: 0xEA4335)],
+                    canReset: !a.isWhiteBalanceNeutral || !a.isGradingNeutral, reset: { change(a.colourReset) }) {
+            HStack(spacing: 6) {
+                SubHeading("WHITE BALANCE")
+                Spacer()
+                PillButton(title: "Auto", symbol: "wand.and.stars", help: "Find the light the picture was taken under and take it out") {
+                    controller.autoWhiteBalance(nil)
+                }
+                PillButton(title: nil, symbol: "eyedropper", isOn: model.pickingWhite,
+                           help: "Click something in the picture that should be neutral grey") {
+                    controller.toggleWhitePicker(nil)
+                }
+            }
+            ForEach(AdjustmentControl.whiteBalance) { control in
+                SliderRow(control: control, adjustments: a, showsAlgorithms: false, change: change)
+            }
+
+            Rectangle().fill(.white.opacity(0.07)).frame(height: 0.5).padding(.vertical, 2)
+
+            HStack {
+                SubHeading("COLOUR GRADING")
+                Spacer()
+            }
+            HStack(alignment: .top, spacing: 0) {
+                ForEach(ToneRange.allCases) { range in
+                    GradeWheel(range: range, shift: range.shift(a)) { shift in
+                        var new = a
+                        range.set(shift, in: &new)
+                        change(new)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            SliderRow(control: .balance, adjustments: a, showsAlgorithms: false, change: change)
+                .opacity(a.isGradingNeutral ? 0.55 : 1)
+        }
     }
 
     private var engineFooter: some View {
@@ -155,55 +181,141 @@ struct LightPanelView: View {
                 }
             }
             Text(model.lightEngine == .appleRAW
-                 ? "Camera RAWs develop in Apple's engine for now: exposure in the develop, then Core Image's own tone filters."
-                 : "Linear light in half float on the GPU. Each numbered button picks a candidate algorithm for that slider.")
+                 ? "Camera RAWs develop in Apple's engine for now: exposure and white balance in the develop, then Core Image's own tone filters."
+                 : "Linear light in half float on the GPU.")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.white.opacity(0.5))
                 .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 5) {
+                KeyCap(text: "⌘S")
+                Text("Save").foregroundStyle(.white.opacity(0.5))
+                KeyCap(text: "⇧⌘S").padding(.leading, 6)
+                Text("Save As…").foregroundStyle(.white.opacity(0.5))
+                KeyCap(text: "\\").padding(.leading, 6)
+                Text("Original").foregroundStyle(.white.opacity(0.5))
+            }
+            .font(.system(size: 10.5))
+            .padding(.top, 2)
         }
         .padding(11)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.03)))
     }
+}
 
-    // MARK: Actions
+// MARK: - Building blocks
 
-    private var actions: some View {
-        HStack(spacing: 8) {
-            PanelButton(title: "Revert", symbol: "arrow.uturn.backward", iconOnly: true, enabled: edited) { controller.resetLight(nil) }
-            Spacer(minLength: 0)
-            PanelButton(title: edited ? "Save As…" : "Convert…", symbol: "square.and.arrow.down.on.square",
-                        enabled: !model.isSaving) { controller.saveEditsAs(nil) }
-            if let item = model.current, controller.canSaveInPlace(item.url) {
-                PanelButton(title: "Save", symbol: "square.and.arrow.down", prominent: true,
-                            enabled: edited && !model.isSaving) { controller.saveEdits(nil) }
+private struct SectionCard<Content: View>: View {
+    let title: String
+    let symbol: String
+    let colors: [Color]
+    let canReset: Bool
+    let reset: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(spacing: 8) {
+                SymbolTile(symbol: symbol, colors: colors, size: 22)
+                Text(L(title))
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.92))
+                Spacer()
+                Button(action: reset) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white.opacity(canReset ? 0.7 : 0.2))
+                .disabled(!canReset)
+                .help(L("Reset %@", L(title)))
             }
+            content()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.045)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
+    }
+}
+
+private struct SubHeading: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Text(L(text))
+            .font(.system(size: 8.5, weight: .heavy, design: .rounded))
+            .tracking(0.7)
+            .foregroundStyle(.white.opacity(0.42))
+    }
+}
+
+/// A small capsule button for a section's own actions.
+private struct PillButton: View {
+    let title: String?
+    let symbol: String
+    var isOn = false
+    let help: String
+    let action: () -> Void
+    @State private var hovering = false
+    @State private var taps = 0
+
+    var body: some View {
+        Button {
+            taps += 1
+            action()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: symbol)
+                    .symbolEffect(.bounce, value: taps)
+                if let title { Text(L(title)) }
+            }
+            .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, title == nil ? 7 : 9)
+            .padding(.vertical, 4)
+            .foregroundStyle(isOn ? .white : .white.opacity(0.85))
+            .background {
+                Capsule().fill(isOn ? AnyShapeStyle(LinearGradient(colors: [Color(hex: 0x4285F4), Color(hex: 0x6A4CE0)],
+                                                                   startPoint: .topLeading, endPoint: .bottomTrailing))
+                                    : AnyShapeStyle(Color.white.opacity(hovering ? 0.15 : 0.08)))
+            }
+            .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
+            .shadow(color: isOn ? Color(hex: 0x4285F4).opacity(0.6) : .clear, radius: 5)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(L(help))
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 
 // MARK: - A slider row
 
-private struct LightRow: View {
-    let control: LightControl
-    let adjustments: LightAdjustments
+private struct SliderRow: View {
+    let control: AdjustmentControl
+    let adjustments: Adjustments
     let showsAlgorithms: Bool
-    let change: (LightAdjustments) -> Void
+    let change: (Adjustments) -> Void
 
     private var value: Double { control.value(adjustments) }
-    private var algorithm: Int { control.algorithm(adjustments) }
+    private var candidates: [(id: Int, name: String, detail: String)] { showsAlgorithms ? control.algorithms : [] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
+                Image(systemName: control.symbol)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(value == 0 ? 0.45 : 0.85))
+                    .frame(width: 15)
                 Text(L(control.title))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.88))
-                    .onTapGesture(count: 2) { set(0) }
                 Spacer(minLength: 4)
-                if showsAlgorithms {
-                    AlgorithmPicker(control: control, selection: algorithm) { n in
+                if candidates.count > 1, let id = control.algorithm(adjustments) {
+                    AlgorithmPicker(candidates: candidates, selection: id) { n in
                         var a = adjustments
                         control.setAlgorithm(n, in: &a)
                         change(a)
@@ -214,18 +326,18 @@ private struct LightRow: View {
                     .foregroundStyle(value == 0 ? .white.opacity(0.45) : Color.accentColor)
                     .frame(width: 40, alignment: .trailing)
                     .contentTransition(.numericText(value: value))
-                    .onTapGesture(count: 2) { set(0) }
-                    .help("Double-click to reset")
             }
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { set(0) }
             LightSlider(value: value, range: control.range, track: track) { set($0) }
-            if showsAlgorithms {
-                Text(L(control.algorithms[algorithm - 1].name))
+            if candidates.count > 1, let id = control.algorithm(adjustments), let c = candidates.first(where: { $0.id == id }) {
+                Text(L(c.name))
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(.white.opacity(value == 0 ? 0.3 : 0.5))
                     .contentTransition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.15), value: algorithm)
+        .help(L("Double-click to reset"))
     }
 
     private func set(_ v: Double) {
@@ -248,38 +360,41 @@ private struct LightRow: View {
         case .brightness: [Color(white: 0.18), Color(white: 0.82)]
         case .highlights: [Color(white: 0.5), Color(white: 1)]
         case .shadows: [Color(white: 0), Color(white: 0.5)]
+        case .temperature: [Color(hex: 0x3F7DFF), Color(white: 0.82), Color(hex: 0xFFAE3A)]
+        case .tint: [Color(hex: 0x39C85A), Color(white: 0.82), Color(hex: 0xE24BD3)]
+        case .balance: [Color(white: 0.08), Color(white: 0.5), Color(white: 0.95)]
         }
     }
 }
 
-/// The three candidates, as numbered dots.
+/// The candidates, as numbered dots.
 private struct AlgorithmPicker: View {
-    let control: LightControl
+    let candidates: [(id: Int, name: String, detail: String)]
     let selection: Int
     let choose: (Int) -> Void
     @State private var hovered: Int?
 
     var body: some View {
         HStack(spacing: 3) {
-            ForEach(1...3, id: \.self) { n in
-                let on = n == selection
-                Text("\(n)")
+            ForEach(Array(candidates.enumerated()), id: \.offset) { i, c in
+                let on = c.id == selection
+                Text("\(i + 1)")
                     .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                    .foregroundStyle(on ? .white : .white.opacity(hovered == n ? 0.9 : 0.55))
+                    .foregroundStyle(on ? .white : .white.opacity(hovered == c.id ? 0.9 : 0.55))
                     .frame(width: 17, height: 17)
                     .background {
                         Circle().fill(on ? AnyShapeStyle(LinearGradient(colors: [Color(hex: 0x4285F4), Color(hex: 0x6A4CE0)],
                                                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                                         : AnyShapeStyle(Color.white.opacity(hovered == n ? 0.16 : 0.07)))
+                                         : AnyShapeStyle(Color.white.opacity(hovered == c.id ? 0.16 : 0.07)))
                     }
                     .overlay(Circle().strokeBorder(.white.opacity(on ? 0.3 : 0.12), lineWidth: 0.5))
                     .shadow(color: on ? Color(hex: 0x4285F4).opacity(0.7) : .clear, radius: 4)
                     .contentShape(Circle())
-                    .onHover { hovered = $0 ? n : (hovered == n ? nil : hovered) }
-                    .onTapGesture { choose(n) }
-                    .help("(\(n)) \(L(control.algorithms[n - 1].name)): \(L(control.algorithms[n - 1].detail))")
+                    .onHover { hovered = $0 ? c.id : (hovered == c.id ? nil : hovered) }
+                    .onTapGesture { choose(c.id) }
+                    .help("(\(i + 1)) \(L(c.name)): \(L(c.detail))")
                     .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
-                    .accessibilityLabel(L("Algorithm %ld: %@", n, L(control.algorithms[n - 1].name)))
+                    .accessibilityLabel(L("Algorithm %ld: %@", i + 1, L(c.name)))
             }
         }
         .animation(.spring(response: 0.25, dampingFraction: 0.7), value: selection)
@@ -287,7 +402,7 @@ private struct AlgorithmPicker: View {
 }
 
 /// A centre-zero slider: the track shows what it does, the fill grows from zero, and zero holds
-/// the knob a little so it is easy to come back to. ⌥ drags finely.
+/// the knob a little so it is easy to come back to. ⌥ drags finely; a double-click resets.
 private struct LightSlider: View {
     let value: Double
     let range: ClosedRange<Double>
@@ -335,12 +450,19 @@ private struct LightSlider: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
                         if dragStart == nil {
+                            // A double-click anywhere on the slider resets it.
+                            if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
+                                dragStart = .nan
+                                change(0)
+                                return
+                            }
                             // A press on the track jumps there; a press on the knob grabs it.
                             let onKnob = abs(g.startLocation.x - here) <= knob
                             dragStart = onKnob ? value : range.lowerBound + Double((g.startLocation.x - knob / 2) / usable) * span
                         }
+                        guard let start = dragStart, !start.isNaN else { return }
                         let fine = NSEvent.modifierFlags.contains(.option) ? 0.2 : 1
-                        var v = dragStart! + Double(g.translation.width / usable) * span * fine
+                        var v = start + Double(g.translation.width / usable) * span * fine
                         // A detent at zero.
                         if abs(v) < span * 0.012 { v = 0 }
                         change(min(max(v, range.lowerBound), range.upperBound))
@@ -359,6 +481,132 @@ private struct LightSlider: View {
         }
     }
 }
+
+// MARK: - Colour wheel
+
+/// One tonal range's colour: the angle is the colour, the distance from the centre how much of it.
+/// Drag anywhere on the wheel; ⇧ keeps the colour and changes only the amount, ⌥ moves finely,
+/// a double-click goes back to none. The wheel glows with what it is set to.
+private struct GradeWheel: View {
+    let range: ToneRange
+    let shift: ColourShift
+    let change: (ColourShift) -> Void
+
+    @State private var dragging = false
+    @State private var fineFrom: (start: CGPoint, puck: CGPoint)?
+    @State private var ignoring = false
+    @State private var hovering = false
+
+    private static let size: CGFloat = 74
+    private static let hues: [Color] = stride(from: 0.0, through: 360, by: 15).map {
+        Color(hue: $0 / 360, saturation: 0.92, brightness: 0.98)
+    }
+
+    private var colour: Color { Color(hue: shift.hue / 360, saturation: 0.3 + 0.7 * shift.amount, brightness: 1) }
+
+    var body: some View {
+        let r = Self.size / 2
+        let angle = shift.hue * .pi / 180
+        let puck = CGPoint(x: r + CGFloat(cos(angle) * shift.amount) * (r - 6), y: r + CGFloat(sin(angle) * shift.amount) * (r - 6))
+        VStack(spacing: 6) {
+            Text(L(range.title))
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.75))
+            ZStack {
+                // The glow of what the range is set to, behind the wheel.
+                Circle()
+                    .fill(colour)
+                    .blur(radius: 12)
+                    .opacity(shift.amount * (dragging ? 0.85 : 0.55))
+                    .scaleEffect(1.05)
+                Circle().fill(AngularGradient(colors: Self.hues, center: .center))
+                // Colour fades towards a neutral centre: the middle is "none".
+                Circle().fill(RadialGradient(colors: [Color(white: 0.26), Color(white: 0.26).opacity(0.6), .clear],
+                                             center: .center, startRadius: 0, endRadius: r))
+                Circle().fill(.black.opacity(0.2))
+                Circle()
+                    .strokeBorder(.white.opacity(0.1), style: StrokeStyle(lineWidth: 0.5, dash: [2, 3]))
+                    .padding(r * 0.5)
+                Path { p in
+                    p.move(to: CGPoint(x: r, y: 6)); p.addLine(to: CGPoint(x: r, y: Self.size - 6))
+                    p.move(to: CGPoint(x: 6, y: r)); p.addLine(to: CGPoint(x: Self.size - 6, y: r))
+                }
+                .stroke(.white.opacity(0.1), lineWidth: 0.5)
+                Circle()
+                    .strokeBorder(LinearGradient(colors: [.white.opacity(0.4), .white.opacity(0.06)], startPoint: .top, endPoint: .bottom),
+                                  lineWidth: 1)
+                if shift.amount > 0 {
+                    Path { p in p.move(to: CGPoint(x: r, y: r)); p.addLine(to: puck) }
+                        .stroke(.white.opacity(0.6), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+                }
+                Circle()
+                    .fill(.white.opacity(0.85))
+                    .frame(width: 3, height: 3)
+                Circle()
+                    .fill(colour)
+                    .frame(width: 13, height: 13)
+                    .overlay(Circle().strokeBorder(.white, lineWidth: 2))
+                    .shadow(color: shift.amount > 0 ? colour : .black.opacity(0.5), radius: dragging ? 7 : 4)
+                    .scaleEffect(dragging ? 1.25 : (hovering ? 1.1 : 1))
+                    .position(puck)
+            }
+            .frame(width: Self.size, height: Self.size)
+            .contentShape(Circle())
+            .onHover { hovering = $0 }
+            .gesture(drag(r: r, puck: puck))
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: dragging)
+            .animation(.easeOut(duration: 0.12), value: hovering)
+            .help(L("Drag to tint the %@: the angle is the colour, the distance how much. ⇧ keeps the colour, ⌥ moves finely, double-click resets.",
+                    L(range.title).lowercased()))
+            HStack(spacing: 4) {
+                if shift.amount > 0 {
+                    Circle().fill(colour).frame(width: 6, height: 6)
+                    Text("\(Int(shift.hue.rounded()))°")
+                    Text("\(Int((shift.amount * 100).rounded()))").foregroundStyle(Color.accentColor)
+                } else {
+                    Text("—").foregroundStyle(.white.opacity(0.35))
+                }
+            }
+            .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+            .foregroundStyle(.white.opacity(0.7))
+            .frame(height: 12)
+        }
+        .accessibilityElement()
+        .accessibilityLabel(L(range.title))
+        .accessibilityValue(shift.amount > 0 ? "\(Int(shift.hue))°, \(Int(shift.amount * 100))" : L("None"))
+    }
+
+    private func drag(r: CGFloat, puck: CGPoint) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { g in
+                if !dragging {
+                    dragging = true
+                    ignoring = (NSApp.currentEvent?.clickCount ?? 1) >= 2
+                    if ignoring { return change(ColourShift(hue: shift.hue, amount: 0)) }
+                    fineFrom = NSEvent.modifierFlags.contains(.option) ? (g.startLocation, puck) : nil
+                }
+                guard !ignoring else { return }
+                var p = g.location
+                if let fine = fineFrom {
+                    p = CGPoint(x: fine.puck.x + (g.location.x - fine.start.x) * 0.25, y: fine.puck.y + (g.location.y - fine.start.y) * 0.25)
+                }
+                let v = CGPoint(x: p.x - r, y: p.y - r)
+                var amount = min(1, Double(hypot(v.x, v.y) / (r - 6)))
+                if amount < 0.04 { amount = 0 }
+                var hue = atan2(Double(v.y), Double(v.x)) * 180 / .pi
+                if hue < 0 { hue += 360 }
+                if NSEvent.modifierFlags.contains(.shift), shift.amount > 0 { hue = shift.hue }
+                change(ColourShift(hue: amount == 0 ? shift.hue : hue, amount: amount))
+            }
+            .onEnded { _ in
+                dragging = false
+                fineFrom = nil
+                ignoring = false
+            }
+    }
+}
+
+// MARK: - Before and after
 
 /// Press and hold for the original; let go for the edit. \ toggles it from the keyboard.
 private struct BeforeAfterButton: View {
@@ -380,49 +628,6 @@ private struct BeforeAfterButton: View {
                 if enabled { press(pressing) }
             })
             .help("Hold to see the original (\\)")
-    }
-}
-
-/// A rounded glass button for the panel's foot.
-private struct PanelButton: View {
-    let title: String
-    let symbol: String
-    var prominent = false
-    var iconOnly = false
-    var enabled = true
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Group {
-                if iconOnly {
-                    Image(systemName: symbol).frame(width: 14)
-                } else {
-                    Label(L(title), systemImage: symbol).labelStyle(TightLabel())
-                }
-            }
-                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                .lineLimit(1)
-                .fixedSize()
-                .padding(.horizontal, iconOnly ? 7 : 11)
-                .padding(.vertical, 6)
-                .foregroundStyle(.white.opacity(enabled ? 0.95 : 0.35))
-                .background {
-                    Capsule().fill(prominent && enabled
-                                   ? AnyShapeStyle(LinearGradient(colors: [Color(hex: 0x4285F4), Color(hex: 0x6A4CE0)],
-                                                                  startPoint: .topLeading, endPoint: .bottomTrailing))
-                                   : AnyShapeStyle(Color.white.opacity(hovering && enabled ? 0.14 : 0.08)))
-                }
-                .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
-                .shadow(color: prominent && enabled ? Color(hex: 0x4285F4).opacity(0.5) : .clear, radius: 6)
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .help(iconOnly ? L(title) : "")
-        .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 

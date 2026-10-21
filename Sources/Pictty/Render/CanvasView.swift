@@ -19,6 +19,10 @@ protocol CanvasDelegate: AnyObject {
     func canvasWipeMoved()
     /// ⌥-click with the loupe up: the colour under the pointer.
     func canvasPickedColour(_ hex: String)
+    /// A click while `picking`: the point in the picture's own 0…1 coordinates, top-left origin.
+    func canvasPicked(_ point: CGPoint)
+    /// A trackpad rotation went past 45°: quarter turns, clockwise positive.
+    func canvasRotateGesture(_ quarterTurns: Int)
 }
 
 /// GPU-composited picture surface, one clipped pane per picture.
@@ -107,6 +111,9 @@ final class CanvasView: NSView {
     var background: CanvasBackground = .black { didSet { if oldValue != background { applyBackground() } } }
     var showClipping = false { didSet { if oldValue != showClipping { layoutAll() } } }
     var syncPan = true
+    /// The next click picks a point of the picture instead of panning (the white balance eyedropper).
+    var picking = false { didSet { if oldValue != picking { window?.invalidateCursorRects(for: self) } } }
+    private var rotationAccum: CGFloat = 0
     var syncZoom = true
     var animateTransitions = false
 
@@ -910,12 +917,34 @@ final class CanvasView: NSView {
         delegate?.canvasViewportChanged(pane: i)
     }
 
+    /// Two fingers turning on the trackpad: past 45° the picture turns a quarter, and again past
+    /// the next 90°, the way the gesture turns photos elsewhere on the Mac.
+    override func rotate(with e: NSEvent) {
+        if e.phase.contains(.began) { rotationAccum = 0 }
+        rotationAccum += CGFloat(e.rotation)
+        // The event counts counterclockwise as positive.
+        while abs(rotationAccum) >= 45 {
+            let clockwise = rotationAccum < 0
+            delegate?.canvasRotateGesture(clockwise ? 1 : -1)
+            rotationAccum += clockwise ? 90 : -90
+        }
+        if e.phase.contains(.ended) || e.phase.contains(.cancelled) { rotationAccum = 0 }
+    }
+
     override func smartMagnify(with e: NSEvent) {
         let point = convert(e.locationInWindow, from: nil)
         delegate?.canvasSmartZoom(pane: paneIndex(at: point), at: point)
     }
 
     override func mouseDown(with e: NSEvent) {
+        if picking {
+            let point = convert(e.locationInWindow, from: nil)
+            guard panes.indices.contains(0), let size = Optional(panes[0].image.bounds.size), size.width > 0 else { return }
+            let local = panes[0].image.convert(point, from: layer)
+            guard local.x >= 0, local.y >= 0, local.x < size.width, local.y < size.height else { return }
+            delegate?.canvasPicked(CGPoint(x: local.x / size.width, y: local.y / size.height))
+            return
+        }
         if e.modifierFlags.contains(.option), let picked = loupe.sample {
             delegate?.canvasPickedColour(picked.hex)
             return
@@ -1007,6 +1036,7 @@ final class CanvasView: NSView {
     }
 
     override func resetCursorRects() {
+        if picking { return addCursorRect(bounds, cursor: .crosshair) }
         let rects = paneRects(in: bounds.size)
         if isOverlay, compareLayout == .wipe {
             addCursorRect(CGRect(x: bounds.width * wipeFraction - 6, y: 0, width: 12, height: bounds.height), cursor: .resizeLeftRight)

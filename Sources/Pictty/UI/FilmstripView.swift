@@ -32,14 +32,14 @@ struct FilmstripView: View {
         content
             .liquidGlassCard(tint: 0.45)
             // Room for the inspector beside it, animated with the inspector's own toggle.
-            .padding(EdgeInsets(top: 6, leading: 10, bottom: 10, trailing: 10 + (model.showInspector ? 318 : 0)))
+            .padding(EdgeInsets(top: 6, leading: 10, bottom: 10, trailing: 10 + (model.showInspector || model.showLight ? 318 : 0)))
     }
 
     /// Pinned: edge to edge under the picture, no gaps, no corners of its own (the window's
     /// rounded corners finish it), a hairline where the picture ends.
     private var docked: some View {
         content
-            .padding(EdgeInsets(top: 6, leading: 0, bottom: 10, trailing: model.showInspector ? 324 : 0))
+            .padding(EdgeInsets(top: 6, leading: 0, bottom: 10, trailing: model.showInspector || model.showLight ? 324 : 0))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background {
                 ZStack {

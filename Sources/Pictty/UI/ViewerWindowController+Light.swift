@@ -1,6 +1,10 @@
-// The Light panel's side of the conductor: one picture edited at a time, on screen only until it
+// The Adjust panel's side of the conductor: one picture edited at a time, on screen only until it
 // is saved. The edited pixels replace the picture's decodes on the canvas, so zoom, the settled
 // Lanczos render, the loupe, the histogram and the clipping warnings all show the edit.
+//
+// A quarter turn or a mirror of the picture on screen is an edit too. Saved alone, it changes the
+// file's orientation tag and not one pixel; saved with other edits, the pixels are turned before
+// they are encoded.
 
 import AppKit
 import PicttyCore
@@ -19,20 +23,51 @@ final class LightSession {
     }
 }
 
-extension ViewerWindowController {
-    var hasUnsavedEdits: Bool { lightSession != nil && !model.light.isNeutral }
+extension ViewerWindowController: NSMenuItemValidation {
+    /// Edits that are only on screen: adjustments, or a turn or mirror of the picture.
+    var hasUnsavedEdits: Bool { hasUnsavedAdjustments || orientationChange != nil }
+
+    var hasUnsavedAdjustments: Bool { lightSession != nil && !model.light.isNeutral }
+
+    /// The turn and mirror of the picture on screen, if it has any and it can be saved.
+    var orientationChange: (quarterTurns: Int, mirror: Bool)? {
+        guard !model.isComparing, let item = model.current, canvas.shown(pane: 0)?.url == item.url else { return nil }
+        let vp = canvas.viewport(pane: 0)
+        return vp.rotation != 0 || vp.mirror ? (vp.rotation, vp.mirror) : nil
+    }
 
     /// The edited picture keeps its own pixels on the canvas.
     func keepsEdits(_ url: URL) -> Bool {
         lightSession?.renderer.url == url && !model.light.isNeutral
     }
 
+    /// The dot in the close button, as every Mac document window shows unsaved changes.
+    func updateDocumentEdited() {
+        let edited = hasUnsavedEdits
+        if window?.isDocumentEdited != edited { window?.isDocumentEdited = edited }
+        let url = model.current?.url
+        if window?.representedURL != url { window?.representedURL = url }
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(saveEdits(_:)), #selector(revertEdits(_:)): return hasUnsavedEdits && !model.isSaving
+        case #selector(saveEditsAs(_:)): return model.current != nil && model.lightUnavailable == nil && !model.isSaving
+        case #selector(toggleOriginal(_:)): return hasUnsavedAdjustments
+        default: return true
+        }
+    }
+
     @objc func toggleLight(_ sender: Any?) {
         withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
             model.showLight.toggle()
             if model.showLight { model.showInspector = false }
+            if !model.showLight { model.pickingWhite = false; canvas.picking = false }
         }
         updateLightAvailability()
+        syncChrome()
+        // Best Fit: the window grows by the panel so the picture keeps its size, as for the pinned strip.
+        fitWindowToPicture(animated: true)
         revealChrome()
     }
 
@@ -54,10 +89,11 @@ extension ViewerWindowController {
 
     // MARK: - Editing
 
-    /// The panel's sliders and buttons land here.
-    func setLight(_ a: LightAdjustments) {
+    /// The panel's sliders, wheels and buttons land here.
+    func setLight(_ a: Adjustments) {
         let previous = model.light
         model.light = a
+        defer { updateDocumentEdited() }
         guard model.lightUnavailable == nil, let url = model.current?.url, let shown = canvas.shown(pane: 0),
               shown.url == url else { return }
         if lightSession?.renderer.url != url {
@@ -76,17 +112,22 @@ extension ViewerWindowController {
     }
 
     private func beginLight(url: URL, shown: CanvasView.Shown) {
-        guard var preview = shown.preview ?? shown.full else { return }
-        // A full decode on screen is edited at screen size; zooming in renders every pixel.
-        let limit = CGFloat(store.previewMaxPixel)
-        let longest = CGFloat(max(preview.width, preview.height))
-        if longest > limit * 1.5 {
-            let k = limit / longest
-            preview = Resampler.render(preview, from: CGRect(x: 0, y: 0, width: preview.width, height: preview.height),
-                                       width: Int(CGFloat(preview.width) * k), height: Int(CGFloat(preview.height) * k)) ?? preview
-        }
+        guard let preview = originalPreview(shown) else { return }
         let renderer = LightRenderer(url: url, preview: preview, isHDR: shown.isHDR, maxPixel: store.previewMaxPixel)
         lightSession = LightSession(renderer: renderer, preview: preview)
+    }
+
+    /// The untouched picture at screen size: a full decode on screen is edited at screen size, and
+    /// zooming in renders every pixel.
+    private func originalPreview(_ shown: CanvasView.Shown) -> CGImage? {
+        if let session = lightSession, session.renderer.url == shown.url { return session.preview }
+        guard let image = shown.preview ?? shown.full else { return nil }
+        let limit = CGFloat(store.previewMaxPixel)
+        let longest = CGFloat(max(image.width, image.height))
+        guard longest > limit * 1.5 else { return image }
+        let k = limit / longest
+        return Resampler.render(image, from: CGRect(x: 0, y: 0, width: image.width, height: image.height),
+                                width: Int(CGFloat(image.width) * k), height: Int(CGFloat(image.height) * k)) ?? image
     }
 
     private func lightRendered(_ r: LightRenderer.Rendered, url: URL) {
@@ -156,7 +197,7 @@ extension ViewerWindowController {
     }
 
     func setShowingOriginal(_ on: Bool) {
-        guard hasUnsavedEdits, model.showingOriginal != on else { return }
+        guard hasUnsavedAdjustments, model.showingOriginal != on else { return }
         model.showingOriginal = on
         if on {
             lightSession?.renderer.cancelAll()
@@ -169,6 +210,23 @@ extension ViewerWindowController {
     /// Every slider back to zero; the algorithm choices stay.
     @objc func resetLight(_ sender: Any?) { setLight(model.light.valuesReset) }
 
+    /// File ▸ Revert: the adjustments and any turn or mirror, all gone.
+    @objc func revertEdits(_ sender: Any?) {
+        setLight(model.light.valuesReset)
+        resetOrientation()
+    }
+
+    private func resetOrientation() {
+        guard orientationChange != nil else { return }
+        var vp = canvas.viewport(pane: 0)
+        vp.rotation = 0
+        vp.mirror = false
+        canvas.setViewport(vp, pane: 0, animated: true)
+        model.mirrored = false
+        fitWindowToPicture(animated: true)
+        updateDocumentEdited()
+    }
+
     /// The picture changed: the edits go (settled before, if they had to be).
     func endLight() {
         lightSession?.renderer.cancelAll()
@@ -177,6 +235,55 @@ extension ViewerWindowController {
         model.light = model.light.valuesReset
         model.showingOriginal = false
         model.lightTiming = ""
+        model.pickingWhite = false
+        canvas?.picking = false
+        updateDocumentEdited()
+    }
+
+    // MARK: - White balance
+
+    /// Auto: the light the picture was taken under, estimated, and taken out.
+    @objc func autoWhiteBalance(_ sender: Any?) {
+        guard model.lightUnavailable == nil, let url = model.current?.url, let shown = canvas.shown(pane: 0),
+              let image = originalPreview(shown) else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let light = ColourMath.estimateIlluminant(image)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.model.current?.url == url else { return }
+                    guard let light else {
+                        return self.showToast("Not enough neutral to go by: set it by hand", symbol: "wand.and.stars", tone: .warning)
+                    }
+                    let wb = ColourMath.whiteBalance(neutral: light)
+                    var a = self.model.light
+                    a.temperature = (wb.temperature * 100).rounded() / 100
+                    a.tint = (wb.tint * 100).rounded() / 100
+                    self.setLight(a)
+                }
+            }
+        }
+    }
+
+    /// The eyedropper: the next click on the picture says what should be grey.
+    @objc func toggleWhitePicker(_ sender: Any?) {
+        model.pickingWhite.toggle()
+        canvas.picking = model.pickingWhite
+        if model.pickingWhite { showToast("Click something that should be neutral grey", symbol: "eyedropper") }
+    }
+
+    func pickedWhite(at point: CGPoint) {
+        model.pickingWhite = false
+        canvas.picking = false
+        guard let shown = canvas.shown(pane: 0), let image = originalPreview(shown),
+              let colour = ColourMath.sample(image, at: point) else { return }
+        guard colour.max() > 0.004, colour.max() < 0.97 else {
+            return showToast("Too dark or too bright to tell: pick a mid grey", symbol: "eyedropper", tone: .warning)
+        }
+        let wb = ColourMath.whiteBalance(neutral: colour)
+        var a = model.light
+        a.temperature = (wb.temperature * 100).rounded() / 100
+        a.tint = (wb.tint * 100).rounded() / 100
+        setLight(a)
     }
 
     // MARK: - Unsaved changes
@@ -187,14 +294,15 @@ extension ViewerWindowController {
         guard hasUnsavedEdits, let window, let item = model.current else { return proceed() }
         if window.attachedSheet != nil { cancelled?(); return }
         let alert = NSAlert()
-        alert.messageText = L("Save the changes to “%@”?", item.fileName)
-        alert.informativeText = L("The Light adjustments are only on screen. If you don't save them, they're lost.")
+        alert.messageText = L("Do you want to save the changes made to “%@”?", item.fileName)
+        alert.informativeText = L("Your changes will be lost if you don’t save them.")
         let inPlace = canSaveInPlace(item.url)
         alert.addButton(withTitle: inPlace ? L("Save") : L("Save As…"))
         alert.addButton(withTitle: L("Cancel"))
-        let discard = alert.addButton(withTitle: L("Don't Save"))
+        let discard = alert.addButton(withTitle: L("Don’t Save"))
         discard.hasDestructiveAction = true
-        if inPlace { alert.addButton(withTitle: L("Save As…")) }
+        discard.keyEquivalent = "d"
+        discard.keyEquivalentModifierMask = .command
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
             switch response {
@@ -203,9 +311,8 @@ extension ViewerWindowController {
             case .alertThirdButtonReturn:
                 self.setLight(self.model.light.valuesReset)
                 self.endLight()
+                self.resetOrientation()
                 proceed()
-            case NSApplication.ModalResponse(rawValue: NSApplication.ModalResponse.alertThirdButtonReturn.rawValue + 1):
-                self.saveAs(then: proceed, cancelled: cancelled)
             default:
                 cancelled?()
             }
@@ -220,54 +327,40 @@ extension ViewerWindowController {
         return ExportFormat(fileType: type) != nil
     }
 
+    /// ⌘S: no questions. The file keeps its format, size, colour profile, metadata and bit depth;
+    /// a JPEG keeps the quality it was made with.
     @objc func saveEdits(_ sender: Any?) {
-        guard let item = model.current, model.lightUnavailable == nil else { return }
-        guard hasUnsavedEdits else { return showToast("Nothing to save: no adjustments", symbol: "slider.horizontal.3") }
+        guard let item = model.current, hasUnsavedEdits, !model.isSaving else { return }
         canSaveInPlace(item.url) ? saveInPlace(then: nil, cancelled: nil) : saveAs(then: nil, cancelled: nil)
     }
 
     @objc func saveEditsAs(_ sender: Any?) {
-        guard model.current != nil, model.lightUnavailable == nil else { return }
+        guard model.current != nil, model.lightUnavailable == nil, !model.isSaving else { return }
         saveAs(then: nil, cancelled: nil)
     }
 
-    private static let overwriteNoticeKey = "light.overwriteNoticeShown"
-
     private func saveInPlace(then proceed: (() -> Void)?, cancelled: (() -> Void)?) {
-        guard let item = model.current, let window,
-              let type = UTType(filenameExtension: item.url.pathExtension), let format = ExportFormat(fileType: type) else { return }
-        let write = { [weak self] in
-            guard let self else { return }
-            var o = self.prefs.exportOptions
-            o.format = format
-            o.colorSpace = .original
-            o.longEdge = nil
-            o.metadata = .all
-            o.depth = (self.canvas.shown(pane: 0)?.preview?.bitsPerComponent ?? 8) > 8 && format.depths.contains(.sixteen) ? .sixteen : .eight
-            self.export(item.url, to: item.url, options: o, then: proceed, cancelled: cancelled)
-        }
-        // Once, the first time: Save replaces the original.
-        guard !Preferences.store.bool(forKey: Self.overwriteNoticeKey) else { return write() }
-        let alert = NSAlert()
-        alert.messageText = L("Save replaces “%@”", item.fileName)
-        alert.informativeText = L("The adjustments are written into the file itself and the original pixels are gone. To keep the original, use Save As (⇧⌘S).")
-        alert.addButton(withTitle: L("Save"))
-        alert.addButton(withTitle: L("Cancel"))
-        alert.showsSuppressionButton = true
-        alert.suppressionButton?.title = L("Don't tell me again")
-        alert.beginSheetModal(for: window) { response in
-            if alert.suppressionButton?.state == .on { Preferences.store.set(true, forKey: Self.overwriteNoticeKey) }
-            response == .alertFirstButtonReturn ? write() : cancelled?()
-        }
+        guard let item = model.current, let type = UTType(filenameExtension: item.url.pathExtension),
+              let format = ExportFormat(fileType: type) else { return }
+        var o = prefs.exportOptions
+        o.format = format
+        o.colorSpace = .original
+        o.longEdge = nil
+        o.metadata = .all
+        o.hdr = .gainMap
+        o.depth = (canvas.shown(pane: 0)?.preview?.bitsPerComponent ?? 8) > 8 && format.depths.contains(.sixteen) ? .sixteen : .eight
+        o.matchQuality = true
+        export(item.url, to: item.url, options: o, then: proceed, cancelled: cancelled)
     }
 
     /// Save As: any format this Mac can write, every setting shown.
     func saveAs(then proceed: (() -> Void)?, cancelled: (() -> Void)?) {
         guard let item = model.current, let window else { return }
         let shown = canvas.shown(pane: 0)
+        var size = shown?.pixelSize ?? .zero
+        if let o = orientationChange, o.quarterTurns % 2 == 1 { size = CGSize(width: size.height, height: size.width) }
         let settings = ExportSettings(options: prefs.exportOptions, isHDR: shown?.isHDR ?? false,
-                                      hasAlpha: shown?.hasAlpha ?? false, pixelSize: shown?.pixelSize ?? .zero,
-                                      edited: hasUnsavedEdits)
+                                      hasAlpha: shown?.hasAlpha ?? false, pixelSize: size, edited: hasUnsavedEdits)
         let panel = NSSavePanel()
         panel.title = hasUnsavedEdits ? L("Save As") : L("Convert")
         panel.prompt = hasUnsavedEdits ? L("Save") : L("Convert")
@@ -291,27 +384,37 @@ extension ViewerWindowController {
             guard let self else { return }
             guard response == .OK, let dest = panel.url else { cancelled?(); return }
             self.prefs.exportOptions = settings.options
-            self.export(item.url, to: dest, options: settings.options, then: proceed, cancelled: cancelled)
+            var o = settings.options
+            o.matchQuality = false
+            self.export(item.url, to: dest, options: o, then: proceed, cancelled: cancelled)
         }
     }
 
-    /// Renders every pixel with the Light values and writes it, off the main thread.
+    /// Writes the picture with its edits, off the main thread, as gently as the edits allow:
+    /// a turn or mirror alone saved over the file changes its orientation tag and nothing else.
     private func export(_ url: URL, to dest: URL, options: ExportOptions, then proceed: (() -> Void)?,
                         cancelled: (() -> Void)?) {
         let a = model.light
-        let edited = hasUnsavedEdits
+        let adjusted = hasUnsavedAdjustments
+        let turn = orientationChange
         let engine = lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .appleRAW : .pictty)
+        let inPlace = dest.standardizedFileURL == url.standardizedFileURL
         model.isSaving = true
-        showToast(edited ? "Saving…" : "Converting…", symbol: "square.and.arrow.down")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var failure: String?
-            if let original = ImageDecoder.full(url) {
+            var lossless = false
+            if inPlace, !adjusted, let turn, ImageExporter.reorient(url, quarterTurns: turn.quarterTurns, mirror: turn.mirror) {
+                lossless = true
+            } else if let original = ImageDecoder.full(url) {
                 let isHDR = original.isHDR
-                let picture = edited
+                var picture = adjusted
                     ? LightRenderer.renderWhole(original.image, url: url, engine: engine, isHDR: isHDR, a, output: .linear)
                     : original.image
+                if let turn, let p = picture { picture = ImageExporter.oriented(p, quarterTurns: turn.quarterTurns, mirror: turn.mirror) }
+                var o = options
+                if o.matchQuality, o.format == .jpeg, let q = JPEGQuality.estimate(url) { o.quality = JPEGQuality.setting(matching: q) }
                 if let picture {
-                    do { try ImageExporter.write(picture, isHDR: isHDR, original: url, to: dest, options: options) }
+                    do { try ImageExporter.write(picture, isHDR: isHDR, original: url, to: dest, options: o) }
                     catch { failure = L(error.localizedDescription) }
                 } else {
                     failure = L("The edit could not be rendered.")
@@ -328,16 +431,17 @@ extension ViewerWindowController {
                         cancelled?()
                         return
                     }
-                    self.saved(url, to: dest, then: proceed)
+                    self.saved(url, to: dest, lossless: lossless, then: proceed)
                 }
             }
         }
     }
 
-    private func saved(_ url: URL, to dest: URL, then proceed: (() -> Void)?) {
-        showToast(L("Saved %@", dest.lastPathComponent), symbol: "checkmark.circle", tone: .success)
+    private func saved(_ url: URL, to dest: URL, lossless: Bool, then proceed: (() -> Void)?) {
+        showToast(lossless ? L("Saved %@ · turned without re-encoding", dest.lastPathComponent) : L("Saved %@", dest.lastPathComponent),
+                  symbol: "checkmark.circle", tone: .success)
         let sameFile = dest.standardizedFileURL == url.standardizedFileURL
-        // The file changed under every cache; the edited pixels on screen are what it holds now.
+        // The file changed under every cache.
         for changed in [url, dest] {
             store.forget(changed)
             probes.removeValue(forKey: changed.path)
@@ -346,13 +450,17 @@ extension ViewerWindowController {
         }
         let intoFolder = dest.deletingLastPathComponent().standardizedFileURL == model.folderURL?.standardizedFileURL
         if sameFile {
+            // What is on disk now is the picture: shown from the file, upright as it says.
             lightSession?.renderer.cancelAll()
             lightSession = nil
             model.light = model.light.valuesReset
+            canvas.clear(pane: 0)
         } else {
             setLight(model.light.valuesReset)
             endLight()
+            resetOrientation()
         }
+        updateDocumentEdited()
         if let proceed {
             proceed()
             rescanFolder()

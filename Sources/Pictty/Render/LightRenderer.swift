@@ -16,7 +16,7 @@ final class LightRenderer: @unchecked Sendable {
     struct Rendered {
         let image: CGImage
         let milliseconds: Double
-        let adjustments: LightAdjustments
+        let adjustments: Adjustments
     }
 
     let url: URL
@@ -47,14 +47,14 @@ final class LightRenderer: @unchecked Sendable {
     }
 
     /// The screen-sized picture with `a`; `done` runs on the main thread, and only for the newest request.
-    func render(_ a: LightAdjustments, done: @escaping @MainActor (Rendered) -> Void) {
+    func render(_ a: Adjustments, done: @escaping @MainActor (Rendered) -> Void) {
         let ticket = bump(&latest)
         queue.async {
             guard self.isLatest(ticket, self.latest) else { return }
             let start = CFAbsoluteTimeGetCurrent()
             var image: CGImage?
             if let raw = self.raw {
-                image = raw.render(a)
+                image = raw.render(a).flatMap { AppleRAW.graded($0, a, isHDR: self.isHDR) }
             } else if let source = self.source {
                 image = LightEngine.shared?.render(source, a, output: self.isHDR ? .linear : .display)?.image
             }
@@ -65,7 +65,7 @@ final class LightRenderer: @unchecked Sendable {
     }
 
     /// Every pixel the GPU can hold, with `a`: for zooming in past the preview.
-    func renderFull(_ original: CGImage, _ a: LightAdjustments, done: @escaping @MainActor (Rendered) -> Void) {
+    func renderFull(_ original: CGImage, _ a: Adjustments, done: @escaping @MainActor (Rendered) -> Void) {
         let ticket = bump(&latestFull)
         queue.async {
             guard self.isLatest(ticket, self.latestFull) else { return }
@@ -78,10 +78,11 @@ final class LightRenderer: @unchecked Sendable {
     }
 
     /// The whole picture with `a`, for saving or zooming. `output` nil picks what the screen wants.
-    static func renderWhole(_ original: CGImage, url: URL, engine: Engine, isHDR: Bool, _ a: LightAdjustments,
+    static func renderWhole(_ original: CGImage, url: URL, engine: Engine, isHDR: Bool, _ a: Adjustments,
                             output: LightEngine.Output?) -> CGImage? {
         if engine == .appleRAW {
             return AppleRAW(url: url, maxPixel: nil, hdr: isHDR)?.render(a, float: output == .linear || isHDR)
+                .flatMap { AppleRAW.graded($0, a, isHDR: isHDR, output: output) }
         }
         guard let engineRef = LightEngine.shared,
               let src = engineRef.source(original, headroom: isHDR ? max(original.contentHeadroom, 1) : 1) else { return nil }
@@ -105,19 +106,25 @@ final class LightRenderer: @unchecked Sendable {
     }
 }
 
-/// Apple's RAW engine with the Light values: exposure goes into the develop, where the sensor's
-/// headroom still is; the rest is Core Image's own filters on the result.
+/// Apple's RAW engine with the panel's values: exposure and white balance go into the develop,
+/// where the sensor's headroom and its own colour are; the tones are Core Image's own filters on
+/// the result. Colour grading has no Apple counterpart: Pictty's engine grades the developed picture.
 final class AppleRAW {
     private let filter: CIRAWFilter
     private let context = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
                                               .workingFormat: CIFormat.RGBAh, .cacheIntermediates: true])
     private let hdr: Bool
+    /// What the camera recorded, which the white balance sliders move from.
+    private let asShotTemperature: Float
+    private let asShotTint: Float
 
     /// `maxPixel` nil develops every pixel.
     init?(url: URL, maxPixel: Int?, hdr: Bool) {
         guard let filter = CIRAWFilter(imageURL: url) else { return nil }
         self.filter = filter
         self.hdr = hdr
+        asShotTemperature = filter.neutralTemperature
+        asShotTint = filter.neutralTint
         if let maxPixel {
             let native = filter.nativeSize
             let longest = max(native.width, native.height)
@@ -127,8 +134,11 @@ final class AppleRAW {
         if #available(macOS 26, *), filter.isHighlightRecoverySupported { filter.isHighlightRecoveryEnabled = true }
     }
 
-    func render(_ a: LightAdjustments, float: Bool? = nil) -> CGImage? {
+    func render(_ a: Adjustments, float: Bool? = nil) -> CGImage? {
         filter.exposure = Float(a.exposure)
+        // Warmer means the light is assumed bluer: the same doubling either way as Pictty's own.
+        filter.neutralTemperature = asShotTemperature * Float(pow(2, a.temperature))
+        filter.neutralTint = asShotTint + Float(a.tint) * 60
         guard var image = filter.outputImage else { return nil }
         // Core Image's tone filters are made for gamma-encoded values, not linear light: they
         // run between the sRGB curve and its inverse.
@@ -167,5 +177,18 @@ final class AppleRAW {
             return context.createCGImage(image, from: extent, format: .RGBAh, colorSpace: space)
         }
         return context.createCGImage(image, from: extent, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.displayP3))
+    }
+
+    /// Colour grading on a developed picture, through Pictty's engine.
+    static func graded(_ image: CGImage, _ a: Adjustments, isHDR: Bool, output: LightEngine.Output? = nil) -> CGImage? {
+        guard !a.isGradingNeutral else { return image }
+        var g = Adjustments()
+        g.shadowColour = a.shadowColour
+        g.midtoneColour = a.midtoneColour
+        g.highlightColour = a.highlightColour
+        g.balance = a.balance
+        guard let engine = LightEngine.shared,
+              let src = engine.source(image, headroom: isHDR ? max(image.contentHeadroom, 1) : 1) else { return image }
+        return engine.render(src, g, output: output ?? (isHDR ? .linear : .display))?.image ?? image
     }
 }

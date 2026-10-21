@@ -67,7 +67,7 @@ final class ViewerModel: ObservableObject {
 
     @Published var showLight = false
     /// The Light panel's values. Algorithm choices outlive the picture; values do not.
-    @Published var light = LightAdjustments()
+    @Published var light = Adjustments()
     /// Which engine edits the picture on screen, or why it cannot be edited.
     @Published var lightEngine: LightRenderer.Engine?
     @Published var lightUnavailable: String?
@@ -76,6 +76,8 @@ final class ViewerModel: ObservableObject {
     /// Showing the picture as it was, for a before-and-after.
     @Published var showingOriginal = false
     @Published var isSaving = false
+    /// The white balance eyedropper is waiting for a click on the picture.
+    @Published var pickingWhite = false
 
     // MARK: Metadata
 

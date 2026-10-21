@@ -70,16 +70,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     case "loading": controller.model.loadingText = "Developing RAW…"
                     case "light": controller.toggleLight(nil)
                     case let light where light.hasPrefix("light="):
-                        // light=<exposure>/<contrast>/<brightness>/<highlights>/<shadows>[/<five algorithm digits>]
-                        let f = light.dropFirst(6).split(separator: "/").map(String.init)
+                        // light=<exposure>/<contrast>/<brightness>/<highlights>/<shadows>[/<temperature>/<tint>[/<balance>]]
+                        //   [;algos=<highlights><shadows>][;grade=<hue>:<amount>/<hue>:<amount>/<hue>:<amount>]
+                        let parts = light.dropFirst(6).split(separator: ";").map(String.init)
+                        let f = parts[0].split(separator: "/").map(String.init)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            var a = LightAdjustments()
-                            for (i, c) in LightControl.allCases.enumerated() where i < f.count { c.set(Double(f[i]) ?? 0, in: &a) }
-                            if f.count > 5 {
-                                for (c, d) in zip(LightControl.allCases, f[5]) { c.setAlgorithm(Int(String(d)) ?? 1, in: &a) }
+                            var a = Adjustments()
+                            let order: [AdjustmentControl] = AdjustmentControl.light + [.temperature, .tint, .balance]
+                            for (i, c) in order.enumerated() where i < f.count { c.set(Double(f[i]) ?? 0, in: &a) }
+                            for extra in parts.dropFirst() {
+                                if extra.hasPrefix("algos="), extra.count >= 8 {
+                                    let d = Array(extra.dropFirst(6)).compactMap { Int(String($0)) }
+                                    if d.count == 2 { a.highlightsAlgorithm = d[0]; a.shadowsAlgorithm = d[1] }
+                                } else if extra.hasPrefix("grade=") {
+                                    for (range, g) in zip(ToneRange.allCases, extra.dropFirst(6).split(separator: "/")) {
+                                        let v = g.split(separator: ":").compactMap { Double($0) }
+                                        if v.count == 2 { range.set(ColourShift(hue: v[0], amount: v[1]), in: &a) }
+                                    }
+                                }
                             }
                             controller.setLight(a)
                         }
+                    case let auto where auto.hasPrefix("autowb@"):
+                        DispatchQueue.main.asyncAfter(deadline: .now() + (Double(auto.dropFirst(7)) ?? 2)) { controller.autoWhiteBalance(nil) }
+                    case let turn where turn.hasPrefix("rotate@"):
+                        DispatchQueue.main.asyncAfter(deadline: .now() + (Double(turn.dropFirst(7)) ?? 2)) { controller.rotateRight(nil) }
                     case "stress":
                         // Every slider and algorithm at 60 Hz for four seconds, zooming to 100 % and
                         // back and flipping before/after on the way, the way hands do it.
@@ -88,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             MainActor.assumeIsolated {
                                 tick += 1
                                 var a = controller.model.light
-                                let c = LightControl.allCases[tick % 5]
+                                let c = AdjustmentControl.allCases[tick % 5]
                                 c.set(sin(Double(tick) / 9) * (c == .exposure ? 3 : 1), in: &a)
                                 if tick % 23 == 0 { c.setAlgorithm(tick % 3 + 1, in: &a) }
                                 controller.setLight(a)
@@ -102,6 +117,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         let delay = Double(save.split(separator: "@").last ?? "") ?? 4
                         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                             save.hasPrefix("saveas") ? controller.saveEditsAs(nil) : controller.saveEdits(nil)
+                        }
+                    case let view where view.hasPrefix("adjustview="):
+                        // The whole Adjust panel, unscrolled, as a PNG: adjustview=<path>[@seconds]
+                        let spec = view.dropFirst(11).split(separator: "@")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + (spec.count > 1 ? Double(spec[1]) ?? 4 : 4)) {
+                            let host = NSHostingView(rootView: AdjustPanelView(model: controller.model, prefs: Preferences.shared,
+                                                                               controller: controller)
+                                .frame(width: 318, height: 1500))
+                            host.frame = CGRect(x: 0, y: 0, width: 318, height: 1500)
+                            let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+                            window.isReleasedWhenClosed = false
+                            window.backgroundColor = .black
+                            window.contentView = host
+                            window.orderBack(nil)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+                                host.cacheDisplay(in: host.bounds, to: rep)
+                                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: String(spec[0])))
+                                window.close()
+                            }
                         }
                     case let view where view.hasPrefix("exportview="):
                         // The Save As settings on their own, as a PNG: exportview=<path>[@<format>]
@@ -292,6 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             m.addItem(.separator())
             add(m, "Save", #selector(C.saveEdits(_:)), "s")
             add(m, "Save As…", #selector(C.saveEditsAs(_:)), "s", [.command, .shift])
+            add(m, "Revert to Original", #selector(C.revertEdits(_:)))
             m.addItem(.separator())
             add(m, "Copy Image", #selector(C.copyCurrentImage(_:)), "c")
             add(m, "Reveal in Finder", #selector(C.revealInFinder(_:)), "r")
@@ -393,7 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "First Image": "backward.end", "Last Image": "forward.end",
         "Minimize": "minus.rectangle", "Zoom": "plus.rectangle", "Keyboard Shortcuts": "keyboard", "Make Pictty the Default Viewer…": "checkmark.seal", "Inside Pictty": "sparkles", "Pictty Website": "safari", "More Apps at noxdrop.com": "square.grid.2x2", "Clipping Warnings": "exclamationmark.triangle",
         "Save": "square.and.arrow.down", "Save As…": "square.and.arrow.down.on.square", "Adjust": "slider.horizontal.3",
-        "Show Original": "rectangle.lefthalf.inset.filled",
+        "Show Original": "rectangle.lefthalf.inset.filled", "Revert to Original": "arrow.uturn.backward",
     ]
 
     func menuNeedsUpdate(_ menu: NSMenu) {

@@ -150,7 +150,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         container.addSubview(inspector)
         inspectorHost = inspector
 
-        let light = FadeHostingView(rootView: AnyView(LightPanelView(model: model, prefs: prefs, controller: self)))
+        let light = FadeHostingView(rootView: AnyView(AdjustPanelView(model: model, prefs: prefs, controller: self)))
         light.autoresizingMask = [.minXMargin, .height]
         light.wantsLayer = true
         light.alphaValue = 0
@@ -248,7 +248,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Chrome
 
-    private func syncChrome() {
+    func syncChrome() {
         guard let container = window?.contentView else { return }
         let bounds = container.bounds
         toolbarHost?.frame = NSRect(x: 0, y: bounds.maxY - 92, width: bounds.width, height: 92)
@@ -263,8 +263,10 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         lightHost?.frame = inspectorHost?.frame ?? .zero
         filmstripHost?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: FilmstripView.dockedHeight)
         nudgeHost?.frame = NSRect(x: 0, y: 24, width: bounds.width, height: 110)
-        // A pinned strip takes its own room: the picture ends at the strip's top edge.
-        let canvasFrame = NSRect(x: 0, y: canvasBottomInset, width: bounds.width, height: max(0, bounds.height - canvasBottomInset))
+        // A pinned strip takes its own room: the picture ends at the strip's top edge. The Adjust
+        // panel takes its own on the right.
+        let canvasFrame = NSRect(x: 0, y: canvasBottomInset, width: max(0, bounds.width - canvasRightInset),
+                                 height: max(0, bounds.height - canvasBottomInset))
         if let canvas, canvas.frame != canvasFrame { canvas.frame = canvasFrame }
 
         if let window {
@@ -284,6 +286,10 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         set(nudgeHost, visible: model.items.isEmpty && !DefaultViewer.shared.opensJPEG
             && !Preferences.store.bool(forKey: DefaultNudgeView.dismissedKey), duration: 0.4)
     }
+
+    /// What the Adjust panel takes from the right of the window.
+    static let adjustPanelWidth: CGFloat = 324
+    private var canvasRightInset: CGFloat { model.showLight ? Self.adjustPanelWidth : 0 }
 
     /// What the pinned filmstrip's bar takes from the bottom of the window; the canvas keeps the rest.
     private var canvasBottomInset: CGFloat {
@@ -599,6 +605,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
         updatePaneCaptions()
         updateStatus()
+        updateLightAvailability()
+        updateDocumentEdited()
     }
 
     /// Measures histogram and clipping on a screen-sized decode, once per file (again when a
@@ -994,7 +1002,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     /// Best Fit: the window takes the picture's real size, shrunk to the screen, keeping its centre.
     /// With `scale`, the size of the picture at that zoom instead.
-    private func fitWindowToPicture(animated: Bool, scale: CGFloat? = nil) {
+    func fitWindowToPicture(animated: Bool, scale: CGFloat? = nil) {
         guard prefs.zoomMode == .bestFit, override == nil || scale != nil, !model.isComparing, let window,
               !window.styleMask.contains(.fullScreen), let o = canvas.orientedSize(pane: 0),
               let screen = window.screen ?? NSScreen.main else { return }
@@ -1003,11 +1011,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let points = CGSize(width: o.width / b, height: o.height / b)
         // The picture fits in what the pinned strip leaves; the window adds the strip back.
         let strip = model.filmstripPinned && model.showFilmstrip && model.items.count > 1 ? FilmstripView.dockedHeight : 0
-        let room = CGSize(width: visible.width, height: visible.height - strip)
-        let minimum = CGSize(width: window.contentMinSize.width, height: max(0, window.contentMinSize.height - strip))
+        let panel = canvasRightInset
+        let room = CGSize(width: visible.width - panel, height: visible.height - strip)
+        let minimum = CGSize(width: max(0, window.contentMinSize.width - panel), height: max(0, window.contentMinSize.height - strip))
         var size = scale.map { ZoomMath.bestFitContentSize(imagePoints: points, scale: $0, visible: room, minimum: minimum) }
             ?? ZoomMath.bestFitContentSize(imagePoints: points, visible: room, minimum: minimum)
         size.height += strip
+        size.width += panel
         var f = window.frameRect(forContentRect: CGRect(origin: .zero, size: size))
         f.origin.x = min(max(window.frame.midX - f.width / 2, visible.minX), visible.maxX - f.width)
         f.origin.y = min(max(window.frame.midY - f.height / 2, visible.minY), visible.maxY - f.height)
@@ -1036,7 +1046,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     @objc func rotateRight(_ sender: Any?) { rotate(by: 1) }
     @objc func rotateLeft(_ sender: Any?) { rotate(by: -1) }
 
-    private func rotate(by steps: Int) {
+    func rotate(by steps: Int) {
         let pane = min(model.activePane, model.paneCount - 1)
         guard canvas.shown(pane: pane) != nil else { return }
         var vp = canvas.viewport(pane: pane)
@@ -1050,6 +1060,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         updateZoomLabel()
         fitWindowToPicture(animated: true)
         showToast(steps > 0 ? "Rotated right" : "Rotated left", symbol: steps > 0 ? "rotate.right" : "rotate.left")
+        updateDocumentEdited()
     }
 
     @objc func toggleMirror(_ sender: Any?) {
@@ -1059,6 +1070,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         vp.mirror.toggle()
         canvas.setViewport(vp, pane: pane, animated: true)
         model.mirrored = vp.mirror
+        updateDocumentEdited()
         showToast(vp.mirror ? "Mirrored" : "Mirror off", symbol: "arrow.left.and.right.righttriangle.left.righttriangle.right")
     }
 
@@ -1345,6 +1357,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         case 53:
             if model.showShortcuts { toggleShortcuts(nil) }
             else if model.isComparing { toggleCompare(nil) }
+            else if model.pickingWhite { toggleWhitePicker(nil) }
             else if model.showLight { toggleLight(nil) }
             else if model.showInspector { toggleInspector(nil) }
             else if slideshowTimer != nil { stopSlideshow() }
@@ -1551,6 +1564,10 @@ extension ViewerWindowController: CanvasDelegate {
     }
 
     func canvasWipeMoved() { updatePaneCaptions() }
+
+    func canvasPicked(_ point: CGPoint) { pickedWhite(at: point) }
+
+    func canvasRotateGesture(_ quarterTurns: Int) { rotate(by: quarterTurns) }
 
     func canvasPickedColour(_ hex: String) {
         NSPasteboard.general.clearContents()
