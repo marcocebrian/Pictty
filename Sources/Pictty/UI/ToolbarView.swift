@@ -110,6 +110,9 @@ struct ToolbarView: View {
             glyph("slider.horizontal.3", "Adjust (E)", isOn: model.showLight) {
                 controller.toggleLight(nil)
             }
+            glyph("crop", "Crop (C)", isOn: model.cropping) {
+                controller.toggleCrop(nil)
+            }
             glyph(model.slideshowRunning ? "pause.rectangle" : "play.rectangle",
                   model.slideshowRunning ? "Stop slideshow (S)" : "Slideshow (S)",
                   isOn: model.slideshowRunning) {

@@ -43,7 +43,7 @@ struct AdjustPanelView: View {
     }
 
     private var a: Adjustments { model.light }
-    private var edited: Bool { !a.isNeutral }
+    private var edited: Bool { !a.isNeutral || model.crop != nil }
     private func change(_ new: Adjustments) { controller.setLight(new) }
 
     // MARK: Header
@@ -191,7 +191,7 @@ struct AdjustPanelView: View {
                 Text("Save").foregroundStyle(.white.opacity(0.5))
                 KeyCap(text: "⇧⌘S").padding(.leading, 6)
                 Text("Save As…").foregroundStyle(.white.opacity(0.5))
-                KeyCap(text: "\\").padding(.leading, 6)
+                KeyCap(text: "Y").padding(.leading, 6)
                 Text("Original").foregroundStyle(.white.opacity(0.5))
             }
             .font(.system(size: 10.5))
@@ -608,7 +608,7 @@ private struct GradeWheel: View {
 
 // MARK: - Before and after
 
-/// Press and hold for the original; let go for the edit. \ toggles it from the keyboard.
+/// Press and hold for the original; let go for the edit. Y toggles it from the keyboard.
 private struct BeforeAfterButton: View {
     let isOn: Bool
     let enabled: Bool
@@ -627,7 +627,7 @@ private struct BeforeAfterButton: View {
             .onLongPressGesture(minimumDuration: 60, maximumDistance: 60, perform: {}, onPressingChanged: { pressing in
                 if enabled { press(pressing) }
             })
-            .help("Hold to see the original (\\)")
+            .help("Hold to see the original (Y)")
     }
 }
 

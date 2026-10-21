@@ -112,7 +112,7 @@ The filmstrip hides by itself and comes back at the bottom edge; T pins it. A pi
 
 ### Privacy
 
-Pictty reads the pictures you open and the other pictures in their folder, and keeps decoded pictures in memory only. It writes nothing but its preferences, changes a file only when you choose Move to Trash, and makes **no network connections**. Read the [privacy policy](https://www.noxdrop.com/picttyprivacy.html).
+Pictty reads the pictures you open and the other pictures in their folder, and keeps decoded pictures in memory only. It writes nothing but its preferences and what you save, changes a file only when you save an edit over it or choose Move to Trash, and makes **no network connections**. Read the [privacy policy](https://www.noxdrop.com/picttyprivacy.html).
 
 ## Keyboard
 
@@ -124,7 +124,9 @@ Pictty reads the pictures you open and the other pictures in their folder, and k
 | ⌥ · ⌥-click | Loupe · copy the colour |
 | I · J · G · / | Information · clipping · background · file pill |
 | D · L · B · P · Tab | Compare · layout · blink · sync pan · next pane |
-| [ ] · M | Rotate · mirror |
+| [ ] · M · two fingers | Rotate · mirror · rotate on the trackpad |
+| E · C · Y | Adjust · crop · the original and back |
+| ⌘S · ⇧⌘S | Save · Save As or convert |
 | S · T · F or ↩ | Slideshow · filmstrip · full screen |
 | ? · Esc | All shortcuts · close what is open, then leave full screen |
 

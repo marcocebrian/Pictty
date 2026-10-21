@@ -41,7 +41,8 @@ final class CanvasView: NSView {
     /// An image on screen: the preview arrives first, the full decode joins it when needed.
     struct Shown {
         let url: URL
-        let pixelSize: CGSize
+        /// Oriented size of the picture in pixels; a crop makes it the cropped size.
+        var pixelSize: CGSize
         let frames: Int
         var isHDR = false
         var hasAlpha = false
@@ -329,9 +330,11 @@ final class CanvasView: NSView {
     /// A screen-sized edit drops the sharper decodes, which no longer match it; the canvas asks
     /// for them again (`canvasNeedsFull`) if the zoom needs them, and the edited full one comes
     /// back here with `full`.
-    func showEdited(_ image: CGImage, full: Bool, pane i: Int) {
+    func showEdited(_ image: CGImage, full: Bool, pane i: Int, pixelSize: CGSize? = nil, hasAlpha: Bool? = nil) {
         guard panes.indices.contains(i), var s = panes[i].shown else { return }
         let p = panes[i]
+        if let pixelSize { s.pixelSize = pixelSize }
+        if let hasAlpha { s.hasAlpha = hasAlpha }
         if full {
             s.full = image
         } else {
@@ -387,6 +390,12 @@ final class CanvasView: NSView {
     }
 
     func shown(pane i: Int) -> Shown? { panes.indices.contains(i) ? panes[i].shown : nil }
+
+    /// Where the picture in pane `i` is in this view, turned and mirrored as it shows.
+    func pictureFrame(pane i: Int) -> CGRect? {
+        guard panes.indices.contains(i), panes[i].shown != nil, !panes[i].image.isHidden, let root = layer else { return nil }
+        return root.convert(panes[i].image.frame, from: panes[i].container)
+    }
     func refineInfo(pane i: Int) -> String { panes.indices.contains(i) ? panes[i].refineInfo : "" }
     func displayedImage(pane i: Int) -> CGImage? { panes.indices.contains(i) ? panes[i].displayed : nil }
 

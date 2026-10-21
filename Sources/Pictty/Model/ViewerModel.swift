@@ -79,6 +79,21 @@ final class ViewerModel: ObservableObject {
     /// The white balance eyedropper is waiting for a click on the picture.
     @Published var pickingWhite = false
 
+    // MARK: Crop
+
+    /// The crop on the picture, once Done; nil for none.
+    @Published var crop: CropBox?
+    /// Cropping now: the frame on the picture and the crop toolbar are up.
+    @Published var cropping = false
+    /// The crop being made, until Done or Esc.
+    @Published var cropDraft = CropBox()
+    @Published var cropRatio = CropRatio.free
+    /// The ratio turned on its side (a landscape ratio made portrait, or the other way).
+    @Published var cropRatioTurned = false
+    @Published var cropRounded = false
+    /// One radius for all four corners, or one each.
+    @Published var cropLinkedCorners = true
+
     // MARK: Metadata
 
     @Published var report: MetadataReport = .empty

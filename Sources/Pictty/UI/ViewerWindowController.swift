@@ -28,6 +28,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private var filmstripHost: FadeHostingView?
     private var inspectorHost: FadeHostingView?
     private var lightHost: FadeHostingView?
+    private var cropToolbarHost: FadeHostingView?
+    private(set) var cropOverlay: CropOverlayView?
     private var nudgeHost: FadeHostingView?
 
     var probes: [String: ImageProbe] = [:]
@@ -116,6 +118,14 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         container.addSubview(canvas)
         self.canvas = canvas
 
+        // The crop frame, over the picture and under all the chrome.
+        let overlay = CropOverlayView(frame: container.bounds)
+        overlay.isHidden = true
+        overlay.onChange = { [weak self] box in self?.model.cropDraft = box }
+        overlay.onCommit = { [weak self] in self?.commitCrop() }
+        container.addSubview(overlay)
+        cropOverlay = overlay
+
         let hud = PassthroughHostingView(rootView: AnyView(HUDOverlay(model: model, prefs: prefs)))
         hud.frame = container.bounds
         hud.autoresizingMask = [.width, .height]
@@ -149,6 +159,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         inspector.isInteractive = false
         container.addSubview(inspector)
         inspectorHost = inspector
+
+        let cropBar = FadeHostingView(rootView: AnyView(CropToolbarView(model: model, controller: self)))
+        cropBar.autoresizingMask = [.width, .maxYMargin]
+        cropBar.alphaValue = 0
+        cropBar.isInteractive = false
+        container.addSubview(cropBar)
+        cropToolbarHost = cropBar
 
         let light = FadeHostingView(rootView: AnyView(AdjustPanelView(model: model, prefs: prefs, controller: self)))
         light.autoresizingMask = [.minXMargin, .height]
@@ -268,6 +285,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let canvasFrame = NSRect(x: 0, y: canvasBottomInset, width: max(0, bounds.width - canvasRightInset),
                                  height: max(0, bounds.height - canvasBottomInset))
         if let canvas, canvas.frame != canvasFrame { canvas.frame = canvasFrame }
+        cropToolbarHost?.frame = NSRect(x: 0, y: 22, width: canvasFrame.width, height: 56)
+        if model.cropping { updateCropOverlay() }
 
         if let window {
             let width = max(560, (toolbarHost?.fittingSize.width ?? 0) + 20).rounded(.up)
@@ -279,8 +298,11 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
         updatePaneCaptions()
 
-        set(toolbarHost, visible: !model.items.isEmpty && (model.chromeVisible || prefs.toolbarBehavior == .always))
-        set(filmstripHost, visible: model.filmstripVisible)
+        // Cropping is a moment of its own: only the picture, its frame and the crop toolbar.
+        set(toolbarHost, visible: !model.items.isEmpty && !model.cropping && (model.chromeVisible || prefs.toolbarBehavior == .always))
+        set(filmstripHost, visible: model.filmstripVisible && !model.cropping)
+        set(cropToolbarHost, visible: model.cropping)
+        hudHost?.isHidden = model.cropping
         set(inspectorHost, visible: model.showInspector, slide: 28)
         set(lightHost, visible: model.showLight, slide: 28)
         set(nudgeHost, visible: model.items.isEmpty && !DefaultViewer.shared.opensJPEG
@@ -299,7 +321,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     /// Fades a floating card in or out. With `slide`, it also drifts that many points to the right
     /// as it goes and back as it comes, on its layer alone: the compositor moves the finished
     /// card, nothing is laid out or drawn again.
-    private func set(_ host: FadeHostingView?, visible: Bool, duration: TimeInterval = 0.26, slide: CGFloat = 0) {
+    func set(_ host: FadeHostingView?, visible: Bool, duration: TimeInterval = 0.26, slide: CGFloat = 0) {
         guard let host, host.isInteractive != visible || host.alphaValue == (visible ? 0 : 1) else { return }
         host.isInteractive = visible
         let ease = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
@@ -878,7 +900,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Zoom
 
     /// Applies the zoom mode (or the user's own zoom) to every pane, or just one.
-    private func applyZoom(animated: Bool, only: Int? = nil) {
+    func applyZoom(animated: Bool, only: Int? = nil) {
         guard let canvas else { return }
         let mode = prefs.zoomMode
         let syncedOverride = override != nil && (prefs.syncZoom || isOverlayLayout)
@@ -1034,7 +1056,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func updateZoomLabel() {
+    func updateZoomLabel() {
         guard canvas.shown(pane: 0) != nil else { model.zoomLabel = "—"; return }
         let p = canvas.viewport(pane: 0).scale * 100
         let label = p < 10 ? String(format: "%.1f%%", p) : "\(Int(p.rounded()))%"
@@ -1330,6 +1352,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function, .capsLock])
         let chars = event.charactersIgnoringModifiers ?? ""
 
+        if handleCropKey(event, chars: chars, flags: flags) { return true }
+
         if flags.contains(.command) {
             switch chars {
             case "+", "=": zoomIn(nil); return true
@@ -1373,7 +1397,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         case "z", "Z": toggleActualSize(nil)
         case "i", "I": toggleInspector(nil)
         case "e", "E": toggleLight(nil)
-        case "\\": toggleOriginal(nil)
+        case "c", "C": toggleCrop(nil)
+        // A letter: \ is not on every keyboard layout.
+        case "y", "Y": toggleOriginal(nil)
         case "t", "T": toggleFilmstrip(nil)
         case "s", "S": toggleSlideshow(nil)
         case "d", "D": compareNext()
@@ -1555,6 +1581,7 @@ extension ViewerWindowController: CanvasDelegate {
     func canvasSmartZoom(pane: Int, at point: CGPoint) { smartZoom(pane: pane, at: point) }
 
     func canvasDidResize() {
+        if model.cropping { return updateCropOverlay() }
         if override == nil { applyZoom(animated: false) }
         updatePaneCaptions()
     }

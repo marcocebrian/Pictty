@@ -15,11 +15,16 @@ import UniformTypeIdentifiers
 final class LightSession {
     let renderer: LightRenderer
     let preview: CGImage
+    /// The picture's own size and transparency, before any crop.
+    let pixelSize: CGSize
+    let hasAlpha: Bool
     var editedFullRequested = false
 
-    init(renderer: LightRenderer, preview: CGImage) {
+    init(renderer: LightRenderer, preview: CGImage, pixelSize: CGSize, hasAlpha: Bool) {
         self.renderer = renderer
         self.preview = preview
+        self.pixelSize = pixelSize
+        self.hasAlpha = hasAlpha
     }
 }
 
@@ -27,7 +32,10 @@ extension ViewerWindowController: NSMenuItemValidation {
     /// Edits that are only on screen: adjustments, or a turn or mirror of the picture.
     var hasUnsavedEdits: Bool { hasUnsavedAdjustments || orientationChange != nil }
 
-    var hasUnsavedAdjustments: Bool { lightSession != nil && !model.light.isNeutral }
+    var hasUnsavedAdjustments: Bool { lightSession != nil && hasPixelEdits }
+
+    /// Edits that change pixels: the panel's adjustments, or a crop.
+    var hasPixelEdits: Bool { !model.light.isNeutral || model.crop != nil }
 
     /// The turn and mirror of the picture on screen, if it has any and it can be saved.
     var orientationChange: (quarterTurns: Int, mirror: Bool)? {
@@ -38,7 +46,7 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     /// The edited picture keeps its own pixels on the canvas.
     func keepsEdits(_ url: URL) -> Bool {
-        lightSession?.renderer.url == url && !model.light.isNeutral
+        lightSession?.renderer.url == url && hasPixelEdits
     }
 
     /// The dot in the close button, as every Mac document window shows unsaved changes.
@@ -53,7 +61,8 @@ extension ViewerWindowController: NSMenuItemValidation {
         switch item.action {
         case #selector(saveEdits(_:)), #selector(revertEdits(_:)): return hasUnsavedEdits && !model.isSaving
         case #selector(saveEditsAs(_:)): return model.current != nil && model.lightUnavailable == nil && !model.isSaving
-        case #selector(toggleOriginal(_:)): return hasUnsavedAdjustments
+        case #selector(toggleOriginal(_:)): return hasUnsavedAdjustments && !model.cropping
+        case #selector(toggleCrop(_:)): return model.current != nil && model.lightUnavailable == nil
         default: return true
         }
     }
@@ -91,30 +100,52 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     /// The panel's sliders, wheels and buttons land here.
     func setLight(_ a: Adjustments) {
-        let previous = model.light
         model.light = a
+        refreshEdit()
+    }
+
+    /// Puts what the edits make of the picture on the canvas: the adjustments through the engine,
+    /// then the crop (none while cropping, which shows the whole picture to crop from).
+    func refreshEdit() {
         defer { updateDocumentEdited() }
         guard model.lightUnavailable == nil, let url = model.current?.url, let shown = canvas.shown(pane: 0),
               shown.url == url else { return }
         if lightSession?.renderer.url != url {
-            guard !a.isNeutral else { return }
+            guard hasPixelEdits || model.cropping else { return }
             beginLight(url: url, shown: shown)
         }
         guard let session = lightSession else { return }
         if model.showingOriginal { model.showingOriginal = false }
-        if a.isNeutral {
+        if model.light.isNeutral {
             session.renderer.cancelAll()
-            if !previous.isNeutral { showOriginalPixels() }
             model.lightTiming = ""
+            present(session.preview, full: false, session: session)
+            if let full = store.cached(url, full: true) { present(full.image, full: true, session: session) }
+            if model.crop == nil || model.cropping, let known = analyses[url.path] { publish(known.analysis, for: url) }
             return
         }
-        session.renderer.render(a) { [weak self] r in self?.lightRendered(r, url: url) }
+        session.renderer.render(model.light) { [weak self] r in self?.lightRendered(r, url: url) }
     }
 
     private func beginLight(url: URL, shown: CanvasView.Shown) {
         guard let preview = originalPreview(shown) else { return }
         let renderer = LightRenderer(url: url, preview: preview, isHDR: shown.isHDR, maxPixel: store.previewMaxPixel)
-        lightSession = LightSession(renderer: renderer, preview: preview)
+        lightSession = LightSession(renderer: renderer, preview: preview, pixelSize: shown.pixelSize, hasAlpha: shown.hasAlpha)
+    }
+
+    /// The crop applied, if there is one and it is not being made, and the picture's size to match.
+    private func present(_ image: CGImage, full: Bool, session: LightSession) {
+        let crop = model.cropping ? nil : model.crop
+        let out = crop?.apply(to: image) ?? image
+        let size = crop?.croppedSize(session.pixelSize) ?? session.pixelSize
+        let resized = canvas.shown(pane: 0)?.pixelSize != size
+        canvas.showEdited(out, full: full, pane: 0, pixelSize: size, hasAlpha: session.hasAlpha || crop?.isRounded == true)
+        if resized {
+            // A crop is a different picture to fit: the zoom mode and the window follow it.
+            applyZoom(animated: false)
+            fitWindowToPicture(animated: true)
+        }
+        if crop != nil, !full { analyseEdit(out, url: session.renderer.url) }
     }
 
     /// The untouched picture at screen size: a full decode on screen is edited at screen size, and
@@ -134,10 +165,10 @@ extension ViewerWindowController: NSMenuItemValidation {
         guard let session = lightSession, session.renderer.url == url, model.current?.url == url,
               r.adjustments == model.light, !model.showingOriginal else { return }
         session.editedFullRequested = false
-        canvas.showEdited(r.image, full: false, pane: 0)
+        present(r.image, full: false, session: session)
         let engine = session.renderer.engine == .pictty ? L("Pictty engine") : L("Apple RAW engine")
         model.lightTiming = String(format: "%@ · %.0f ms · %ld×%ld", engine, r.milliseconds, r.image.width, r.image.height)
-        analyseEdit(r.image, url: url)
+        if model.crop == nil || model.cropping { analyseEdit(r.image, url: url) }
         updateStatus()
     }
 
@@ -168,10 +199,11 @@ extension ViewerWindowController: NSMenuItemValidation {
                 return
             }
             let render: (CGImage) -> Void = { original in
+                guard !a.isNeutral else { return self.present(original, full: true, session: session) }
                 session.renderer.renderFull(original, a) { [weak self] r in
                     guard let self, self.lightSession === session, self.model.light == r.adjustments,
                           !self.model.showingOriginal else { return }
-                    self.canvas.showEdited(r.image, full: true, pane: 0)
+                    self.present(r.image, full: true, session: session)
                     self.updateStatus()
                 }
             }
@@ -185,13 +217,18 @@ extension ViewerWindowController: NSMenuItemValidation {
     private func showOriginalPixels() {
         guard let session = lightSession else { return }
         let url = session.renderer.url
-        canvas.showEdited(session.preview, full: false, pane: 0)
+        let resized = canvas.shown(pane: 0)?.pixelSize != session.pixelSize
+        canvas.showEdited(session.preview, full: false, pane: 0, pixelSize: session.pixelSize, hasAlpha: session.hasAlpha)
         if let full = store.cached(url, full: true) { canvas.showEdited(full.image, full: true, pane: 0) }
+        if resized {
+            applyZoom(animated: false)
+            fitWindowToPicture(animated: true)
+        }
         if let known = analyses[url.path] { publish(known.analysis, for: url) }
         updateStatus()
     }
 
-    /// Before and after (\): the original while it is on, the edit again after.
+    /// Before and after (Y): the original while it is on, the edit again after.
     @objc func toggleOriginal(_ sender: Any?) {
         setShowingOriginal(!model.showingOriginal)
     }
@@ -203,7 +240,7 @@ extension ViewerWindowController: NSMenuItemValidation {
             lightSession?.renderer.cancelAll()
             showOriginalPixels()
         } else {
-            setLight(model.light)
+            refreshEdit()
         }
     }
 
@@ -212,6 +249,8 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     /// File ▸ Revert: the adjustments and any turn or mirror, all gone.
     @objc func revertEdits(_ sender: Any?) {
+        if model.cropping { cancelCrop() }
+        model.crop = nil
         setLight(model.light.valuesReset)
         resetOrientation()
     }
@@ -229,6 +268,9 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     /// The picture changed: the edits go (settled before, if they had to be).
     func endLight() {
+        model.crop = nil
+        model.cropping = false
+        syncCropChrome()
         lightSession?.renderer.cancelAll()
         lightSession = nil
         lightAnalysisTicket &+= 1
@@ -309,6 +351,8 @@ extension ViewerWindowController: NSMenuItemValidation {
             case .alertFirstButtonReturn:
                 inPlace ? self.saveInPlace(then: proceed, cancelled: cancelled) : self.saveAs(then: proceed, cancelled: cancelled)
             case .alertThirdButtonReturn:
+                if self.model.cropping { self.cancelCrop() }
+                self.model.crop = nil
                 self.setLight(self.model.light.valuesReset)
                 self.endLight()
                 self.resetOrientation()
@@ -350,7 +394,26 @@ extension ViewerWindowController: NSMenuItemValidation {
         o.hdr = .gainMap
         o.depth = (canvas.shown(pane: 0)?.preview?.bitsPerComponent ?? 8) > 8 && format.depths.contains(.sixteen) ? .sixteen : .eight
         o.matchQuality = true
-        export(item.url, to: item.url, options: o, then: proceed, cancelled: cancelled)
+        var dest = item.url
+        if model.crop?.isRounded == true, !format.keepsAlpha {
+            // Rounded corners are transparency, which a JPEG cannot hold: a PNG beside it, the
+            // JPEG untouched. No question asked; nothing is lost either way.
+            o.format = .png
+            o.depth = .eight
+            dest = Self.freeName(item.url.deletingPathExtension().appendingPathExtension("png"))
+        }
+        export(item.url, to: dest, options: o, then: proceed, cancelled: cancelled)
+    }
+
+    /// `url`, or "name 2", "name 3"… if a file is already there.
+    static func freeName(_ url: URL) -> URL {
+        var candidate = url, n = 2
+        let base = url.deletingPathExtension().lastPathComponent, ext = url.pathExtension
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = url.deletingLastPathComponent().appendingPathComponent("\(base) \(n)").appendingPathExtension(ext)
+            n += 1
+        }
+        return candidate
     }
 
     /// Save As: any format this Mac can write, every setting shown.
@@ -396,6 +459,7 @@ extension ViewerWindowController: NSMenuItemValidation {
                         cancelled: (() -> Void)?) {
         let a = model.light
         let adjusted = hasUnsavedAdjustments
+        let crop = model.crop
         let turn = orientationChange
         let engine = lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .appleRAW : .pictty)
         let inPlace = dest.standardizedFileURL == url.standardizedFileURL
@@ -407,12 +471,13 @@ extension ViewerWindowController: NSMenuItemValidation {
                 lossless = true
             } else if let original = ImageDecoder.full(url) {
                 let isHDR = original.isHDR
-                var picture = adjusted
-                    ? LightRenderer.renderWhole(original.image, url: url, engine: engine, isHDR: isHDR, a, output: .linear)
-                    : original.image
+                var picture = a.isNeutral
+                    ? original.image
+                    : LightRenderer.renderWhole(original.image, url: url, engine: engine, isHDR: isHDR, a, output: .linear)
+                if let crop, let p = picture { picture = crop.apply(to: p) }
                 if let turn, let p = picture { picture = ImageExporter.oriented(p, quarterTurns: turn.quarterTurns, mirror: turn.mirror) }
                 var o = options
-                if o.matchQuality, o.format == .jpeg, let q = JPEGQuality.estimate(url) { o.quality = JPEGQuality.setting(matching: q) }
+                if o.matchQuality, o.format == .jpeg, let q = JPEGQuality.setting(for: url) { o.quality = q }
                 if let picture {
                     do { try ImageExporter.write(picture, isHDR: isHDR, original: url, to: dest, options: o) }
                     catch { failure = L(error.localizedDescription) }

@@ -52,6 +52,14 @@ struct ShortcutsView: View {
             (["⌘", "R"], "Reveal in Finder"),
             (["⌘", "⌫"], "Move to Trash"),
         ]),
+        Group(title: "Edit", symbol: "slider.horizontal.3", colors: [Color(hex: 0xFBBC04), Color(hex: 0xEA4335)], rows: [
+            (["E"], "Adjust: light and colour"),
+            (["C"], "Crop (↩ done, Esc cancel, X turn the ratio, R round the corners)"),
+            (["Y"], "The original, and back"),
+            (["⌘", "S"], "Save"),
+            (["⇧", "⌘", "S"], "Save As, or convert"),
+            (["⤾"], "Turn two fingers on the trackpad to rotate"),
+        ]),
     ]
 
     var body: some View {

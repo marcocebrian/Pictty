@@ -91,6 +91,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             }
                             controller.setLight(a)
                         }
+                    case let crop where crop.hasPrefix("crop@"):
+                        // crop@<seconds>[:<ratio id>[:<radius>]]: starts cropping, picks a ratio, rounds the corners.
+                        let spec = crop.dropFirst(5).split(separator: ":").map(String.init)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + (Double(spec[0]) ?? 2)) {
+                            controller.startCrop()
+                            if spec.count > 1 { controller.setCropRatio(CropRatio.with(id: spec[1])) }
+                            if spec.count > 2, let r = Double(spec[2]) { controller.setCropRadius(r) }
+                        }
+                    case let done where done.hasPrefix("cropdone@"):
+                        DispatchQueue.main.asyncAfter(deadline: .now() + (Double(done.dropFirst(9)) ?? 4)) { controller.commitCrop() }
                     case let auto where auto.hasPrefix("autowb@"):
                         DispatchQueue.main.asyncAfter(deadline: .now() + (Double(auto.dropFirst(7)) ?? 2)) { controller.autoWhiteBalance(nil) }
                     case let turn where turn.hasPrefix("rotate@"):
@@ -368,7 +378,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(m, "Show Filmstrip", #selector(C.toggleFilmstrip(_:)), "t", [])
             add(m, "Show Information", #selector(C.toggleInspector(_:)), "i", [])
             add(m, "Adjust", #selector(C.toggleLight(_:)), "e", [])
-            add(m, "Show Original", #selector(C.toggleOriginal(_:)), "\\", [])
+            add(m, "Crop", #selector(C.toggleCrop(_:)), "c", [])
+            add(m, "Show Original", #selector(C.toggleOriginal(_:)), "y", [])
             add(m, "Show Info Pill", #selector(C.toggleHUD(_:)), "/", [])
             add(m, "Clipping Warnings", #selector(C.toggleClipping(_:)), "j", [])
             m.addItem(.separator())
@@ -429,7 +440,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "First Image": "backward.end", "Last Image": "forward.end",
         "Minimize": "minus.rectangle", "Zoom": "plus.rectangle", "Keyboard Shortcuts": "keyboard", "Make Pictty the Default Viewer…": "checkmark.seal", "Inside Pictty": "sparkles", "Pictty Website": "safari", "More Apps at noxdrop.com": "square.grid.2x2", "Clipping Warnings": "exclamationmark.triangle",
         "Save": "square.and.arrow.down", "Save As…": "square.and.arrow.down.on.square", "Adjust": "slider.horizontal.3",
-        "Show Original": "rectangle.lefthalf.inset.filled", "Revert to Original": "arrow.uturn.backward",
+        "Show Original": "rectangle.lefthalf.inset.filled", "Revert to Original": "arrow.uturn.backward", "Crop": "crop",
     ]
 
     func menuNeedsUpdate(_ menu: NSMenu) {
