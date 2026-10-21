@@ -52,6 +52,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private var warmUpPending = false
     /// The window is held back until its first picture is in it.
     private var pendingShow = false
+    /// The picture the network has been asked to go over, so its wait is announced only once.
+    var denoisedOnce: URL?
     private var toolbarWidths: [Bool: CGFloat] = [:]
 
     /// Shows the window now if its picture is in it (or none is coming), else when it arrives,

@@ -74,6 +74,7 @@ extension ViewerWindowController: NSMenuItemValidation {
             if !model.showLight { model.pickingWhite = false; canvas.picking = false }
         }
         updateLightAvailability()
+        if model.showLight { NeuralDenoiser.shared.warmUp() }
         syncChrome()
         // Best Fit: the window grows by the panel so the picture keeps its size, as for the pinned strip.
         fitWindowToPicture(animated: true)
@@ -82,6 +83,10 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     /// Why the picture on screen cannot be edited, or nil when it can.
     func updateLightAvailability() {
+        let offers = model.current.map { item in
+            ImageFormats.isRaw(item.url) || (NeuralDenoiser.shared.isAvailable && canvas.shown(pane: 0)?.isHDR != true)
+        } ?? false
+        if model.offersDenoise != offers { model.offersDenoise = offers }
         var reason: String?
         if let item = model.current {
             if model.isComparing { reason = L("Editing works on one picture at a time. Leave Compare (D) to edit.") }
@@ -100,8 +105,41 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     /// The panel's sliders, wheels and buttons land here.
     func setLight(_ a: Adjustments) {
+        let wasDenoised = model.light.denoise > 0
         model.light = a
+        // The network's first pass over a picture takes a second; the panel says so.
+        if a.denoise > 0, !wasDenoised, !model.denoising, lightSession?.renderer.engine != .appleRAW,
+           denoisedOnce != model.current?.url {
+            denoisedOnce = model.current?.url
+            model.denoising = true
+        }
         refreshEdit()
+    }
+
+    /// Auto: the picture's own noise sets the strength; a clean picture is left alone.
+    @objc func autoDenoise(_ sender: Any?) {
+        guard model.lightUnavailable == nil, let url = model.current?.url, let shown = canvas.shown(pane: 0),
+              let image = originalPreview(shown) else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let noise = PictureMeasure.noiseAndBlur(image).noise
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.model.current?.url == url else { return }
+                    // In 8-bit steps: about one is clean; five and more is a lot.
+                    let steps = Double(noise) * 255
+                    let amount = (min(max((steps - 1) / 4, 0), 1) * 20).rounded() / 20
+                    var a = self.model.light
+                    a.denoise = amount
+                    self.setLight(a)
+                    if amount == 0 {
+                        self.showToast("Clean already: there is no noise to take out", symbol: "checkmark.seal")
+                    } else {
+                        self.showToast(L("Noise reduction %ld · measured %.1f levels of noise", Int(amount * 100), steps),
+                                       symbol: "wand.and.sparkles")
+                    }
+                }
+            }
+        }
     }
 
     /// Puts what the edits make of the picture on the canvas: the adjustments through the engine,
@@ -130,6 +168,11 @@ extension ViewerWindowController: NSMenuItemValidation {
     private func beginLight(url: URL, shown: CanvasView.Shown) {
         guard let preview = originalPreview(shown) else { return }
         let renderer = LightRenderer(url: url, preview: preview, isHDR: shown.isHDR, maxPixel: store.previewMaxPixel)
+        renderer.onDenoised = { [weak self] in
+            guard let self, self.lightSession?.renderer === renderer else { return }
+            self.model.denoising = false
+            self.refreshEdit()
+        }
         lightSession = LightSession(renderer: renderer, preview: preview, pixelSize: shown.pixelSize, hasAlpha: shown.hasAlpha)
     }
 
@@ -268,6 +311,7 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     /// The picture changed: the edits go (settled before, if they had to be).
     func endLight() {
+        model.denoising = false
         model.crop = nil
         model.cropping = false
         syncCropChrome()

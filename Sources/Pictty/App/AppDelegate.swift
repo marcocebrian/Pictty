@@ -97,6 +97,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                 if extra.hasPrefix("algos="), extra.count >= 8 {
                                     let d = Array(extra.dropFirst(6)).compactMap { Int(String($0)) }
                                     if d.count == 2 { a.highlightsAlgorithm = d[0]; a.shadowsAlgorithm = d[1] }
+                                } else if extra.hasPrefix("detail=") {
+                                    // detail=<texture>/<clarity>/<sharpening>/<denoise>
+                                    let v = extra.dropFirst(7).split(separator: "/").compactMap { Double($0) }
+                                    for (c, x) in zip([AdjustmentControl.texture, .clarity, .sharpening, .denoise], v) { c.set(x, in: &a) }
                                 } else if extra.hasPrefix("grade=") {
                                     for (range, g) in zip(ToneRange.allCases, extra.dropFirst(6).split(separator: "/")) {
                                         let v = g.split(separator: ":").compactMap { Double($0) }

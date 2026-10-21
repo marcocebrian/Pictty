@@ -35,6 +35,7 @@ struct AdjustPanelView: View {
                         }
                         lightSection
                         colourSection
+                        detailSection
                         engineFooter
                     }
                     .padding(.horizontal, 14)
@@ -167,6 +168,41 @@ struct AdjustPanelView: View {
             SliderRow(control: .balance, adjustments: a, showsAlgorithms: false, change: change)
                 .opacity(a.isGradingNeutral ? 0.55 : 1)
         }
+    }
+
+    // MARK: Detail
+
+    private var detailSection: some View {
+        SectionCard(title: "Detail", symbol: "camera.aperture", colors: [Color(hex: 0x34A8F0), Color(hex: 0x00897B)],
+                    canReset: !a.isDetailNeutral, reset: { change(a.detailReset) }) {
+            ForEach(AdjustmentControl.detail) { control in
+                SliderRow(control: control, adjustments: a, showsAlgorithms: false, change: change)
+            }
+            if model.offersDenoise {
+                Rectangle().fill(.white.opacity(0.07)).frame(height: 0.5).padding(.vertical, 2)
+                HStack(spacing: 6) {
+                    SubHeading("NOISE REDUCTION")
+                    if model.denoising {
+                        ProgressView().controlSize(.mini)
+                        Text("Denoising…")
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.55))
+                    }
+                    Spacer()
+                    PillButton(title: "Auto", symbol: "wand.and.stars",
+                               help: "Measure the picture's noise and take out as much as it needs") {
+                        controller.autoDenoise(nil)
+                    }
+                }
+                SliderRow(control: .denoise, adjustments: a, showsAlgorithms: false, change: change)
+                Text(model.lightEngine == .appleRAW ? "Apple's RAW noise reduction, from the camera's own default up."
+                                                    : "NAFNet, a neural network for real camera noise, on this Mac's GPU. Nothing leaves it.")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.white.opacity(0.42))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: model.denoising)
     }
 
     private var engineFooter: some View {
@@ -355,6 +391,8 @@ private struct SliderRow: View {
     private var readout: String {
         if control == .exposure { return value == 0 ? "0.00" : String(format: "%+.2f", value) }
         let n = Int((value * 100).rounded())
+        // One-sided sliders (sharpening, noise reduction) have no sign to show.
+        if control.range.lowerBound == 0 { return "\(n)" }
         return n == 0 ? "0" : String(format: "%+d", n)
     }
 
@@ -369,6 +407,10 @@ private struct SliderRow: View {
         case .temperature: [Color(hex: 0x3F7DFF), Color(white: 0.82), Color(hex: 0xFFAE3A)]
         case .tint: [Color(hex: 0x39C85A), Color(white: 0.82), Color(hex: 0xE24BD3)]
         case .balance: [Color(white: 0.08), Color(white: 0.5), Color(white: 0.95)]
+        case .texture: [Color(white: 0.35), Color(hex: 0x8D9BA8), Color(hex: 0xD7E3EC)]
+        case .clarity: [Color(white: 0.3), Color(hex: 0x9FB6C9), Color(white: 0.95)]
+        case .sharpening: [Color(white: 0.3), Color(hex: 0x64B5F6)]
+        case .denoise: [Color(hex: 0x6A4CE0), Color(hex: 0x9C8CF0), Color(hex: 0xE0DAFF)]
         }
     }
 }

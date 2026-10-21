@@ -85,6 +85,10 @@ final class ViewerModel: ObservableObject {
     @Published var isSaving = false
     /// The white balance eyedropper is waiting for a click on the picture.
     @Published var pickingWhite = false
+    /// The neural network is going over the picture.
+    @Published var denoising = false
+    /// This picture can have Pictty's noise reduction (or, for a RAW, Apple's).
+    @Published var offersDenoise = false
 
     // MARK: Crop
 

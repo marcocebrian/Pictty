@@ -31,10 +31,22 @@ final class LightRenderer: @unchecked Sendable {
     private var source: LightEngine.Source?
     private var raw: AppleRAW?
 
+    /// The screen-sized picture, kept for the denoiser.
+    private let preview: CGImage
+    /// The network runs on a queue of its own, so the sliders stay live while it works.
+    private let denoiseQueue = DispatchQueue(label: "pictty.denoise", qos: .userInitiated)
+    private var denoising = false
+    /// Called on the main thread when the screen-sized picture has been denoised: render again.
+    var onDenoised: (@MainActor () -> Void)?
+
+    /// Whether this picture can have Pictty's noise reduction (not HDR, and the network is here).
+    var offersNeuralDenoise: Bool { engine == .pictty && !isHDR && NeuralDenoiser.shared.isAvailable }
+
     /// `preview` is the screen-sized decode on screen now.
     init(url: URL, preview: CGImage, isHDR: Bool, maxPixel: Int) {
         self.url = url
         self.isHDR = isHDR
+        self.preview = preview
         engine = ImageFormats.isRaw(url) ? .appleRAW : .pictty
         let headroom = isHDR ? max(preview.contentHeadroom, 1) : 1
         queue.async { [engine] in
@@ -56,11 +68,39 @@ final class LightRenderer: @unchecked Sendable {
             if let raw = self.raw {
                 image = raw.render(a).flatMap { AppleRAW.graded($0, a, isHDR: self.isHDR) }
             } else if let source = self.source {
+                if a.denoise > 0, !source.hasDenoised { self.denoisePreview(source) }
                 image = LightEngine.shared?.render(source, a, output: self.isHDR ? .linear : .display)?.image
             }
             guard let image, self.isLatest(ticket, self.latest) else { return }
             let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
             DispatchQueue.main.async { MainActor.assumeIsolated { done(Rendered(image: image, milliseconds: ms, adjustments: a)) } }
+        }
+    }
+
+    /// The network over the screen-sized picture, once; the render after it mixes it in.
+    /// Queue-only.
+    private func denoisePreview(_ source: LightEngine.Source) {
+        guard offersNeuralDenoise, !denoising else { return }
+        denoising = true
+        let preview = preview
+        denoiseQueue.async {
+            let start = CFAbsoluteTimeGetCurrent()
+            let denoised = NeuralDenoiser.shared.denoise(preview)
+            timingMark(String(format: "denoised %ld×%ld in %.0f ms", preview.width, preview.height,
+                              (CFAbsoluteTimeGetCurrent() - start) * 1000))
+            self.queue.async {
+                if let denoised { LightEngine.shared?.setDenoised(denoised, on: source) }
+                self.denoising = false
+                DispatchQueue.main.async { MainActor.assumeIsolated { self.onDenoised?() } }
+            }
+        }
+    }
+
+    /// The picture's measured noise (0…1 of encoded luminance), for Auto; on the main thread.
+    func measuredNoise(_ done: @escaping @MainActor (Float?) -> Void) {
+        queue.async {
+            let noise = self.source?.noise
+            DispatchQueue.main.async { MainActor.assumeIsolated { done(noise) } }
         }
     }
 
@@ -86,6 +126,10 @@ final class LightRenderer: @unchecked Sendable {
         }
         guard let engineRef = LightEngine.shared,
               let src = engineRef.source(original, headroom: isHDR ? max(original.contentHeadroom, 1) : 1) else { return nil }
+        // Every pixel through the network too, when noise reduction is asked for.
+        if a.denoise > 0, !isHDR, let denoised = NeuralDenoiser.shared.denoise(original) {
+            engineRef.setDenoised(denoised, on: src)
+        }
         return engineRef.render(src, a, output: output ?? (isHDR ? .linear : .display))?.image
     }
 
@@ -117,6 +161,9 @@ final class AppleRAW {
     /// What the camera recorded, which the white balance sliders move from.
     private let asShotTemperature: Float
     private let asShotTint: Float
+    /// Apple's own noise reduction for this camera, which Noise reduction raises from.
+    private let defaultLuminanceNR: Float
+    private let defaultColourNR: Float
 
     /// `maxPixel` nil develops every pixel.
     init?(url: URL, maxPixel: Int?, hdr: Bool) {
@@ -125,6 +172,8 @@ final class AppleRAW {
         self.hdr = hdr
         asShotTemperature = filter.neutralTemperature
         asShotTint = filter.neutralTint
+        defaultLuminanceNR = filter.luminanceNoiseReductionAmount
+        defaultColourNR = filter.colorNoiseReductionAmount
         if let maxPixel {
             let native = filter.nativeSize
             let longest = max(native.width, native.height)
@@ -139,6 +188,9 @@ final class AppleRAW {
         // Warmer means the light is assumed bluer: the same doubling either way as Pictty's own.
         filter.neutralTemperature = asShotTemperature * Float(pow(2, a.temperature))
         filter.neutralTint = asShotTint + Float(a.tint) * 60
+        // Noise reduction: from the camera's default up to Apple's strongest.
+        filter.luminanceNoiseReductionAmount = defaultLuminanceNR + (1 - defaultLuminanceNR) * Float(a.denoise)
+        filter.colorNoiseReductionAmount = defaultColourNR + (1 - defaultColourNR) * Float(a.denoise)
         guard var image = filter.outputImage else { return nil }
         // Core Image's tone filters are made for gamma-encoded values, not linear light: they
         // run between the sRGB curve and its inverse.
