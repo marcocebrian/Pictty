@@ -53,6 +53,15 @@ struct SettingsView: View {
 
     static let compareHelp = "D compares the next picture; ⌘-click thumbnails to add up to four, ⇧-click for a range. Tab picks the pane the keys act on.\n\nWipe lays one picture exactly over the other: left of the line is picture 1, right of it picture 2. Drag the line, or click anywhere, to slide between them.\n\nBlink stacks the two and shows one at a time; B flips between them, so anything that changed jumps out."
 
+    /// The pill's two settings as one choice: hides by itself, always visible, or off.
+    private var pillSetting: Binding<String> {
+        Binding(get: { prefs.showHUD ? prefs.pillBehavior.rawValue : "off" },
+                set: { value in
+                    prefs.showHUD = value != "off"
+                    if let behavior = ChromeBehavior(rawValue: value) { prefs.pillBehavior = behavior }
+                })
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             sidebar
@@ -146,8 +155,18 @@ struct SettingsView: View {
                 }
             }
             Group_ {
+                Row("Toolbar", "The buttons at the top of the window", "menubar.rectangle") {
+                    Picker("", selection: $prefs.toolbarBehavior) {
+                        ForEach(ChromeBehavior.allCases) { Text(L($0.title)).tag($0) }
+                    }
+                    .labelsHidden().frame(width: 170)
+                }
                 Row("Info pill", "File name, size and exposure at the bottom (/)", "text.bubble") {
-                    Toggle("", isOn: $prefs.showHUD).toggleStyle(.switch).labelsHidden()
+                    Picker("", selection: pillSetting) {
+                        ForEach(ChromeBehavior.allCases) { Text(L($0.title)).tag($0.rawValue) }
+                        Text(L("Off")).tag("off")
+                    }
+                    .labelsHidden().frame(width: 170)
                 }
                 Row("Filmstrip pinned", "Keep the strip up instead of revealing it at the bottom edge (T)",
                     "rectangle.bottomthird.inset.filled") {

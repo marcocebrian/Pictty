@@ -26,6 +26,8 @@ final class Preferences: ObservableObject {
         static let restoreSession = "restoreSession"
         static let sessionFolder = "sessionFolder"
         static let sessionFile = "sessionFile"
+        static let toolbarBehavior = "toolbarBehavior"
+        static let pillBehavior = "pillBehavior"
     }
 
     private let defaults: UserDefaults
@@ -50,6 +52,8 @@ final class Preferences: ObservableObject {
     @Published var recentFolders: [String] = [] { didSet { store(recentFolders, Key.recentFolders) } }
     /// Launching Pictty on its own reopens the folder and picture you were looking at.
     @Published var restoreSession = true { didSet { store(restoreSession, Key.restoreSession) } }
+    @Published var toolbarBehavior: ChromeBehavior = .autoHide { didSet { store(toolbarBehavior.rawValue, Key.toolbarBehavior) } }
+    @Published var pillBehavior: ChromeBehavior = .autoHide { didSet { store(pillBehavior.rawValue, Key.pillBehavior) } }
 
     /// `PICTTY_DEFAULTS_SUITE` keeps a developer's test runs out of the real preferences.
     nonisolated static var store: UserDefaults {
@@ -93,6 +97,8 @@ final class Preferences: ObservableObject {
         prefetchDepth = min(max(defaults.object(forKey: Key.prefetchDepth) as? Int ?? 2, 0), 6)
         recentFolders = defaults.stringArray(forKey: Key.recentFolders) ?? []
         restoreSession = bool(Key.restoreSession, true)
+        toolbarBehavior = defaults.string(forKey: Key.toolbarBehavior).flatMap(ChromeBehavior.init(rawValue:)) ?? .autoHide
+        pillBehavior = defaults.string(forKey: Key.pillBehavior).flatMap(ChromeBehavior.init(rawValue:)) ?? .autoHide
     }
 
     /// The folder and picture on screen, so the next launch can come back to them.

@@ -8,6 +8,7 @@ import SwiftUI
 
 struct HUDOverlay: View {
     @ObservedObject var model: ViewerModel
+    @ObservedObject var prefs: Preferences
 
     var body: some View {
         GeometryReader { geometry in
@@ -171,7 +172,7 @@ struct HUDOverlay: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 9)
         .liquidGlassCapsule(tint: 0.44, shadow: 12)
-        .opacity(model.chromeVisible || model.items.isEmpty ? 1 : 0)
+        .opacity(model.chromeVisible || model.items.isEmpty || prefs.pillBehavior == .always ? 1 : 0)
         .animation(.easeInOut(duration: 0.32), value: model.chromeVisible)
     }
 

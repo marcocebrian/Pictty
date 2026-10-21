@@ -112,7 +112,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         container.addSubview(canvas)
         self.canvas = canvas
 
-        let hud = PassthroughHostingView(rootView: AnyView(HUDOverlay(model: model)))
+        let hud = PassthroughHostingView(rootView: AnyView(HUDOverlay(model: model, prefs: prefs)))
         hud.frame = container.bounds
         hud.autoresizingMask = [.width, .height]
         container.addSubview(hud)
@@ -264,7 +264,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
         updatePaneCaptions()
 
-        set(toolbarHost, visible: !model.items.isEmpty && model.chromeVisible)
+        set(toolbarHost, visible: !model.items.isEmpty && (model.chromeVisible || prefs.toolbarBehavior == .always))
         set(filmstripHost, visible: model.filmstripVisible)
         set(inspectorHost, visible: model.showInspector, slide: 28)
         set(nudgeHost, visible: model.items.isEmpty && !DefaultViewer.shared.opensJPEG
@@ -353,6 +353,10 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             if pinned { c.model.showFilmstrip = true; c.prefs.showFilmstrip = true }
             // Best Fit: the window grows by the strip so the picture keeps its size.
             c.fitWindowToPicture(animated: true)
+        }
+        on(prefs.$toolbarBehavior) { c, _ in
+            c.syncChrome()
+            c.setChromeVisible(c.model.chromeVisible)
         }
         on(prefs.$animateTransitions) { c, on in c.canvas.animateTransitions = on }
         on(prefs.$sortOrder) { c, _ in c.rescanFolder() }
@@ -1412,11 +1416,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     private func setChromeVisible(_ visible: Bool) {
         model.chromeVisible = visible
+        // The window's buttons come and go with the toolbar, and stay when it stays.
+        let buttons = visible || prefs.toolbarBehavior == .always
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.34
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-                window?.standardWindowButton(kind)?.animator().alphaValue = visible ? 1 : 0
+                window?.standardWindowButton(kind)?.animator().alphaValue = buttons ? 1 : 0
             }
         }
     }

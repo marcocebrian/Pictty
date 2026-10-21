@@ -84,3 +84,19 @@ enum CanvasBackground: String, CaseIterable, Identifiable, Codable {
         }
     }
 }
+
+// MARK: - Chrome
+
+/// Whether a piece of chrome steps aside when the pointer rests, or stays up.
+enum ChromeBehavior: String, CaseIterable, Identifiable, Codable {
+    case autoHide, always
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .autoHide: "Hides by itself"
+        case .always: "Always visible"
+        }
+    }
+}
