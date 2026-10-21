@@ -159,6 +159,10 @@ struct SettingsView: View {
             }
         case .browsing:
             Group_ {
+                Row("Reopen where you left off", "Opening Pictty by itself comes back to the last folder and picture",
+                    "clock.arrow.circlepath") {
+                    Toggle("", isOn: $prefs.restoreSession).toggleStyle(.switch).labelsHidden()
+                }
                 Row("Sort by", "Order of the folder and the filmstrip", "arrow.up.arrow.down") {
                     Picker("", selection: $prefs.sortOrder) {
                         ForEach(SortOrder.allCases) { Text(L($0.title)).tag($0) }

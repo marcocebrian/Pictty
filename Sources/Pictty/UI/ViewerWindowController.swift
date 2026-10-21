@@ -398,6 +398,16 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// The folder and picture of the last session, quietly: nothing is said or asked if they
+    /// have gone or need a permission Pictty no longer holds.
+    func restoreSession(folder: URL, file: URL?) {
+        FolderAccess.restore(for: folder)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue,
+              !FolderAccess.needsPermission(folder) else { return }
+        loadFolder(folder, selecting: file.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil })
+    }
+
     func loadFolder(_ folder: URL, selecting target: URL?) {
         model.isScanning = true
         prefs.noteRecentFolder(folder)
@@ -462,6 +472,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
         window?.title = item.fileName
         model.failedPath = nil
+        if let folder = model.folderURL { prefs.noteSession(folder: folder, file: item.url) }
         canvas.setPaneCount(model.paneCount)
         canvas.compareLayout = model.paneCount > 2 && prefs.compareLayout.requiresExactlyTwo ? .grid : prefs.compareLayout
         updateReports()

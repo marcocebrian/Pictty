@@ -2,7 +2,7 @@ import Combine
 import Foundation
 import PicttyCore
 
-/// Persisted settings. No settings window: everything is a keystroke away and remembered silently.
+/// Persisted settings. Most are a keystroke away and remembered silently; the rest are in Settings.
 @MainActor
 final class Preferences: ObservableObject {
     enum Key {
@@ -23,6 +23,9 @@ final class Preferences: ObservableObject {
         static let prefetchDepth = "prefetchDepth"
         static let recentFolders = "recentFolders"
         static let windowFrame = "windowFrame"
+        static let restoreSession = "restoreSession"
+        static let sessionFolder = "sessionFolder"
+        static let sessionFile = "sessionFile"
     }
 
     private let defaults: UserDefaults
@@ -45,6 +48,8 @@ final class Preferences: ObservableObject {
     /// Neighbours decoded ahead on each side.
     @Published var prefetchDepth = 2 { didSet { store(prefetchDepth, Key.prefetchDepth) } }
     @Published var recentFolders: [String] = [] { didSet { store(recentFolders, Key.recentFolders) } }
+    /// Launching Pictty on its own reopens the folder and picture you were looking at.
+    @Published var restoreSession = true { didSet { store(restoreSession, Key.restoreSession) } }
 
     /// `PICTTY_DEFAULTS_SUITE` keeps a developer's test runs out of the real preferences.
     nonisolated static var store: UserDefaults {
@@ -56,7 +61,7 @@ final class Preferences: ObservableObject {
 
     init(defaults: UserDefaults = Preferences.store) {
         self.defaults = defaults
-        // Earlier builds reopened the last picture at launch; that state is no longer kept.
+        // Early builds kept the last picture under these names; the session keys replaced them.
         for stale in ["lastFolder", "lastFile"] { defaults.removeObject(forKey: stale) }
         load()
         isLoading = false
@@ -87,6 +92,20 @@ final class Preferences: ObservableObject {
         background = defaults.string(forKey: Key.background).flatMap(CanvasBackground.init(rawValue:)) ?? .glass
         prefetchDepth = min(max(defaults.object(forKey: Key.prefetchDepth) as? Int ?? 2, 0), 6)
         recentFolders = defaults.stringArray(forKey: Key.recentFolders) ?? []
+        restoreSession = bool(Key.restoreSession, true)
+    }
+
+    /// The folder and picture on screen, so the next launch can come back to them.
+    func noteSession(folder: URL, file: URL?) {
+        guard defaults.string(forKey: Key.sessionFolder) != folder.path || defaults.string(forKey: Key.sessionFile) != file?.path else { return }
+        defaults.set(folder.path, forKey: Key.sessionFolder)
+        defaults.set(file?.path, forKey: Key.sessionFile)
+    }
+
+    /// Where the last session ended, if Pictty should go back there.
+    func savedSession() -> (folder: URL, file: URL?)? {
+        guard restoreSession, let folder = defaults.string(forKey: Key.sessionFolder) else { return nil }
+        return (URL(fileURLWithPath: folder), defaults.string(forKey: Key.sessionFile).map(URL.init(fileURLWithPath:)))
     }
 
     func noteRecentFolder(_ url: URL) {

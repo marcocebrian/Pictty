@@ -36,6 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pendingOpen.removeAll()
         } else if let launchPath {
             controller.open(urls: [URL(fileURLWithPath: launchPath)])
+        } else if let session = Preferences.shared.savedSession() {
+            // Launched on its own: back to the folder and picture of last time. Files from
+            // Finder arrive before this point and start a fresh session instead.
+            controller.restoreSession(folder: session.folder, file: session.file)
         }
         // Developer hooks for screenshots: launch without taking focus, with panels open.
         let env = ProcessInfo.processInfo.environment
