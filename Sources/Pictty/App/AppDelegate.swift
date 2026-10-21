@@ -86,19 +86,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     case "light": controller.toggleLight(nil)
                     case let light where light.hasPrefix("light="):
                         // light=<exposure>/<contrast>/<brightness>/<highlights>/<shadows>[/<temperature>/<tint>[/<balance>]]
-                        //   [;algos=<highlights><shadows>][;grade=<hue>:<amount>/<hue>:<amount>/<hue>:<amount>]
+                        //   [;grade=<hue>:<amount>/<hue>:<amount>/<hue>:<amount>]
                         let parts = light.dropFirst(6).split(separator: ";").map(String.init)
                         let f = parts[0].split(separator: "/").map(String.init)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                             var a = Adjustments()
-                            let order: [AdjustmentControl] = AdjustmentControl.light + [.temperature, .tint, .balance]
+                            let order: [AdjustmentControl] = [.exposure, .contrast, .brightness, .highlights, .shadows,
+                                                              .temperature, .tint, .balance]
                             for (i, c) in order.enumerated() where i < f.count { c.set(Double(f[i]) ?? 0, in: &a) }
                             for extra in parts.dropFirst() {
-                                if extra.hasPrefix("algos="), extra.count >= 8 {
-                                    let d = Array(extra.dropFirst(6)).compactMap { Int(String($0)) }
-                                    // algos=<highlights><shadows>
-                                    if d.count == 2 { a.highlightsAlgorithm = d[0]; a.shadowsAlgorithm = d[1] }
-                                } else if extra.hasPrefix("detail=") {
+                                if extra.hasPrefix("detail=") {
                                     // detail=<texture>/<clarity>/<sharpening>/<denoise>
                                     let v = extra.dropFirst(7).split(separator: "/").compactMap { Double($0) }
                                     for (c, x) in zip([AdjustmentControl.texture, .clarity, .sharpening, .denoise], v) { c.set(x, in: &a) }

@@ -126,7 +126,6 @@ public final class LightEngine: @unchecked Sendable {
     /// Must match `Params` in the kernels, field for field.
     private struct Params {
         var exposure: Float = 0, contrast: Float = 0, brightness: Float = 0, highlights: Float = 0, shadows: Float = 0
-        var highlightsAlgorithm: Int32 = 2, shadowsAlgorithm: Int32 = 1
         var white: Float = 1
         var clampWhite: Int32 = 1
         var outputEncoding: Int32 = 0
@@ -187,7 +186,6 @@ public final class LightEngine: @unchecked Sendable {
         }
         // A dull picture is given more vibrance, a vivid one less: about 0.08 of Oklab chroma is typical.
         p.vibranceScale = min(max((0.08 / max(src.chroma, 0.02)).squareRoot(), 0.75), 1.3)
-        p.highlightsAlgorithm = Int32(a.highlightsAlgorithm); p.shadowsAlgorithm = Int32(a.shadowsAlgorithm)
         p.vibrance = Float(a.vibrance); p.saturation = Float(a.saturation)
         if !a.isWhiteBalanceNeutral {
             // By rows; simd's own storage is by columns.
@@ -210,12 +208,9 @@ public final class LightEngine: @unchecked Sendable {
         p.outputEncoding = output == .display ? 1 : 0
         p.lumaWhite = Self.encode(src.white)
 
-        func uses(_ algorithm: Int) -> Bool {
-            (a.highlights != 0 && a.highlightsAlgorithm == algorithm) || (a.shadows != 0 && a.shadowsAlgorithm == algorithm)
-        }
-        let guided = uses(2), laplacian = uses(3)
+        let laplacian = a.highlights != 0
         let detail = a.texture != 0 || a.clarity != 0 || a.sharpening != 0
-        p.localPaths = (guided ? 1 : 0) | (laplacian ? 2 : 0) | (detail ? 4 : 0)
+        p.localPaths = (laplacian ? 2 : 0) | (detail ? 4 : 0)
         p.noise = src.noise
         if a.denoise > 0, src.denoised != nil {
             p.denoise = Float(a.denoise)
@@ -285,14 +280,7 @@ public final class LightEngine: @unchecked Sendable {
             }
         }
 
-        // Guided base: on a quarter-size luminance, its coefficients smoothed and sampled back up.
-        var coefficients: MTLTexture?
-        if guided {
-            guard let ab = self.guided(cb, src, luma, key: "g", radius: 0.025, eps: 0.012, &p) else { return nil }
-            coefficients = ab
-        }
-
-        // Fast local Laplacian (Aubry et al.): the output pyramid built from a dozen remapped
+        // Highlights by the fast local Laplacian (Aubry et al.): the output pyramid built from two dozen remapped
         // copies of the luminance, each contributing where the input's own level is close to it.
         var rebuilt: MTLTexture?
         if laplacian {
@@ -393,7 +381,7 @@ public final class LightEngine: @unchecked Sendable {
             colourRegions = ab
         }
 
-        dispatch(cb, "finish", [lit, luma, coefficients ?? lit, rebuilt ?? luma, out, fine ?? luma, coarse ?? luma,
+        dispatch(cb, "finish", [lit, luma, rebuilt ?? luma, out, fine ?? luma, coarse ?? luma,
                                 regions ?? lit, colourRegions ?? lit], &p, w, h)
         cb.commit()
         cb.waitUntilCompleted()

@@ -46,17 +46,12 @@ final class LightEngineTests: XCTestCase {
         zip(a, b).map { abs($0 - $1) }.max() ?? 0
     }
 
-    func testNeutralIsTheIdentityWithEveryAlgorithm() throws {
+    func testNeutralIsTheIdentity() throws {
         let engine = try XCTUnwrap(LightEngine())
         let image = ramp()
         let src = try XCTUnwrap(engine.source(image))
-        for n in 1...3 {
-            var a = Adjustments()
-            a.highlightsAlgorithm = n
-            a.shadowsAlgorithm = n
-            let out = try XCTUnwrap(engine.render(src, a, output: .linear)).image
-            XCTAssertLessThan(maxDifference(linear(out), linear(image)), 0.002, "algorithm \(n)")
-        }
+        let out = try XCTUnwrap(engine.render(src, Adjustments(), output: .linear)).image
+        XCTAssertLessThan(maxDifference(linear(out), linear(image)), 0.002)
     }
 
     func testLoweredExposureHalvesTheLight() throws {
@@ -152,7 +147,7 @@ final class LightEngineTests: XCTestCase {
             return (g.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Float(g.count)).squareRoot() / mean
         }
         var a = Adjustments()
-        a.highlights = -1; a.highlightsAlgorithm = 3
+        a.highlights = -1
         let before = linear(image), after = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
         XCTAssertLessThan(after[4 * (64 * w + 64) + 1], before[4 * (64 * w + 64) + 1], "darker")
         XCTAssertLessThan(relativeNoise(after), relativeNoise(before) * 1.05)
@@ -316,22 +311,21 @@ final class LightEngineTests: XCTestCase {
         XCTAssertGreaterThan(cool[2], cool[0] * 1.15)
     }
 
-    /// On a flat picture there is no detail to keep: the local methods must land exactly where
-    /// the global curve does.
-    func testLocalMethodsAgreeWithTheCurveOnAFlatPicture() throws {
+    /// On a flat picture there is no detail to keep: the local Laplacian must land exactly where
+    /// the highlights curve does.
+    func testHighlightsLandOnTheCurveOnAFlatPicture() throws {
         let engine = try XCTUnwrap(LightEngine())
-        for value: UInt8 in [40, 200] {
-            let src = try XCTUnwrap(engine.source(flat(value)))
-            var results: [Float] = []
-            for n in 1...3 {
-                var a = Adjustments()
-                a.highlights = -0.8; a.shadows = 0.7
-                a.highlightsAlgorithm = n; a.shadowsAlgorithm = n
-                results.append(linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)[64 * 128 * 4 + 256])
-            }
-            XCTAssertEqual(results[1], results[0], accuracy: 0.004, "guided, level \(value)")
-            XCTAssertEqual(results[2], results[0], accuracy: 0.006, "Laplacian, level \(value)")
-            XCTAssertNotEqual(results[0], linear(flat(value))[0], accuracy: 0.002, "the sliders did something at \(value)")
+        for value: UInt8 in [170, 220] {
+            let image = flat(value)
+            let src = try XCTUnwrap(engine.source(image))
+            var a = Adjustments()
+            a.highlights = -0.8
+            let got = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)[64 * 128 * 4 + 256]
+            // The curve, as the kernels have it: −0.32·h·smoothstep(0.4, 1, l) on encoded brightness.
+            let l = Float(value) / 255, t = min(max((l - 0.4) / 0.6, 0), 1)
+            let l1 = l + -0.8 * 0.32 * t * t * (3 - 2 * t)
+            let expected = l1 <= 0.04045 ? l1 / 12.92 : pow((l1 + 0.055) / 1.055, 2.4)
+            XCTAssertEqual(got, expected, accuracy: 0.006, "level \(value)")
         }
     }
 

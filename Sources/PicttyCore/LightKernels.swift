@@ -11,14 +11,13 @@ using namespace metal;
 
 struct Params {
     float exposure, contrast, brightness, highlights, shadows;
-    int highlightsAlgorithm, shadowsAlgorithm;
     /// Linear white: 1 for SDR, the content headroom for HDR.
     float white;
     /// 1 when the result is shown on an SDR scale: it is clamped to white at the end.
     int clampWhite;
     /// 0: linear extended sRGB (float). 1: Display P3, sRGB curve, dithered (8-bit).
     int outputEncoding;
-    /// Which local paths ran: bit 0 guided base, bit 1 Laplacian.
+    /// Which local paths ran: bit 1 the Laplacian (highlights), bit 2 detail.
     int localPaths;
     /// Laplacian: which sliders it carries (bit 0 highlights, bit 1 shadows).
     int laplacianMask;
@@ -103,15 +102,10 @@ inline float shadowCurve(float l, float s) {
     return (s > 0.0 ? s * 1.6 : s * 0.6) * l * w * w;
 }
 
-/// Brightness offset (encoded, 0…1 scale) the tone sliders ask for at base level `b`, for the
-/// sliders whose algorithm is `algorithm`.
-inline float toneOffset(float b, constant Params& p, int algorithm) {
-    float lw = p.lumaWhite;
-    float n = b / lw, d = 0.0;
-    if (p.highlightsAlgorithm == algorithm) d += highlightCurve(n, p.highlights);
-    if (p.shadowsAlgorithm == algorithm) d += shadowCurve(n, p.shadows);
-    return d * lw;
-}
+/// Brightness offsets (encoded, on the picture's own scale) at level `b`: highlights, which go
+/// through the local Laplacian, and shadows, a curve on each pixel.
+inline float highlightOffset(float b, constant Params& p) { return highlightCurve(b / p.lumaWhite, p.highlights) * p.lumaWhite; }
+inline float shadowOffset(float b, constant Params& p) { return shadowCurve(b / p.lumaWhite, p.shadows) * p.lumaWhite; }
 
 // MARK: - Oklab (Ottosson), for vibrance and saturation
 
@@ -465,13 +459,13 @@ kernel void remap(texture2d<float, access::read> luma [[texture(0)]],
     if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
     float i = luma.read(gid).r;
     float g = p.gamma;
-    float tg = g + toneOffset(g, p, 3);
-    float ti = i + toneOffset(i, p, 3);
+    float tg = g + highlightOffset(g, p);
+    float ti = i + highlightOffset(i, p);
     // Detail no larger than the picture's noise is compressed or stretched as the curve is there,
     // so a pulled-down highlight does not show its noise more than before; larger detail is kept
     // whole. Only ever compressed: where the curve is steeper, detail stays as it was.
     float d = i - g, h = 0.01 * p.lumaWhite;
-    float slope = 1.0 + (toneOffset(g + h, p, 3) - toneOffset(g - h, p, 3)) / (2.0 * h);
+    float slope = 1.0 + (highlightOffset(g + h, p) - highlightOffset(g - h, p)) / (2.0 * h);
     float n = p.noise * p.lumaWhite;
     float keep = mix(clamp(slope, 0.25, 1.0), 1.0, smoothstep(2.0 * n, 4.0 * n + 1e-4, fabs(d)));
     float near = tg + d * keep;
@@ -586,13 +580,12 @@ kernel void guidedCoefficients(texture2d<float, access::read> moments [[texture(
 
 kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
                    texture2d<float, access::read> luma [[texture(1)]],
-                   texture2d<float, access::sample> guided [[texture(2)]],
-                   texture2d<float, access::read> laplacian [[texture(3)]],
-                   texture2d<float, access::write> out [[texture(4)]],
-                   texture2d<float, access::read> detailFine [[texture(5)]],
-                   texture2d<float, access::read> detailCoarse [[texture(6)]],
-                   texture2d<float, access::sample> regions [[texture(7)]],
-                   texture2d<float, access::sample> colourRegions [[texture(8)]],
+                   texture2d<float, access::read> laplacian [[texture(2)]],
+                   texture2d<float, access::write> out [[texture(3)]],
+                   texture2d<float, access::read> detailFine [[texture(4)]],
+                   texture2d<float, access::read> detailCoarse [[texture(5)]],
+                   texture2d<float, access::sample> regions [[texture(6)]],
+                   texture2d<float, access::sample> colourRegions [[texture(7)]],
                    constant Params& p [[buffer(0)]],
                    uint2 gid [[thread_position_in_grid]]) {
     uint2 size = uint2(out.get_width(), out.get_height());
@@ -601,15 +594,9 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
     float3 rgb = c.rgb;
     float lw = p.lumaWhite, W = p.white;
 
-    // Highlights and shadows: each slider's offset from its own algorithm, added up.
+    // Shadows, a curve on each pixel; highlights, the local Laplacian's.
     float l0 = luma.read(gid).r;
-    float l1 = l0 + toneOffset(l0, p, 1);
-    if (p.localPaths & 1) {
-        constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
-        float2 ab = guided.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
-        float base = ab.x * l0 + ab.y;
-        l1 += toneOffset(base, p, 2);
-    }
+    float l1 = l0 + shadowOffset(l0, p);
     if (p.localPaths & 2) l1 += laplacian.read(gid).r - l0;
     if (p.localPaths & 4) {
         // Fine detail (sharpening, texture) never takes a pixel past its neighbours, plus a hair:
@@ -644,7 +631,7 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
         constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
         float2 ab = regions.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
         float b0 = clamp(ab.x * l0 + ab.y, 0.0, lw);
-        float b = clamp(b0 + toneOffset(b0, p, 1) + toneOffset(b0, p, 2) + toneOffset(b0, p, 3), 0.0, lw) / lw;
+        float b = clamp(b0 + shadowOffset(b0, p) + highlightOffset(b0, p), 0.0, lw) / lw;
         if (k != 0.0 && b > 0.0 && b < 1.0) b = clamp(contrastCurve(b, k, 0.4613), 0.0, 1.0);
         float b1 = brightnessCurve(b, p.brightness, p.key);
         float gain = dec(b1 * lw) / max(dec(b * lw), 1e-6);

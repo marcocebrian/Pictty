@@ -27,11 +27,9 @@ public struct Adjustments: Equatable, Sendable {
     /// −1…+1: haze added ← → taken out.
     public var dehaze: Double = 0
 
-    /// The engine's own number for the method each tone slider uses, while candidates are compared.
+    /// The engine's own number for the method a slider uses, while candidates are compared.
     /// Vibrance and saturation share one: 1 per pixel, 2 by regions.
     public var saturationAlgorithm = 2
-    public var highlightsAlgorithm = 2
-    public var shadowsAlgorithm = 1
 
     // Colour
     /// White balance, −1…+1: cooler ← → warmer, greener ← → more magenta.
@@ -83,8 +81,6 @@ public struct Adjustments: Equatable, Sendable {
     public var valuesReset: Adjustments {
         var a = Adjustments()
         a.saturationAlgorithm = saturationAlgorithm
-        a.highlightsAlgorithm = highlightsAlgorithm
-        a.shadowsAlgorithm = shadowsAlgorithm
         return a
     }
 
@@ -176,12 +172,6 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         case .vibrance, .saturation:
             [(1, "Per pixel", "Each pixel's colour judged and raised on its own, its colour noise with it."),
              (2, "By regions", "Each region's colour raised whole, more in a dull picture and less in a vivid one; texture and colour noise within it are raised less.")]
-        case .highlights:
-            [(2, "Guided filter", "The curve moves a smooth, edge-aware base layer; the detail on top is kept."),
-             (3, "Local Laplacian", "The curve applied scale by scale through a Laplacian pyramid: detail kept at every size, no halos.")]
-        case .shadows:
-            [(1, "Global curve", "A tone curve on each pixel's brightness. Fast; flattens detail in the range it moves."),
-             (3, "Local Laplacian", "The curve applied scale by scale through a Laplacian pyramid: detail kept at every size, no halos.")]
         default: []
         }
     }
@@ -231,8 +221,6 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
     public func algorithm(_ a: Adjustments) -> Int? {
         switch self {
         case .vibrance, .saturation: a.saturationAlgorithm
-        case .highlights: a.highlightsAlgorithm
-        case .shadows: a.shadowsAlgorithm
         default: nil
         }
     }
@@ -241,8 +229,6 @@ public enum AdjustmentControl: String, CaseIterable, Identifiable, Sendable {
         guard algorithms.contains(where: { $0.id == id }) else { return }
         switch self {
         case .vibrance, .saturation: a.saturationAlgorithm = id
-        case .highlights: a.highlightsAlgorithm = id
-        case .shadows: a.shadowsAlgorithm = id
         default: break
         }
     }
