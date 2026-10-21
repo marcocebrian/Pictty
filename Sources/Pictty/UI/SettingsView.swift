@@ -56,8 +56,9 @@ struct SettingsView: View {
 
     static let compareHelp = "D compares the next picture; ⌘-click thumbnails to add up to four, ⇧-click for a range. Tab picks the pane the keys act on.\n\nWipe lays one picture exactly over the other: left of the line is picture 1, right of it picture 2. Drag the line, or click anywhere, to slide between them.\n\nBlink stacks the two and shows one at a time; B flips between them, so anything that changed jumps out."
 
-    static let informationHelp = "This page lets you customise the floating information panel on the right of the window. Switch off what you don’t need and the rest moves up; changes show at once in every window."
+    static let informationHelp = "This page lets you customise the two places where Pictty tells you about the picture: the floating information panel on the right, and the info pill at the bottom of the window. Switch off what you don’t need and the rest moves up; changes show at once in every window."
     static let panelHelp = "The floating panel that opens on the right with I, or the ⓘ button in the toolbar. Each switch shows or hides one of its cards. Some cards only appear when the picture has something to show, such as Location for a photo with GPS. The filter button at the top of the panel has the same switches."
+    static let pillHelp = "The small caption at the bottom of the window. Choose the details it shows; whether it hides by itself or stays up is under Viewing."
 
     /// A grey paragraph that explains a page or a group.
     private func note(_ text: String) -> some View {
@@ -85,6 +86,21 @@ struct SettingsView: View {
                     prefs.showHUD = value != "off"
                     if let behavior = ChromeBehavior(rawValue: value) { prefs.pillBehavior = behavior }
                 })
+    }
+
+    /// What each field of the pill looks like.
+    private static func pillExample(_ field: PillField) -> String {
+        switch field {
+        case .name: "097.nef"
+        case .position: "12 / 240"
+        case .fileSize: "24.6 MB"
+        case .dimensions: "6048 × 4024"
+        case .megapixels: "24.3 MP"
+        case .format: "NEF"
+        case .exposure: "f/2.8  ·  1/250s  ·  ISO 400  ·  50mm"
+        case .camera: "NIKON Z 6"
+        case .captured: L("Date and time the shutter fired")
+        }
     }
 
     var body: some View {
@@ -208,6 +224,16 @@ struct SettingsView: View {
                 ForEach(InspectorSection.allCases) { section in
                     Row(section.title, section.detail, section.symbol) {
                         Toggle("", isOn: Binding(get: { prefs.shows(section) }, set: { prefs.setShows(section, $0) }))
+                            .toggleStyle(.switch).labelsHidden()
+                    }
+                }
+            }
+            heading("Info pill (/)", Self.pillHelp)
+                .padding(.top, 6)
+            Group_ {
+                ForEach(PillField.allCases) { field in
+                    Row(field.title, Self.pillExample(field), field.symbol) {
+                        Toggle("", isOn: Binding(get: { prefs.shows(field) }, set: { prefs.setShows(field, $0) }))
                             .toggleStyle(.switch).labelsHidden()
                     }
                 }

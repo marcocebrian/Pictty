@@ -160,3 +160,43 @@ enum InspectorSection: String, CaseIterable, Identifiable, Codable {
         self = match
     }
 }
+
+// MARK: - Info pill
+
+/// What the info pill at the bottom says.
+enum PillField: String, CaseIterable, Identifiable, Codable {
+    case name, position, fileSize, dimensions, megapixels, format, exposure, camera, captured
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .name: "File name"
+        case .position: "Position in folder"
+        case .fileSize: "File size"
+        case .dimensions: "Dimensions"
+        case .megapixels: "Megapixels"
+        case .format: "Format"
+        case .exposure: "Exposure"
+        case .camera: "Camera"
+        case .captured: "Date captured"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .name: "textformat"
+        case .position: "photo.stack"
+        case .fileSize: "internaldrive"
+        case .dimensions: "arrow.up.left.and.arrow.down.right"
+        case .megapixels: "square.grid.3x3"
+        case .format: "doc"
+        case .exposure: "camera.aperture"
+        case .camera: "camera"
+        case .captured: "calendar"
+        }
+    }
+
+    /// What the pill showed before it could be chosen.
+    static let standard: [PillField] = [.name, .position, .fileSize, .dimensions, .megapixels, .format, .exposure]
+}

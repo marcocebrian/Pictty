@@ -49,6 +49,8 @@ struct MetadataReport {
     var cameraLine: String?
     var exposureLine: String?
     var softwareLine: String?
+    /// When the shutter fired, short, for the info pill.
+    var capturedLine: String?
     /// IPTC and XMP keywords, in the file's order, without repeats.
     var keywords: [String] = []
     /// The file's Finder tags (Apple's tags, kept by the file system, not in the file).
@@ -392,6 +394,7 @@ enum MetadataReader {
         // ---- Dates ---------------------------------------------------------
         var dates: [MetadataField] = []
         if let s = string(exif, kCGImagePropertyExifDateTimeOriginal), let d = exifDate(s, exif) {
+            report.capturedLine = Self.shortFormatter.string(from: d)
             dates.append(MetadataField(label: "Captured", value: Self.absoluteFormatter.string(from: d), symbol: "camera.badge.clock", mono: false))
             let t = exifTime(s, exif, key: kCGImagePropertyExifOffsetTimeOriginal)
             if let t { dates.append(MetadataField(label: "Capture time", value: t, symbol: "clock", mono: false)) }
@@ -618,6 +621,13 @@ enum MetadataReader {
         let f = DateFormatter()
         f.dateStyle = .medium
         f.timeStyle = .medium
+        return f
+    }()
+
+    private static let shortFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
         return f
     }()
 

@@ -44,7 +44,7 @@ struct HUDOverlay: View {
                         .position(x: caption.rect.midX,
                                   y: min(caption.rect.maxY, size.height - (model.filmstripVisible ? 142 : 0)) - 30)
                 }
-            } else if model.showHUD, model.current != nil || model.isScanning {
+            } else if model.showHUD, model.current != nil && !prefs.pillFields.isEmpty || model.isScanning {
                 VStack {
                     Spacer()
                     infoPill
@@ -112,51 +112,58 @@ struct HUDOverlay: View {
     private var infoPill: some View {
         VStack(spacing: 3) {
             if let item = model.current {
-                HStack(spacing: 8) {
-                    Text(item.displayName)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                let report = model.report
+                if shows(.name) {
+                    HStack(spacing: 8) {
+                        Text(item.displayName)
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
 
-                    if model.isProvisional {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .scaleEffect(0.7)
-                            .frame(width: 10, height: 10)
+                        if model.isProvisional {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .scaleEffect(0.7)
+                                .frame(width: 10, height: 10)
+                        }
                     }
                 }
 
-                HStack(spacing: 9) {
-                    Label(model.positionLabel, systemImage: "photo.stack")
-                        .monospacedDigit()
-                    dot
-                    Text(item.formattedFileSize)
-                    dot
-                    Text(model.report.headline.isEmpty ? "—" : model.report.headline)
-                        .monospacedDigit()
-                    if !model.report.subheadline.isEmpty {
-                        Text(L(model.report.subheadline))
-                            .monospacedDigit()
+                // The facts the user picked, in the pill's own order, a dot between each.
+                let facts = facts(item, report)
+                if !facts.isEmpty || report.isHDR || model.slideshowRunning {
+                    HStack(spacing: 9) {
+                        ForEach(Array(facts.enumerated()), id: \.element.field) { n, fact in
+                            if n > 0 { dot }
+                            if fact.field == .position {
+                                Label(fact.text, systemImage: "photo.stack").monospacedDigit()
+                            } else {
+                                Text(fact.text).monospacedDigit()
+                            }
+                        }
+                        if report.isHDR {
+                            HDRBadge(headroom: report.contentHeadroom)
+                        }
+                        if model.slideshowRunning {
+                            if !facts.isEmpty { dot }
+                            Label("Slideshow", systemImage: "play.fill")
+                                .foregroundStyle(Color.accentColor)
+                        }
                     }
-                    dot
-                    Text(item.fileExtension)
-                    if model.report.isHDR {
-                        HDRBadge(headroom: model.report.contentHeadroom)
-                    }
-                    if model.slideshowRunning {
-                        dot
-                        Label("Slideshow", systemImage: "play.fill")
-                            .foregroundStyle(Color.accentColor)
-                    }
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.62))
                 }
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.62))
 
-                if let exposure = model.report.exposureLine {
-                    Text(exposure)
+                let lower = [shows(.camera) ? report.cameraLine : nil,
+                             shows(.exposure) ? report.exposureLine : nil,
+                             shows(.captured) ? report.capturedLine : nil].compactMap { $0 }
+                if !lower.isEmpty {
+                    Text(lower.joined(separator: "  ·  "))
                         .font(.system(size: 10.5, weight: .medium, design: .rounded))
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                         .foregroundStyle(.white.opacity(0.42))
                         .padding(.top, 1)
                 }
@@ -174,6 +181,26 @@ struct HUDOverlay: View {
         .liquidGlassCapsule(tint: 0.44, shadow: 12)
         .opacity(model.chromeVisible || model.items.isEmpty || prefs.pillBehavior == .always ? 1 : 0)
         .animation(.easeInOut(duration: 0.32), value: model.chromeVisible)
+    }
+
+    private func shows(_ field: PillField) -> Bool { prefs.pillFields.contains(field) }
+
+    /// The middle row of the pill.
+    private func facts(_ item: ImageItem, _ report: MetadataReport) -> [(field: PillField, text: String)] {
+        prefs.pillFields.compactMap { field in
+            switch field {
+            case .position: (field, model.positionLabel)
+            case .fileSize: (field, item.formattedFileSize)
+            // Size and megapixels read as one fact, as they always have.
+            case .dimensions:
+                (field, [report.headline.isEmpty ? "—" : report.headline,
+                         shows(.megapixels) && !report.subheadline.isEmpty ? L(report.subheadline) : nil]
+                    .compactMap { $0 }.joined(separator: "  "))
+            case .megapixels: report.subheadline.isEmpty || shows(.dimensions) ? nil : (field, L(report.subheadline))
+            case .format: (field, item.fileExtension)
+            case .name, .exposure, .camera, .captured: nil
+            }
+        }
     }
 
     private var dot: some View {

@@ -29,6 +29,7 @@ final class Preferences: ObservableObject {
         static let toolbarBehavior = "toolbarBehavior"
         static let pillBehavior = "pillBehavior"
         static let hiddenInspectorSections = "hiddenInspectorSections"
+        static let pillFields = "pillFields"
     }
 
     private let defaults: UserDefaults
@@ -58,6 +59,8 @@ final class Preferences: ObservableObject {
     @Published var hiddenInspectorSections: Set<InspectorSection> = [] {
         didSet { store(hiddenInspectorSections.map(\.rawValue).sorted(), Key.hiddenInspectorSections) }
     }
+    /// In the pill's own order, whatever order they were switched on in.
+    @Published var pillFields: [PillField] = PillField.standard { didSet { store(pillFields.map(\.rawValue), Key.pillFields) } }
 
     /// `PICTTY_DEFAULTS_SUITE` keeps a developer's test runs out of the real preferences.
     nonisolated static var store: UserDefaults {
@@ -104,12 +107,20 @@ final class Preferences: ObservableObject {
         toolbarBehavior = defaults.string(forKey: Key.toolbarBehavior).flatMap(ChromeBehavior.init(rawValue:)) ?? .autoHide
         pillBehavior = defaults.string(forKey: Key.pillBehavior).flatMap(ChromeBehavior.init(rawValue:)) ?? .autoHide
         hiddenInspectorSections = Set((defaults.stringArray(forKey: Key.hiddenInspectorSections) ?? []).compactMap(InspectorSection.init(rawValue:)))
+        pillFields = defaults.stringArray(forKey: Key.pillFields).map { $0.compactMap(PillField.init(rawValue:)) } ?? PillField.standard
     }
 
     func shows(_ section: InspectorSection) -> Bool { !hiddenInspectorSections.contains(section) }
 
     func setShows(_ section: InspectorSection, _ on: Bool) {
         if on { hiddenInspectorSections.remove(section) } else { hiddenInspectorSections.insert(section) }
+    }
+
+    func shows(_ field: PillField) -> Bool { pillFields.contains(field) }
+
+    func setShows(_ field: PillField, _ on: Bool) {
+        let wanted = Set(pillFields).union(on ? [field] : []).subtracting(on ? [] : [field])
+        pillFields = PillField.allCases.filter(wanted.contains)
     }
 
     /// The folder and picture on screen, so the next launch can come back to them.
