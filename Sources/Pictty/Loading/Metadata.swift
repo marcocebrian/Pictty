@@ -49,6 +49,10 @@ struct MetadataReport {
     var cameraLine: String?
     var exposureLine: String?
     var softwareLine: String?
+    /// IPTC and XMP keywords, in the file's order, without repeats.
+    var keywords: [String] = []
+    /// The file's Finder tags (Apple's tags, kept by the file system, not in the file).
+    var finderTags: [String] = []
     var isHDR: Bool = false
     var contentHeadroom: Float = 1
     var hasLocation: Bool = false
@@ -160,6 +164,7 @@ enum MetadataReader {
         fields.append(MetadataField(label: "Format", value: "SVG (vector, drawn sharp at any zoom)", symbol: "doc", mono: false))
         probe.report.subheadline = "vector"
         probe.report.sections = [MetadataSection(title: "Image", symbol: "photo", fields: fields)]
+        probe.report.finderTags = finderTags(url)
         probe.loaded = true
         return probe
     }
@@ -435,12 +440,11 @@ enum MetadataReader {
         if let title = string(iptc, kCGImagePropertyIPTCObjectName) ?? string(tiff, kCGImagePropertyTIFFImageDescription) {
             structure.append(MetadataField(label: "Title", value: title, symbol: "textformat", mono: false))
         }
-        if let keywords = iptc[kCGImagePropertyIPTCKeywords] as? [String], !keywords.isEmpty {
-            structure.append(MetadataField(label: "Keywords", value: keywords.joined(separator: ", "), symbol: "tag", mono: false))
-        }
         sections.append(MetadataSection(title: "Provenance", symbol: "doc.text.magnifyingglass", fields: structure))
 
         report.sections = sections
+        report.keywords = keywords(iptc: iptc, source: source)
+        report.finderTags = finderTags(url)
         report.headline = sizeText
         report.subheadline = mp > 0 ? String(format: "%.1f MP", mp) : ""
         report.cameraLine = body.isEmpty ? nil : dedupe(body)
@@ -452,6 +456,27 @@ enum MetadataReader {
     }
 
     // MARK: Helpers
+
+    /// IPTC keywords, then XMP's `dc:subject` (where Lightroom, Photos and most DAMs write
+    /// them), each once, ignoring case.
+    private static func keywords(iptc: [CFString: Any], source: CGImageSource) -> [String] {
+        var all = (iptc[kCGImagePropertyIPTCKeywords] as? [String]) ?? (iptc[kCGImagePropertyIPTCKeywords] as? String).map { [$0] } ?? []
+        if let meta = CGImageSourceCopyMetadataAtIndex(source, 0, nil),
+           let tag = CGImageMetadataCopyTagWithPath(meta, nil, "dc:subject" as CFString),
+           let value = CGImageMetadataTagCopyValue(tag) {
+            if let items = value as? [CGImageMetadataTag] {
+                all += items.compactMap { CGImageMetadataTagCopyValue($0) as? String }
+            } else if let single = value as? String {
+                all.append(single)
+            }
+        }
+        var seen = Set<String>()
+        return all.map(\.trimmed).filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+    }
+
+    static func finderTags(_ url: URL) -> [String] {
+        (try? url.resourceValues(forKeys: [.tagNamesKey]))?.tagNames ?? []
+    }
 
     private static func exposureLineValue(_ exif: [CFString: Any]) -> String? {
         var bits: [String] = []

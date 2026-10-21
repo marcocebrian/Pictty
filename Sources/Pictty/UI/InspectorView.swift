@@ -1,6 +1,6 @@
-// The metadata panel. Camera, exposure, image, software/provenance, dates and
-// location — each section headed by an SF Symbol, each row a label/value pair
-// with tabular figures so numbers line up column-wise.
+// The metadata panel. Camera, exposure, image, software/provenance, dates,
+// location and keywords — each section headed by an SF Symbol, each row a
+// label/value pair with tabular figures so numbers line up column-wise.
 //
 // The "Software" section is the one people rarely see and often need: it is
 // where the derivation trail lives — what produced the file, what toolkit
@@ -43,6 +43,7 @@ struct InspectorView: View {
                     ForEach(report.sections) { section in
                         SectionBlock(section: section, copiedRow: $copiedRow)
                     }
+                    KeywordsCard(keywords: report.keywords, tags: report.finderTags)
                     technicalFooter
                 }
                 .padding(.horizontal, 14)
@@ -295,6 +296,139 @@ private struct FieldRow: View {
         case .accent:  return Color.accentColor.opacity(0.95)
         case .warning: return .orange
         }
+    }
+}
+
+// MARK: - Keywords
+
+/// The file's keywords and its Finder tags as chips, at the bottom of the panel; a long list
+/// scrolls inside the card. A click copies the word.
+private struct KeywordsCard: View {
+    let keywords: [String]
+    let tags: [String]
+    @State private var copied: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: "tag")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .frame(width: 13)
+                    .foregroundStyle(Color.accentColor.opacity(0.85))
+                Text(L("Keywords").uppercased())
+                    .font(.system(size: 9.5, weight: .heavy, design: .rounded))
+                    .tracking(0.8)
+                    .foregroundStyle(.white.opacity(0.66))
+                Spacer()
+                if keywords.count + tags.count > 0 {
+                    Text("\(keywords.count + tags.count)")
+                        .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+            }
+
+            if keywords.isEmpty && tags.isEmpty {
+                Text("No keywords or tags")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .padding(.leading, 19)
+            } else {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !keywords.isEmpty { group("Keywords", "text.word.spacing", keywords) }
+                        if !tags.isEmpty { group("Finder tags", "tag.fill", tags) }
+                    }
+                    .padding(.leading, 19)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 132)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(11)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.045)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func group(_ title: String, _ symbol: String, _ words: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            // Only worth saying which is which when there are both.
+            if !keywords.isEmpty && !tags.isEmpty {
+                Label(L(title), systemImage: symbol)
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            FlowLayout(spacing: 4) {
+                ForEach(words, id: \.self) { word in
+                    Text(copied == word ? L("Copied") : word)
+                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(copied == word ? Color.green : .white.opacity(0.86))
+                        .lineLimit(1)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(Capsule().fill(.white.opacity(0.09)))
+                        .contentShape(Capsule())
+                        .onTapGesture { copy(word) }
+                        .help(word)
+                }
+            }
+        }
+    }
+
+    private func copy(_ word: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(word, forType: .string)
+        withAnimation(.easeInOut(duration: 0.15)) { copied = word }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+            if copied == word { withAnimation(.easeInOut(duration: 0.15)) { copied = nil } }
+        }
+    }
+}
+
+/// Lays its children out left to right, wrapping onto new lines.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        let rows = arrange(subviews, width: width)
+        let height = rows.last.map { $0.y + $0.height } ?? 0
+        let used = rows.map(\.width).max() ?? 0
+        return CGSize(width: proposal.width ?? used, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for row in arrange(subviews, width: bounds.width) {
+            var x = bounds.minX
+            for i in row.items {
+                let size = subviews[i].sizeThatFits(.unspecified)
+                subviews[i].place(at: CGPoint(x: x, y: bounds.minY + row.y),
+                                  proposal: ProposedViewSize(width: min(size.width, bounds.width), height: size.height))
+                x += min(size.width, bounds.width) + spacing
+            }
+        }
+    }
+
+    private struct Row { var items: [Int] = []; var y: CGFloat = 0; var width: CGFloat = 0; var height: CGFloat = 0 }
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for i in subviews.indices {
+            let size = subviews[i].sizeThatFits(.unspecified)
+            let w = min(size.width, width)
+            if !row.items.isEmpty, row.width + spacing + w > width {
+                let next = row.y + row.height + spacing
+                rows.append(row)
+                row = Row(y: next)
+            }
+            row.width += (row.items.isEmpty ? 0 : spacing) + w
+            row.height = max(row.height, size.height)
+            row.items.append(i)
+        }
+        if !row.items.isEmpty { rows.append(row) }
+        return rows
     }
 }
 
