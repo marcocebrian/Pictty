@@ -103,6 +103,24 @@ enum ChromeBehavior: String, CaseIterable, Identifiable, Codable {
 
 // MARK: - Information panel
 
+/// How the panel draws the picture's tones.
+enum HistogramStyle: String, CaseIterable, Identifiable, Codable {
+    /// How many pixels at each brightness.
+    case histogram
+    /// Brightness column by column across the picture, so it shows where the highlights and
+    /// shadows are, and a clipped one as a line on the edge.
+    case waveform
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .histogram: "Histogram"
+        case .waveform: "Waveform"
+        }
+    }
+}
+
 /// The cards of the information panel, in the order they appear. Each can be switched off.
 enum InspectorSection: String, CaseIterable, Identifiable, Codable {
     case histogram, capture, exposure, image, software, dates, location, provenance, keywords, renderer
@@ -142,7 +160,7 @@ enum InspectorSection: String, CaseIterable, Identifiable, Codable {
 
     var detail: String {
         switch self {
-        case .histogram: "Red, green and blue, with clipping at each end"
+        case .histogram: "Histogram or waveform, with clipping at each end"
         case .capture: "Camera, lens and serial number"
         case .exposure: "Focal length, aperture, shutter, ISO and more"
         case .image: "Dimensions, file size, format, bit depth, profile"

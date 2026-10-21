@@ -30,6 +30,7 @@ final class Preferences: ObservableObject {
         static let pillBehavior = "pillBehavior"
         static let hiddenInspectorSections = "hiddenInspectorSections"
         static let pillFields = "pillFields"
+        static let histogramStyle = "histogramStyle"
     }
 
     private let defaults: UserDefaults
@@ -61,6 +62,7 @@ final class Preferences: ObservableObject {
     }
     /// In the pill's own order, whatever order they were switched on in.
     @Published var pillFields: [PillField] = PillField.standard { didSet { store(pillFields.map(\.rawValue), Key.pillFields) } }
+    @Published var histogramStyle: HistogramStyle = .histogram { didSet { store(histogramStyle.rawValue, Key.histogramStyle) } }
 
     /// `PICTTY_DEFAULTS_SUITE` keeps a developer's test runs out of the real preferences.
     nonisolated static var store: UserDefaults {
@@ -108,6 +110,7 @@ final class Preferences: ObservableObject {
         pillBehavior = defaults.string(forKey: Key.pillBehavior).flatMap(ChromeBehavior.init(rawValue:)) ?? .autoHide
         hiddenInspectorSections = Set((defaults.stringArray(forKey: Key.hiddenInspectorSections) ?? []).compactMap(InspectorSection.init(rawValue:)))
         pillFields = defaults.stringArray(forKey: Key.pillFields).map { $0.compactMap(PillField.init(rawValue:)) } ?? PillField.standard
+        histogramStyle = defaults.string(forKey: Key.histogramStyle).flatMap(HistogramStyle.init(rawValue:)) ?? .histogram
     }
 
     func shows(_ section: InspectorSection) -> Bool { !hiddenInspectorSections.contains(section) }

@@ -1,6 +1,6 @@
 import CoreGraphics
 
-/// Histogram and clipping, measured once per picture on its screen-sized decode.
+/// Histogram, waveform and clipping, measured once per picture on its screen-sized decode.
 ///
 /// Pixels are sampled, not averaged: averaging would hide exactly the single blown or blocked
 /// pixels a clipping warning exists to show.
@@ -14,6 +14,13 @@ public struct ImageAnalysis: @unchecked Sendable {
     /// Red where highlights are blown, blue where shadows are blocked, clear elsewhere; the size
     /// of the analysed image, to be stretched over the picture.
     public let mask: CGImage?
+    /// RGB waveform: one column per slice of the picture, left to right, brightness from the
+    /// bottom (black) to the top (white). Red, green and blue add up, so they draw white where
+    /// they agree. Clipped highlights are a line along the top edge, right above where they are.
+    public let waveform: CGImage?
+
+    /// Columns and levels of the waveform image.
+    public static let waveformSize = (columns: 256, levels: 128)
 
     /// The level from which a pixel counts as blown, on the histogram of each pixel's second
     /// brightest channel.
@@ -77,11 +84,17 @@ public struct ImageAnalysis: @unchecked Sendable {
         @inline(__always) func second(_ a: UInt8, _ b: UInt8, _ c: UInt8) -> UInt8 { max(min(a, b), min(max(a, b), c)) }
 
         var r = [UInt32](repeating: 0, count: 256), g = r, b = r, l = r, top = r
+        let (columns, levels) = Self.waveformSize
+        var wr = [UInt32](repeating: 0, count: columns * levels), wg = wr, wb = wr
         var counted = 0
         for i in 0..<(w * h) {
             let o = i * 4
             guard px[o + 3] > 0 else { continue }
             let pr = px[o], pg = px[o + 1], pb = px[o + 2]
+            let column = (i % w) * columns / w * levels
+            wr[column + Int(pr) * levels / 256] += 1
+            wg[column + Int(pg) * levels / 256] += 1
+            wb[column + Int(pb) * levels / 256] += 1
             r[Int(pr)] += 1; g[Int(pg)] += 1; b[Int(pb)] += 1
             l[(2126 * Int(pr) + 7152 * Int(pg) + 722 * Int(pb)) / 10000] += 1
             top[Int(second(pr, pg, pb))] += 1
@@ -112,6 +125,34 @@ public struct ImageAnalysis: @unchecked Sendable {
         let total = Double(max(1, counted))
         return ImageAnalysis(red: normalised(r), green: normalised(g), blue: normalised(b), luma: normalised(l),
                              highlightsClipped: Double(blown) / total, shadowsClipped: Double(blocked) / total,
-                             mask: blown + blocked > 0 ? maskCtx.makeImage() : nil)
+                             mask: blown + blocked > 0 ? maskCtx.makeImage() : nil,
+                             waveform: waveformImage(wr, wg, wb, rowsPerColumn: Double(counted) / Double(columns)))
+    }
+
+    /// The traces as a picture, top row white. Brightness follows the logarithm of how many
+    /// pixels land on each point, so a few blown pixels still show while a large even area does
+    /// not burn out, then a curve that keeps the sparse spread dim and the dense trace bright.
+    static func waveformImage(_ r: [UInt32], _ g: [UInt32], _ b: [UInt32], rowsPerColumn: Double) -> CGImage? {
+        let (columns, levels) = waveformSize
+        guard rowsPerColumn > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: columns, height: levels, bitsPerComponent: 8, bytesPerRow: columns * 4,
+                                  space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let out = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        // A point holding a quarter of its column is full brightness.
+        let full = log1p(rowsPerColumn / 4)
+        @inline(__always) func level(_ n: UInt32) -> UInt8 {
+            n == 0 ? 0 : UInt8(min(255, 255 * pow(log1p(Double(n)) / full, 1.6)))
+        }
+        for x in 0..<columns {
+            for v in 0..<levels {
+                let src = x * levels + v
+                // Bitmap memory runs top row first: the top row is white.
+                let o = ((levels - 1 - v) * columns + x) * 4
+                let cr = level(r[src]), cg = level(g[src]), cb = level(b[src])
+                out[o] = cr; out[o + 1] = cg; out[o + 2] = cb
+                out[o + 3] = max(cr, cg, cb)
+            }
+        }
+        return ctx.makeImage()
     }
 }

@@ -29,7 +29,7 @@ struct InspectorView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     if prefs.shows(.histogram), let analysis = model.analysis {
-                        HistogramCard(analysis: analysis, showClipping: model.showClipping) {
+                        HistogramCard(analysis: analysis, showClipping: model.showClipping, style: $prefs.histogramStyle) {
                             controller.toggleClipping(nil)
                         }
                     }
@@ -447,27 +447,44 @@ struct Badge: View {
 // MARK: - Histogram
 
 /// Red, green and blue added together over the luminance, the way light adds; with how much
-/// is clipped at each end and the switch for the warnings.
+/// is clipped at each end and the switch for the warnings. The title switches to the waveform,
+/// which shows where across the picture the highlights and shadows are.
 private struct HistogramCard: View {
     let analysis: ImageAnalysis
     let showClipping: Bool
+    @Binding var style: HistogramStyle
     let toggle: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "chart.bar.xaxis")
+                Image(systemName: style == .waveform ? "waveform.path.ecg" : "chart.bar.xaxis")
                     .font(.system(size: 9.5, weight: .semibold))
                     .foregroundStyle(Color.accentColor.opacity(0.85))
-                Text("HISTOGRAM")
-                    .font(.system(size: 9.5, weight: .heavy, design: .rounded))
-                    .tracking(0.8)
-                    .foregroundStyle(.white.opacity(0.66))
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 13)
+                ForEach(HistogramStyle.allCases) { option in
+                    Button { withAnimation(.easeInOut(duration: 0.18)) { style = option } } label: {
+                        Text(L(option.title).uppercased())
+                            .font(.system(size: 9.5, weight: .heavy, design: .rounded))
+                            .tracking(0.8)
+                            .foregroundStyle(.white.opacity(style == option ? 0.85 : 0.32))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(option == .waveform
+                          ? L("Waveform: the picture's columns left to right, brightness bottom to top. A line along the top edge is blown highlights, along the bottom blocked shadows.")
+                          : L("Histogram: how many pixels at each brightness, shadows left, highlights right."))
+                }
                 Spacer()
                 Button(action: toggle) {
                     HStack(spacing: 4) {
                         Image(systemName: "exclamationmark.triangle\(showClipping ? ".fill" : "")")
                         Text("Clipping")
+                            .lineLimit(1)
+                            .fixedSize()
                     }
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .padding(.horizontal, 8)
@@ -479,24 +496,9 @@ private struct HistogramCard: View {
                 .help("Clipping warnings (J)")
             }
 
-            Canvas { ctx, size in
-                func area(_ bins: [Float]) -> Path {
-                    var p = Path()
-                    p.move(to: CGPoint(x: 0, y: size.height))
-                    for (i, v) in bins.enumerated() {
-                        p.addLine(to: CGPoint(x: CGFloat(i) / 255 * size.width, y: size.height * (1 - CGFloat(v) * 0.94)))
-                    }
-                    p.addLine(to: CGPoint(x: size.width, y: size.height))
-                    p.closeSubpath()
-                    return p
-                }
-                ctx.fill(area(analysis.luma), with: .color(.white.opacity(0.16)))
-                ctx.blendMode = .plusLighter
-                ctx.fill(area(analysis.red), with: .color(Color(hex: 0xEA4335).opacity(0.55)))
-                ctx.fill(area(analysis.green), with: .color(Color(hex: 0x34A853).opacity(0.55)))
-                ctx.fill(area(analysis.blue), with: .color(Color(hex: 0x4285F4).opacity(0.6)))
+            Group {
+                if style == .waveform { waveform } else { histogram }
             }
-            .frame(height: 78)
             .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(.black.opacity(0.25)))
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
@@ -509,6 +511,51 @@ private struct HistogramCard: View {
         .padding(11)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.045)))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private var histogram: some View {
+        Canvas { ctx, size in
+            func area(_ bins: [Float]) -> Path {
+                var p = Path()
+                p.move(to: CGPoint(x: 0, y: size.height))
+                for (i, v) in bins.enumerated() {
+                    p.addLine(to: CGPoint(x: CGFloat(i) / 255 * size.width, y: size.height * (1 - CGFloat(v) * 0.94)))
+                }
+                p.addLine(to: CGPoint(x: size.width, y: size.height))
+                p.closeSubpath()
+                return p
+            }
+            ctx.fill(area(analysis.luma), with: .color(.white.opacity(0.16)))
+            ctx.blendMode = .plusLighter
+            ctx.fill(area(analysis.red), with: .color(Color(hex: 0xEA4335).opacity(0.55)))
+            ctx.fill(area(analysis.green), with: .color(Color(hex: 0x34A853).opacity(0.55)))
+            ctx.fill(area(analysis.blue), with: .color(Color(hex: 0x4285F4).opacity(0.6)))
+        }
+        .frame(height: 78)
+    }
+
+    /// The traces over a scale at quarters, with the two edges where clipping lands marked in
+    /// the warnings' colours: red along the top, blue along the bottom.
+    private var waveform: some View {
+        ZStack {
+            Canvas { ctx, size in
+                for q in 1...3 {
+                    let y = (size.height * CGFloat(q) / 4).rounded() + 0.5
+                    ctx.stroke(Path { $0.move(to: CGPoint(x: 0, y: y)); $0.addLine(to: CGPoint(x: size.width, y: y)) },
+                               with: .color(.white.opacity(0.08)), lineWidth: 0.5)
+                }
+                ctx.fill(Path(CGRect(x: 0, y: 0, width: size.width, height: 1)), with: .color(Color(hex: 0xEB2828).opacity(0.55)))
+                ctx.fill(Path(CGRect(x: 0, y: size.height - 1, width: size.width, height: 1)),
+                         with: .color(Color(hex: 0x1E64F5).opacity(0.55)))
+            }
+            if let wave = analysis.waveform {
+                Image(decorative: wave, scale: 1)
+                    .resizable()
+                    .interpolation(.medium)
+                    .blendMode(.plusLighter)
+            }
+        }
+        .frame(height: 96)
     }
 
     private func clipLabel(_ title: String, _ share: Double, _ color: Color) -> some View {
