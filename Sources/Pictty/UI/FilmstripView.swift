@@ -12,14 +12,47 @@ struct FilmstripView: View {
 
     private let itemHeight: CGFloat = 76
 
+    /// Pinned, the strip is a bar across the bottom of the window, this tall; the picture
+    /// ends where it begins.
+    static let dockedHeight: CGFloat = 142
+
     var body: some View {
+        if model.filmstripPinned { docked } else { floating }
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
             transportBar
             strip
         }
-        .liquidGlassCard(tint: 0.45)
-        // Room for the inspector beside it, animated with the inspector's own toggle.
-        .padding(EdgeInsets(top: 6, leading: 10, bottom: 10, trailing: 10 + (model.showInspector ? 318 : 0)))
+    }
+
+    /// Revealed at the bottom edge: a card floating over the picture.
+    private var floating: some View {
+        content
+            .liquidGlassCard(tint: 0.45)
+            // Room for the inspector beside it, animated with the inspector's own toggle.
+            .padding(EdgeInsets(top: 6, leading: 10, bottom: 10, trailing: 10 + (model.showInspector ? 318 : 0)))
+    }
+
+    /// Pinned: edge to edge under the picture, no gaps, no corners of its own (the window's
+    /// rounded corners finish it), a hairline where the picture ends.
+    private var docked: some View {
+        content
+            .padding(EdgeInsets(top: 6, leading: 0, bottom: 10, trailing: model.showInspector ? 324 : 0))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background {
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial)
+                    Rectangle().fill(Color.black.opacity(0.62))
+                    // The same breath of light along the top edge as the floating card.
+                    LinearGradient(colors: [.white.opacity(0.06), .clear], startPoint: .top, endPoint: .center)
+                }
+                .environment(\.colorScheme, .dark)
+            }
+            .overlay(alignment: .top) {
+                Rectangle().fill(.white.opacity(0.12)).frame(height: 0.5)
+            }
     }
 
     // MARK: - Transport

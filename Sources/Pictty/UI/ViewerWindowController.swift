@@ -248,7 +248,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let inspectorWidth: CGFloat = 318
         inspectorHost?.frame = NSRect(x: bounds.maxX - inspectorWidth - 6, y: 0,
                                       width: inspectorWidth, height: max(0, bounds.height - 48))
-        filmstripHost?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: 142)
+        filmstripHost?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: FilmstripView.dockedHeight)
         nudgeHost?.frame = NSRect(x: 0, y: 24, width: bounds.width, height: 110)
         // A pinned strip takes its own room: the picture ends at the strip's top edge.
         let canvasFrame = NSRect(x: 0, y: canvasBottomInset, width: bounds.width, height: max(0, bounds.height - canvasBottomInset))
@@ -271,12 +271,10 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             && !Preferences.store.bool(forKey: DefaultNudgeView.dismissedKey), duration: 0.4)
     }
 
-    /// Height of the pinned filmstrip's card above the window's bottom edge, which the canvas
-    /// leaves free (its hosting view is a little taller, for the card's shadow).
+    /// What the pinned filmstrip's bar takes from the bottom of the window; the canvas keeps the rest.
     private var canvasBottomInset: CGFloat {
-        model.filmstripPinned && model.filmstripVisible ? Self.filmstripCardTop : 0
+        model.filmstripPinned && model.filmstripVisible ? FilmstripView.dockedHeight : 0
     }
-    private static let filmstripCardTop: CGFloat = 136
 
     /// Fades a floating card in or out. With `slide`, it also drifts that many points to the right
     /// as it goes and back as it comes, on its layer alone: the compositor moves the finished
@@ -978,7 +976,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let b = screen.backingScaleFactor
         let points = CGSize(width: o.width / b, height: o.height / b)
         // The picture fits in what the pinned strip leaves; the window adds the strip back.
-        let strip = model.filmstripPinned && model.showFilmstrip && model.items.count > 1 ? Self.filmstripCardTop : 0
+        let strip = model.filmstripPinned && model.showFilmstrip && model.items.count > 1 ? FilmstripView.dockedHeight : 0
         let room = CGSize(width: visible.width, height: visible.height - strip)
         let minimum = CGSize(width: window.contentMinSize.width, height: max(0, window.contentMinSize.height - strip))
         var size = scale.map { ZoomMath.bestFitContentSize(imagePoints: points, scale: $0, visible: room, minimum: minimum) }
