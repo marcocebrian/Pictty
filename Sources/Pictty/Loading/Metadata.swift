@@ -486,7 +486,16 @@ enum MetadataReader {
         if let f = exif[kCGImagePropertyExifFNumber] as? Double, f > 0 { bits.append(String(format: "f/%.1f", f)) }
         if let t = exif[kCGImagePropertyExifExposureTime] as? Double, t > 0 { bits.append(shutterString(t)) }
         if let iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [Int])?.first { bits.append("ISO \(iso)") }
-        if let fl = exif[kCGImagePropertyExifFocalLength] as? Double { bits.append(String(format: "%.0fmm", fl)) }
+        // A phone's 7mm says little; the 35 mm equivalent says what the frame looks like.
+        let fl = exif[kCGImagePropertyExifFocalLength] as? Double
+        let fl35 = (exif[kCGImagePropertyExifFocalLenIn35mmFilm] as? Double).flatMap { $0 > 0 ? $0 : nil }
+        switch (fl, fl35) {
+        case let (fl?, fl35?) where abs(fl35 - fl) > 0.5:
+            bits.append(String(format: "%.0fmm", fl) + " " + L("(%ldmm eq.)", Int(fl35.rounded())))
+        case let (fl?, _): bits.append(String(format: "%.0fmm", fl))
+        case let (nil, fl35?): bits.append(L("%ldmm eq.", Int(fl35.rounded())))
+        default: break
+        }
         return bits.isEmpty ? nil : bits.joined(separator: "  ·  ")
     }
 
