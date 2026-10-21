@@ -123,6 +123,12 @@ final class ColourAndOrientationTests: XCTestCase {
             last = q
             // Asking for that quality back gives a setting that reproduces it.
             XCTAssertLessThanOrEqual(JPEGQuality.setting(matching: q), setting + 0.0001)
+            // And table to table: a re-save is never coarser than the file.
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("q-\(UUID().uuidString).jpg")
+            try (data as Data).write(to: url)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let resave = try XCTUnwrap(JPEGQuality.setting(for: url))
+            XCTAssertEqual(resave, setting, accuracy: 0.011)
         }
     }
 }

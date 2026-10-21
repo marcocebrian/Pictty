@@ -68,22 +68,24 @@ public enum JPEGQuality {
         return nil
     }
 
-    /// Apple's encoder measured: the IJG quality each of its settings gives, from 0.30 to 1.00.
-    private static let calibration: [(setting: Double, quality: Int)] = {
+    /// Apple's encoder measured: for each of its settings from 0.30 to 1.00, the IJG quality it gives
+    /// and the sum of its luminance table (lower is finer).
+    private static let calibration: [(setting: Double, quality: Int, sum: Int)] = {
         let ctx = CGContext(data: nil, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 0,
                             space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
         guard let ctx else { return [] }
         ctx.setFillColor(CGColor(gray: 0.5, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: 16, height: 16))
         guard let image = ctx.makeImage() else { return [] }
-        var out: [(Double, Int)] = []
+        var out: [(Double, Int, Int)] = []
         for step in stride(from: 30, through: 100, by: 1) {
             let setting = Double(step) / 100
             let data = NSMutableData()
             guard let dest = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { continue }
             CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: setting] as CFDictionary)
-            guard CGImageDestinationFinalize(dest), let q = estimate(data as Data) else { continue }
-            out.append((setting, q))
+            guard CGImageDestinationFinalize(dest), let q = estimate(data as Data),
+                  let table = luminanceTable(data as Data) else { continue }
+            out.append((setting, q, table.reduce(0, +)))
         }
         return out
     }()
@@ -92,5 +94,14 @@ public enum JPEGQuality {
     /// file is no larger than the original's quality calls for.
     public static func setting(matching q: Int) -> Double {
         calibration.first { $0.quality >= q }?.setting ?? 1
+    }
+
+    /// The encoder setting for re-saving the JPEG at `url`: the lowest whose luminance table is at
+    /// least as fine as the file's own, compared table to table rather than through a quality
+    /// number, which Apple's tables do not follow exactly.
+    public static func setting(for url: URL) -> Double? {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), let table = luminanceTable(data) else { return nil }
+        let sum = table.reduce(0, +)
+        return calibration.first { $0.sum <= sum }?.setting ?? 1
     }
 }
