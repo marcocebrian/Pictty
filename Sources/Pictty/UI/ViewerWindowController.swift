@@ -250,6 +250,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
                                       width: inspectorWidth, height: max(0, bounds.height - 48))
         filmstripHost?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: 142)
         nudgeHost?.frame = NSRect(x: 0, y: 24, width: bounds.width, height: 110)
+        // A pinned strip takes its own room: the picture ends at the strip's top edge.
+        let canvasFrame = NSRect(x: 0, y: canvasBottomInset, width: bounds.width, height: max(0, bounds.height - canvasBottomInset))
+        if let canvas, canvas.frame != canvasFrame { canvas.frame = canvasFrame }
 
         if let window {
             let width = max(560, (toolbarHost?.fittingSize.width ?? 0) + 20).rounded(.up)
@@ -267,6 +270,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         set(nudgeHost, visible: model.items.isEmpty && !DefaultViewer.shared.opensJPEG
             && !Preferences.store.bool(forKey: DefaultNudgeView.dismissedKey), duration: 0.4)
     }
+
+    /// Height of the pinned filmstrip's card above the window's bottom edge, which the canvas
+    /// leaves free (its hosting view is a little taller, for the card's shadow).
+    private var canvasBottomInset: CGFloat {
+        model.filmstripPinned && model.filmstripVisible ? Self.filmstripCardTop : 0
+    }
+    private static let filmstripCardTop: CGFloat = 136
 
     /// Fades a floating card in or out. With `slide`, it also drifts that many points to the right
     /// as it goes and back as it comes, on its layer alone: the compositor moves the finished
@@ -341,6 +351,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         on(prefs.$filmstripPinned) { c, pinned in
             c.model.filmstripPinned = pinned
             if pinned { c.model.showFilmstrip = true; c.prefs.showFilmstrip = true }
+            // Best Fit: the window grows by the strip so the picture keeps its size.
+            c.fitWindowToPicture(animated: true)
         }
         on(prefs.$animateTransitions) { c, on in c.canvas.animateTransitions = on }
         on(prefs.$sortOrder) { c, _ in c.rescanFolder() }
@@ -950,8 +962,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let visible = screen.visibleFrame.insetBy(dx: 16, dy: 16)
         let b = screen.backingScaleFactor
         let points = CGSize(width: o.width / b, height: o.height / b)
-        let size = scale.map { ZoomMath.bestFitContentSize(imagePoints: points, scale: $0, visible: visible.size, minimum: window.contentMinSize) }
-            ?? ZoomMath.bestFitContentSize(imagePoints: points, visible: visible.size, minimum: window.contentMinSize)
+        // The picture fits in what the pinned strip leaves; the window adds the strip back.
+        let strip = model.filmstripPinned && model.showFilmstrip && model.items.count > 1 ? Self.filmstripCardTop : 0
+        let room = CGSize(width: visible.width, height: visible.height - strip)
+        let minimum = CGSize(width: window.contentMinSize.width, height: max(0, window.contentMinSize.height - strip))
+        var size = scale.map { ZoomMath.bestFitContentSize(imagePoints: points, scale: $0, visible: room, minimum: minimum) }
+            ?? ZoomMath.bestFitContentSize(imagePoints: points, visible: room, minimum: minimum)
+        size.height += strip
         var f = window.frameRect(forContentRect: CGRect(origin: .zero, size: size))
         f.origin.x = min(max(window.frame.midX - f.width / 2, visible.minX), visible.maxX - f.width)
         f.origin.y = min(max(window.frame.midY - f.height / 2, visible.minY), visible.maxY - f.height)
