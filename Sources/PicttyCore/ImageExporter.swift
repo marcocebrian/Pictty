@@ -240,6 +240,27 @@ public enum ImageExporter {
         }
     }
 
+    /// How many bytes `image` takes encoded with `o`, measured by encoding it in memory (no
+    /// metadata): a sample of the picture, for the file-size estimate.
+    public static func encodedSize(_ image: CGImage, isHDR: Bool, options o: ExportOptions) -> Int? {
+        let keepHDR = (isHDR && o.format.carriesHDR && o.hdr != .sdr) || o.format.isSceneLinear
+        guard let converted = convert(image, options: o, sourceSpace: image.colorSpace, keepHDR: keepHDR) else { return nil }
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, o.format.type.identifier as CFString, 1, nil) else { return nil }
+        var props: [CFString: Any] = [:]
+        if o.format.isLossy { props[kCGImageDestinationLossyCompressionQuality] = o.quality }
+        if o.format == .tiff { props[kCGImagePropertyTIFFDictionary] = [kCGImagePropertyTIFFCompression: o.compression.tiffValue] }
+        if isHDR, o.format.carriesHDR {
+            props[kCGImageDestinationEncodeRequest] = switch o.hdr {
+            case .gainMap: kCGImageDestinationEncodeToISOGainmap
+            case .hdr: kCGImageDestinationEncodeToISOHDR
+            case .sdr: kCGImageDestinationEncodeToSDR
+            }
+        }
+        CGImageDestinationAddImage(dest, converted, props as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? data.length : nil
+    }
+
     /// Into the colour space, bit depth and alpha the options ask for.
     static func convert(_ image: CGImage, options o: ExportOptions, sourceSpace: CGColorSpace?, keepHDR: Bool) -> CGImage? {
         let w = image.width, h = image.height

@@ -423,7 +423,8 @@ extension ViewerWindowController: NSMenuItemValidation {
         var size = shown?.pixelSize ?? .zero
         if let o = orientationChange, o.quarterTurns % 2 == 1 { size = CGSize(width: size.height, height: size.width) }
         let settings = ExportSettings(options: prefs.exportOptions, isHDR: shown?.isHDR ?? false,
-                                      hasAlpha: shown?.hasAlpha ?? false, pixelSize: size, edited: hasUnsavedEdits)
+                                      hasAlpha: shown?.hasAlpha ?? false, pixelSize: size, edited: hasUnsavedEdits,
+                                      sample: shown?.preview ?? shown?.full)
         let panel = NSSavePanel()
         panel.title = hasUnsavedEdits ? L("Save As") : L("Convert")
         panel.prompt = hasUnsavedEdits ? L("Save") : L("Convert")

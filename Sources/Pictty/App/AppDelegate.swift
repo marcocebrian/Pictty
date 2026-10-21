@@ -168,17 +168,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         let spec = view.dropFirst(11).split(separator: "@")
                         var o = ExportOptions()
                         if spec.count > 1, let f = ExportFormat(rawValue: String(spec[1])) { o.format = f }
+                        let shown = controller.canvas.shown(pane: 0)
                         let settings = ExportSettings(options: o, isHDR: true, hasAlpha: true,
-                                                      pixelSize: CGSize(width: 6000, height: 4000), edited: true)
+                                                      pixelSize: shown?.pixelSize ?? CGSize(width: 6000, height: 4000), edited: true,
+                                                      sample: shown?.preview ?? shown?.full)
                         let host = NSHostingView(rootView: ExportSettingsView(settings: settings))
-                        host.appearance = NSAppearance(named: .aqua)
+                        host.appearance = NSAppearance(named: ProcessInfo.processInfo.environment["PICTTY_DARK"] == "1" ? .darkAqua : .aqua)
                         host.frame.size = host.fittingSize
                         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
                         // ARC owns it; AppKit releasing it again on close crashed the run loop.
                         window.isReleasedWhenClosed = false
                         window.contentView = host
                         window.orderBack(nil)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        window.backgroundColor = host.appearance?.name == .darkAqua ? NSColor(white: 0.17, alpha: 1) : .windowBackgroundColor
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            host.frame.size = host.fittingSize
                             guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
                             host.cacheDisplay(in: host.bounds, to: rep)
                             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: String(spec[0])))
