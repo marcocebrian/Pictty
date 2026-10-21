@@ -23,6 +23,11 @@ final class ViewerModel: ObservableObject {
 
     @Published private(set) var items: [ImageItem] = []
     @Published private(set) var folderURL: URL?
+    /// Each picture's subfolder, relative to the folder ("" for the folder itself), worked out
+    /// once per scan so the filmstrip can group a recursive folder without any work per frame.
+    @Published private(set) var itemFolders: [String] = []
+    /// The pictures come from more than one folder.
+    @Published private(set) var hasSubfolders = false
     @Published var index: Int = 0
 
     /// Extra pictures shown alongside the primary one, in selection order. Up to three, so
@@ -177,6 +182,7 @@ final class ViewerModel: ObservableObject {
     func replaceItems(_ newItems: [ImageItem], folder: URL?) {
         items = newItems
         folderURL = folder
+        updateFolders()
         if items.isEmpty {
             index = 0
             compareIndices.removeAll()
@@ -190,10 +196,21 @@ final class ViewerModel: ObservableObject {
     func remove(at i: Int) {
         guard items.indices.contains(i) else { return }
         items.remove(at: i)
+        if itemFolders.indices.contains(i) { itemFolders.remove(at: i) }
         compareIndices = compareIndices.compactMap { $0 == i ? nil : ($0 > i ? $0 - 1 : $0) }
         if index > i || index >= items.count { index = max(0, index - 1) }
         pruneSelection()
     }
+
+    private func updateFolders() {
+        let root = folderURL?.standardizedFileURL.path ?? ""
+        let folders = items.map { FolderScanner.subfolder(of: $0.url, in: root) }
+        itemFolders = folders
+        hasSubfolders = Set(folders).count > 1 || folders.contains { !$0.isEmpty }
+    }
+
+    /// The current picture's subfolder, "" for the folder itself.
+    var currentSubfolder: String { itemFolders.indices.contains(index) ? itemFolders[index] : "" }
 
     // MARK: Compare
 

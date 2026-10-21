@@ -160,7 +160,8 @@ struct FilmstripView: View {
 
     private var selectionSummary: String {
         guard !model.items.isEmpty else { return "" }
-        var parts: [String] = [model.folderLabel]
+        var parts: [String] = [model.currentSubfolder.isEmpty ? model.folderLabel
+                                                               : model.folderLabel + " › " + model.currentSubfolder.replacingOccurrences(of: "/", with: " › ")]
         if model.isComparing {
             parts.append(L("comparing %ld", model.paneCount))
         }
@@ -181,7 +182,15 @@ struct FilmstripView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 6) {
                     ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
-                        cell(for: item, at: index)
+                        if let folder = folderStarting(at: index) {
+                            HStack(spacing: 6) {
+                                FolderDivider(path: folder, root: model.folderLabel, height: itemHeight,
+                                              count: count(of: folder, from: index)) { controller.select(index) }
+                                cell(for: item, at: index)
+                            }
+                        } else {
+                            cell(for: item, at: index)
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
@@ -216,12 +225,29 @@ struct FilmstripView: View {
         }
     }
 
+    /// The subfolder that begins at `index`, when the folder has subfolders.
+    private func folderStarting(at index: Int) -> String? {
+        guard model.hasSubfolders, model.itemFolders.indices.contains(index) else { return nil }
+        let folder = model.itemFolders[index]
+        return index == 0 || model.itemFolders[index - 1] != folder ? folder : nil
+    }
+
+    /// How many pictures the run of `folder` starting at `index` holds.
+    private func count(of folder: String, from index: Int) -> Int {
+        var n = 0
+        var i = index
+        while model.itemFolders.indices.contains(i), model.itemFolders[i] == folder { n += 1; i += 1 }
+        return n
+    }
+
     private func cell(for item: ImageItem, at index: Int) -> some View {
         ThumbnailCell(item: item,
                       height: itemHeight,
                       ordinal: model.ordinal(for: index),
                       isActive: model.isComparing && model.index(forPane: model.activePane) == index,
-                      isAnimated: controller.isAnimated(item))
+                      isAnimated: controller.isAnimated(item),
+                      folderTint: model.hasSubfolders && model.itemFolders.indices.contains(index)
+                          ? FolderDivider.tint(model.itemFolders[index]) : nil)
         .onTapGesture { handleTap(index: index) }
         .contextMenu { contextMenu(for: item, at: index) }
     }
@@ -292,6 +318,8 @@ private struct ThumbnailCell: View {
     let isActive: Bool
 
     var isAnimated = false
+    /// The colour of the subfolder the picture is in, when the folder has subfolders.
+    var folderTint: Color?
 
     @State private var image: CGImage?
     @State private var hovering = false
@@ -307,6 +335,12 @@ private struct ThumbnailCell: View {
         .overlay(border)
         .overlay(alignment: .topTrailing) { badge }
         .overlay(alignment: .bottomLeading) { animationMark }
+        .overlay(alignment: .bottom) {
+            if let folderTint {
+                Capsule().fill(folderTint).frame(height: 2.5).padding(.horizontal, 7).padding(.bottom, 3)
+                    .shadow(color: .black.opacity(0.4), radius: 1)
+            }
+        }
         .shadow(color: ordinal == 1 ? Color.white.opacity(0.25) : (ordinal != nil ? Color.accentColor.opacity(0.45) : .clear),
                 radius: 6)
         .scaleEffect(hovering && ordinal == nil ? 1.045 : 1)
@@ -381,5 +415,59 @@ private struct ThumbnailCell: View {
     private var borderWidth: CGFloat {
         if ordinal != nil { return 2 }
         return hovering ? 1.2 : 0.75
+    }
+}
+
+// MARK: - Subfolders
+
+/// Where a subfolder's pictures begin in the strip: its name written up the card, its own colour,
+/// and how many pictures follow. A click goes to the first of them.
+struct FolderDivider: View {
+    let path: String
+    let root: String
+    let height: CGFloat
+    let count: Int
+    let go: () -> Void
+    @State private var hovering = false
+
+    /// A colour of the folder's own, the same every time for the same path.
+    static func tint(_ path: String) -> Color {
+        guard !path.isEmpty else { return Color(white: 0.75) }
+        var h: UInt32 = 5381
+        for b in path.utf8 { h = (h &* 33) &+ UInt32(b) }
+        return Color(hue: Double(h % 360) / 360, saturation: 0.55, brightness: 0.95)
+    }
+
+    private var name: String { path.isEmpty ? root : (path.split(separator: "/").last.map(String.init) ?? path) }
+
+    var body: some View {
+        let tint = Self.tint(path)
+        VStack(spacing: 2) {
+            Image(systemName: path.isEmpty ? "folder" : "folder.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(tint)
+            // Up the card, on two lines if it needs them, a little smaller before it is cut.
+            Text(name)
+                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.85))
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+                .multilineTextAlignment(.center)
+                .truncationMode(.middle)
+                .frame(width: height - 30, height: 24)
+                .rotationEffect(.degrees(-90))
+                .frame(width: 24, height: height - 30)
+            Text("\(count)")
+                .font(.system(size: 8.5, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.5))
+        }
+        .frame(width: 30, height: height)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(tint.opacity(hovering ? 0.26 : 0.16)))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tint.opacity(0.45), lineWidth: 0.75))
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: go)
+        .help(path.isEmpty ? root : root + " › " + path.replacingOccurrences(of: "/", with: " › "))
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }

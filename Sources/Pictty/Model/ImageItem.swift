@@ -62,7 +62,22 @@ enum FolderScanner {
             if values?.isDirectory == true || values?.isRegularFile == false { continue }
             items.append(ImageItem(url: url, values: values))
         }
-        return sort(items, by: order)
+        guard recursive else { return sort(items, by: order) }
+        // With subfolders, each folder's pictures stay together: this folder first, then the
+        // subfolders in the order Finder lists them, each sorted on its own.
+        let root = folder.standardizedFileURL.path
+        let groups = Dictionary(grouping: items) { subfolder(of: $0.url, in: root) }
+        return groups.keys.sorted { a, b in
+            if a.isEmpty != b.isEmpty { return a.isEmpty }
+            return a.localizedStandardCompare(b) == .orderedAscending
+        }.flatMap { sort(groups[$0] ?? [], by: order) }
+    }
+
+    /// The path of the folder `url` is in, relative to `root` ("" for root itself).
+    static func subfolder(of url: URL, in root: String) -> String {
+        let parent = url.deletingLastPathComponent().standardizedFileURL.path
+        guard parent.count > root.count, parent.hasPrefix(root) else { return "" }
+        return String(parent.dropFirst(root.count).drop { $0 == "/" })
     }
 
     static func sort(_ items: [ImageItem], by order: SortOrder) -> [ImageItem] {
