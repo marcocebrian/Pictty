@@ -90,7 +90,7 @@ Crop with ratios and rounded corners, flip to the original with Y, and save over
 - **Default viewer**: Pictty can open your pictures on a double-click in Finder.
 - **Liquid Glass** toolbar, filmstrip, pills and panels on macOS 26 and later.
 - **English and Spanish**, and a key for every action.
-- **Private**: no account, no analytics, no network connections.
+- **Private**: no account, no analytics; the only network connection is a daily update check, which you can turn off.
 
 ## In detail
 
@@ -179,7 +179,7 @@ The filmstrip hides by itself and comes back at the bottom edge; T pins it. A pi
 
 ### Privacy
 
-Pictty reads the pictures you open and the other pictures in their folder, and keeps decoded pictures in memory only. It writes nothing but its preferences and what you save, changes a file only when you save an edit over it or choose Move to Trash, and makes **no network connections**. Read the [privacy policy](https://www.noxdrop.com/picttyprivacy.html).
+Pictty reads the pictures you open and the other pictures in their folder, and keeps decoded pictures in memory only. It writes nothing but its preferences and what you save, changes a file only when you save an edit over it or choose Move to Trash, and its **only network connection** is a daily check for a new version (Settings ▸ Updates turns it off; the Mac App Store version has none). Read the [privacy policy](https://www.noxdrop.com/picttyprivacy.html).
 
 ## Keyboard
 
