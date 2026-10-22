@@ -184,7 +184,7 @@ public enum PictureMeasure {
     /// about 65 000 pixels on a grid. `pixels`: premultiplied linear RGBA half floats, `rowFloats`
     /// values per row.
     public static func medians(_ pixels: UnsafePointer<Float16>, width w: Int, height h: Int, rowFloats: Int,
-                               white: Float) -> (luma: Float, chroma: Float) {
+                               white: Float) -> (luma: Float, chroma: Float, highlights: Float) {
         let step = max(1, Int((Double(w * h) / 65_536).squareRoot()))
         var counts = [Int](repeating: 0, count: 256), chromas = [Int](repeating: 0, count: 256), n = 0
         for y in stride(from: 0, to: h, by: step) {
@@ -207,7 +207,17 @@ public enum PictureMeasure {
             }
             return nil
         }
-        return (median(counts) ?? 0.46, (median(chromas) ?? 0.1) * 0.4)
+        // Where the highlights sit: the 90th percentile of what is brighter than 0.6.
+        var highlights: Float = 0.85
+        let bright = counts[154...].reduce(0, +)
+        if bright > 0 {
+            var seen = 0
+            for i in 154..<256 {
+                seen += counts[i]
+                if Float(seen) >= 0.9 * Float(bright) { highlights = (Float(i) + 0.5) / 255; break }
+            }
+        }
+        return (median(counts) ?? 0.46, (median(chromas) ?? 0.1) * 0.4, highlights)
     }
 
     /// The chroma of a linear sRGB colour in Oklab (Ottosson).

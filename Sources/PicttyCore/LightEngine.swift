@@ -33,6 +33,8 @@ public final class LightEngine: @unchecked Sendable {
         public let key: Float
         /// How colourful the picture is: the median Oklab chroma of its pixels.
         public let chroma: Float
+        /// Where its highlights sit: the 90th percentile of its encoded luminance above 0.6.
+        public let highlights: Float
         /// The light of its haze, linear, on a 0…1 scale of `white`.
         public let airlight: SIMD3<Float>
         /// The same picture through the denoiser, once it has been.
@@ -42,9 +44,10 @@ public final class LightEngine: @unchecked Sendable {
         public var hasDenoised: Bool { denoised != nil }
 
         init(width: Int, height: Int, white: Float, isHDR: Bool, input: MTLTexture, noise: Float, blur: Float, key: Float,
-             chroma: Float, airlight: SIMD3<Float>) {
+             chroma: Float, highlights: Float, airlight: SIMD3<Float>) {
             self.width = width; self.height = height; self.white = white; self.isHDR = isHDR; self.input = input
             self.noise = noise; self.blur = blur; self.key = key; self.chroma = chroma
+            self.highlights = highlights
             self.airlight = airlight
         }
     }
@@ -62,7 +65,7 @@ public final class LightEngine: @unchecked Sendable {
         self.queue = queue
         for name in ["prepare", "downsample", "remap", "accumulate", "collapse", "guidedMoments", "boxHorizontal",
                      "boxVertical", "guidedCoefficients", "detailBand", "localExposure", "colourMoments", "colourCoefficients", "hazeDark",
-                     "minHorizontal", "minVertical", "hazeMoments", "hazeCoefficients", "dehaze", "finish"] {
+                     "hazeLocal", "hazeMask", "hazeMoments", "highlightChange", "hazeCoefficients", "dehaze", "finish"] {
             guard let f = library.makeFunction(name: name),
                   let state = try? device.makeComputePipelineState(function: f) else { return nil }
             pipelines[name] = state
@@ -94,7 +97,7 @@ public final class LightEngine: @unchecked Sendable {
         let medians = PictureMeasure.medians(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
                                              rowFloats: ctx.bytesPerRow / 2, white: hdr ? headroom : 1)
         return Source(width: w, height: h, white: hdr ? headroom : 1, isHDR: hdr, input: texture,
-                      noise: measured.noise, blur: measured.blur, key: medians.luma, chroma: medians.chroma,
+                      noise: measured.noise, blur: measured.blur, key: medians.luma, chroma: medians.chroma, highlights: medians.highlights,
                       airlight: PictureMeasure.airlight(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
                                                         rowFloats: ctx.bytesPerRow / 2, white: hdr ? headroom : 1))
     }
@@ -155,12 +158,17 @@ public final class LightEngine: @unchecked Sendable {
         var vibranceScale: Float = 1
         var dehaze: Float = 0
         var airlight: (Float, Float, Float) = (1, 1, 1)
+        var hlPeak: Float = 0.85
+        var hlStrength: Float = 0.21
+        var hlFall: Float = 1
     }
 
     /// Samples of the Laplacian remap across the brightness range.
-    /// 24: with 12, the steps between samples showed as rings and speckle beside small, very
-    /// bright things (a street lamp at night) when highlights were pulled down hard.
-    static let laplacianSamples = 24
+    /// 32: with 12, the steps between samples showed as rings and speckle beside small, very
+    /// bright things (a street lamp at night) when highlights were pulled down hard; with 24, the
+    /// distance to the nearest sample, added to a bright region's grain, passed for detail and kept
+    /// the grain at full strength as the region came down.
+    static let laplacianSamples = 32
 
     public struct Result: @unchecked Sendable {
         public let image: CGImage
@@ -173,6 +181,14 @@ public final class LightEngine: @unchecked Sendable {
         var p = Params()
         p.exposure = Float(a.exposure); p.contrast = Float(a.contrast); p.brightness = Float(a.brightness)
         p.highlights = Float(a.highlights); p.shadows = Float(a.shadows)
+        // Highlights pull hardest where this picture's highlights are: at 0.85 for most, up to 0.92
+        // for a sky that is nearly blown, which a fixed curve would barely reach; and for such a
+        // sky the pull is stronger and reaches further into the whites, where all its tones are.
+        p.hlPeak = min(max(src.highlights - 0.07, 0.85), 0.92)
+        let blown = min(max((src.highlights - 0.95) / 0.035, 0), 1)
+        let nearlyBlown = blown * blown * (3 - 2 * blown)
+        p.hlFall = 1 - 0.2 * nearlyBlown
+        p.hlStrength = 0.21 + 0.09 * nearlyBlown
         p.key = Self.key(src, exposure: Float(a.exposure))
         p.dehaze = Float(a.dehaze)
         if a.dehaze != 0 {
@@ -228,17 +244,19 @@ public final class LightEngine: @unchecked Sendable {
         // taken out of the light (or added to it).
         if a.dehaze != 0 {
             let w4 = (w + 3) / 4, h4 = (h + 3) / 4
-            guard let dk = scratch(src, "hd", .rg32Float, w4, h4), let dt = scratch(src, "hdt", .rg32Float, w4, h4),
+            guard let dk = scratch(src, "hd", .rg32Float, w4, h4), let dt = scratch(src, "hdt", .rgba32Float, w4, h4),
                   let m = scratch(src, "hm", .rgba32Float, w4, h4), let t = scratch(src, "hmt", .rgba32Float, w4, h4),
                   let ab = scratch(src, "hab", .rgba32Float, w4, h4),
                   let litD = scratch(src, "litD", .rgba16Float, w, h), let lumaD = scratch(src, "lumaD", .r32Float, w, h)
             else { return nil }
             dispatch(cb, "hazeDark", [lit, luma, dk], &p, w4, h4)
-            // The erosion: about 1.5 % of the picture's longer side.
-            p.radius = Int32(max(2, Double(max(w4, h4)) * 0.015))
-            dispatch(cb, "minHorizontal", [dk, dt], &p, w4, h4)
-            dispatch(cb, "minVertical", [dt, dk], &p, w4, h4)
-            dispatch(cb, "hazeMoments", [dk, m], &p, w4, h4)
+            // The texture around each cell, over about 1 % of the picture's longer side.
+            p.radius = Int32(max(2, Double(max(w4, h4)) * 0.01))
+            dispatch(cb, "hazeLocal", [dk, m], &p, w4, h4)
+            dispatch(cb, "boxHorizontal", [m, t], &p, w4, h4)
+            dispatch(cb, "boxVertical", [t, m], &p, w4, h4)
+            dispatch(cb, "hazeMask", [dk, m, dt], &p, w4, h4)
+            dispatch(cb, "hazeMoments", [dt, m], &p, w4, h4)
             p.radius = Int32(max(2, Double(max(w4, h4)) * 0.03))
             p.eps = 0.001
             dispatch(cb, "boxHorizontal", [m, t], &p, w4, h4)
@@ -246,14 +264,14 @@ public final class LightEngine: @unchecked Sendable {
             dispatch(cb, "hazeCoefficients", [m, ab], &p, w4, h4)
             dispatch(cb, "boxHorizontal", [ab, t], &p, w4, h4)
             dispatch(cb, "boxVertical", [t, ab], &p, w4, h4)
-            dispatch(cb, "dehaze", [lit, luma, ab, litD, lumaD], &p, w, h)
+            dispatch(cb, "dehaze", [lit, luma, ab, litD, lumaD, dt], &p, w, h)
             lit = litD
             luma = lumaD
         }
 
-        // Local exposure: the gain goes onto a smooth, edge-aware map of the picture's brightness,
-        // full in the dark regions and less where the light already is; each pixel's detail rides
-        // on its region. Everything after works on the result, as after any exposure.
+        // Raised exposure, half a camera's and half by regions: the gain goes onto a smooth, edge-aware
+        // map of the picture's brightness, all of it in the dark regions and half where the light
+        // already is. Everything after works on the result, as after any exposure.
         if a.exposure > 0 {
             guard let regions = self.guided(cb, src, luma, key: "e", radius: 0.04, eps: 0.01, &p),
                   let litE = scratch(src, "litE", .rgba16Float, w, h),
@@ -278,10 +296,18 @@ public final class LightEngine: @unchecked Sendable {
             }
         }
 
-        // Highlights by the fast local Laplacian (Aubry et al.): the output pyramid built from two dozen remapped
-        // copies of the luminance, each contributing where the input's own level is close to it.
+        // Highlights by the fast local Laplacian (Aubry et al.): the output pyramid built from a few dozen
+        // remapped copies of the luminance, each contributing where the input's own level is close to it.
+        // It works on the pyramid's level no larger than 2,048 pixels, so that a full-size export and a
+        // preview the size of the screen see the same clouds: the picture's grain, which at full size is
+        // as large as a pale sky's texture, is averaged out there, and the tone decisions (what is detail,
+        // what is noise) come out the same. The change it makes is carried back to full size along the
+        // picture's own edges (a guided upsampling: a local linear model of the change against the
+        // brightness), and fine grain rides along untouched.
         var rebuilt: MTLTexture?
         if laplacian {
+            let base = sizes.firstIndex { max($0.0, $0.1) <= 2048 } ?? n
+            let (bw, bh) = sizes[base]
             var remapped: [MTLTexture] = [], outs: [MTLTexture] = []
             for (l, s) in sizes.enumerated() {
                 guard let r = scratch(src, "R\(l)", .r32Float, s.0, s.1),
@@ -290,25 +316,42 @@ public final class LightEngine: @unchecked Sendable {
             }
             let k = Self.laplacianSamples
             p.gammaStep = p.lumaWhite / Float(k - 1)
-            p.sigma = 0.12 * p.lumaWhite
+            p.sigma = 0.2 * p.lumaWhite
+            // Each halving leaves about 0.55 of the grain (the binomial filter's).
+            p.noise = src.noise * pow(0.55, Float(base))
             for i in 0..<k {
                 p.gamma = Float(i) * p.gammaStep
                 p.first = i == 0 ? 1 : 0
-                dispatch(cb, "remap", [luma, remapped[0]], &p, w, h)
-                for l in stride(from: 1, through: n, by: 1) {
+                dispatch(cb, "remap", [gauss[base], remapped[base]], &p, bw, bh)
+                for l in stride(from: base + 1, through: n, by: 1) {
                     dispatch(cb, "downsample", [remapped[l - 1], remapped[l]], &p, sizes[l].0, sizes[l].1)
                 }
-                for l in 0...n {
+                for l in base...n {
                     p.top = l == n ? 1 : 0
                     let coarser = l < n ? remapped[l + 1] : remapped[l]
                     dispatch(cb, "accumulate", [remapped[l], coarser, gauss[l], outs[l]], &p, sizes[l].0, sizes[l].1)
                 }
             }
-            for l in stride(from: n - 1, through: 0, by: -1) {
+            for l in stride(from: n - 1, through: base, by: -1) {
                 dispatch(cb, "collapse", [outs[l], outs[l + 1]], &p, sizes[l].0, sizes[l].1)
             }
-            rebuilt = outs[0]
             p.top = 0
+            // What is in the bright regions, drawn out against their edge-aware mean, and the change.
+            guard let revealBase = guided(cb, src, gauss[base], key: "hr", radius: 0.04, eps: 0.01, &p),
+                  let change = scratch(src, "hc", .rg32Float, bw, bh),
+                  let m = scratch(src, "hcm", .rgba32Float, bw, bh), let t = scratch(src, "hct", .rgba32Float, bw, bh),
+                  let ab = scratch(src, "hcab", .rgba32Float, bw, bh) else { return nil }
+            dispatch(cb, "highlightChange", [gauss[base], outs[base], revealBase, change], &p, bw, bh)
+            dispatch(cb, "hazeMoments", [change, m], &p, bw, bh)
+            p.radius = 2
+            p.eps = 1e-5
+            dispatch(cb, "boxHorizontal", [m, t], &p, bw, bh)
+            dispatch(cb, "boxVertical", [t, m], &p, bw, bh)
+            dispatch(cb, "hazeCoefficients", [m, ab], &p, bw, bh)
+            dispatch(cb, "boxHorizontal", [ab, t], &p, bw, bh)
+            dispatch(cb, "boxVertical", [t, ab], &p, bw, bh)
+            rebuilt = ab
+            p.noise = src.noise
         }
 
         // Detail: the bands of the luminance pyramid, boosted where they are detail and not noise
@@ -380,7 +423,7 @@ public final class LightEngine: @unchecked Sendable {
         }
 
         dispatch(cb, "finish", [lit, luma, rebuilt ?? luma, out, fine ?? luma, coarse ?? luma,
-                                regions ?? lit, colourRegions ?? lit], &p, w, h)
+                                regions ?? lit, colourRegions ?? lit, laplacian ? gauss[min(3, n)] : luma], &p, w, h)
         cb.commit()
         cb.waitUntilCompleted()
         guard cb.status == .completed, let image = Self.image(from: out, output: output, headroom: src.isHDR ? src.white : 1)
@@ -389,15 +432,14 @@ public final class LightEngine: @unchecked Sendable {
     }
 
     /// The picture's middle brightness after `exposure` (encoded, 0…1), for brightness to work
-    /// around: the median as measured, moved as local exposure moves a region that bright.
+    /// around: the median as measured, moved as exposure moves a region that bright.
     static func key(_ src: Source, exposure: Float) -> Float {
         var y = Self.decode(src.key) * src.white
         if exposure < 0 {
             y *= exp2(exposure)
         } else if exposure > 0 {
-            let base = max(y / src.white, 1e-5)
-            let lit = min(max(log(base / 0.03) / log(0.5 / 0.03), 0), 1)
-            y *= exp2(exposure * (1 - lit))
+            let lit = min(max(log(max(y / src.white, 1e-5) / 0.03) / log(0.5 / 0.03), 0), 1)
+            y *= exp2(exposure * (1 - 0.5 * lit))
         }
         return min(max(encode(min(y / src.white, 1)), 0.2), 0.65)
     }
@@ -425,7 +467,7 @@ public final class LightEngine: @unchecked Sendable {
     /// each user's textures apart.
     private func guided(_ cb: MTLCommandBuffer, _ src: Source, _ luma: MTLTexture, key: String, radius: Double,
                         eps: Float, _ p: inout Params) -> MTLTexture? {
-        let w2 = (src.width + 1) / 2, h2 = (src.height + 1) / 2, w4 = (w2 + 1) / 2, h4 = (h2 + 1) / 2
+        let w2 = (luma.width + 1) / 2, h2 = (luma.height + 1) / 2, w4 = (w2 + 1) / 2, h4 = (h2 + 1) / 2
         guard let half = scratch(src, key + "1", .r32Float, w2, h2), let quarter = scratch(src, key + "2", .r32Float, w4, h4),
               let m = scratch(src, key + "m", .rgba32Float, w4, h4), let t = scratch(src, key + "t", .rgba32Float, w4, h4),
               let ab = scratch(src, key + "ab", .rgba32Float, w4, h4) else { return nil }
