@@ -12,6 +12,11 @@ let optimised: [SwiftSetting] = [
                  .when(configuration: .release)),
 ]
 
+// Sparkle, for the download only: build.sh sets PICTTY_SPARKLE, and the updater's code is compiled
+// in. It is not linked: build.sh puts the framework in the app and Pictty loads it on its own, long
+// after launch. Plain `swift build`, `swift test` and the Mac App Store build have no updater.
+let sparkle: [SwiftSetting] = (Context.environment["PICTTY_SPARKLE"] ?? "").isEmpty ? [] : [.define("PICTTY_SPARKLE")]
+
 let package = Package(
     name: "Pictty",
     platforms: [.macOS(.v15)],
@@ -20,7 +25,7 @@ let package = Package(
         .executableTarget(
             name: "Pictty",
             dependencies: ["PicttyCore"],
-            swiftSettings: optimised,
+            swiftSettings: optimised + sparkle,
             linkerSettings: [.unsafeFlags(["-Xlinker", "-dead_strip"], .when(configuration: .release))]
         ),
         .testTarget(name: "PicttyCoreTests", dependencies: ["PicttyCore"]),

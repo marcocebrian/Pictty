@@ -58,6 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.showWhenPictureIsReady(within: 0.15)
         // Thumbnails wait for the picture; this is only the backstop if it never comes.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { ThumbStore.shared.release() }
+        // The updater (the download only): not even loaded until Pictty has been up a while and is idle.
+        Updates.shared.startWhenCalm()
         // Developer hooks for screenshots: launch without taking focus, with panels open.
         let env = ProcessInfo.processInfo.environment
         if env["PICTTY_BACKGROUND"] != "1" { NSApp.activate(ignoringOtherApps: true) }
@@ -74,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         self.showSettings(at: .inside)
                     case "defaults": self.showSettings(at: .defaults)
                     case "information": self.showSettings(at: .information)
+                    case "updates": self.showSettings(at: .updates)
                     case "about": self.showAbout()
                     case "clipping": controller.toggleClipping(nil)
                     case "loupe":
@@ -361,6 +364,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         _ = submenu("Pictty") { m in
             add(m, "About Pictty", #selector(showAbout)); m.items.last?.target = self
+            if Updates.shared.isAvailable {
+                add(m, "Check for Updates…", #selector(Updates.checkForUpdates(_:))); m.items.last?.target = Updates.shared
+            }
             m.addItem(.separator())
             add(m, "Settings…", #selector(showSettings as () -> Void), ","); m.items.last?.target = self
             add(m, "Make Pictty the Default Viewer…", #selector(showDefaultViewer)); m.items.last?.target = self
@@ -465,7 +471,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// A symbol for every command, so the menus read at a glance.
     private static let symbols: [String: String] = [
-        "About Pictty": "info.circle", "Settings…": "gearshape", "Hide Pictty": "eye.slash",
+        "About Pictty": "info.circle", "Check for Updates…": "arrow.down.circle", "Settings…": "gearshape", "Hide Pictty": "eye.slash",
         "Hide Others": "rectangle.on.rectangle.slash", "Show All": "rectangle.on.rectangle", "Quit Pictty": "power",
         "Open…": "photo.badge.plus", "Open Folder…": "folder", "Open Recent": "clock.arrow.circlepath",
         "Copy Image": "doc.on.doc", "Reveal in Finder": "finder", "Open With Default App": "arrow.up.forward.app",

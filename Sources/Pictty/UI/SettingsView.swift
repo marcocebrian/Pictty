@@ -9,8 +9,10 @@ struct SettingsView: View {
     @ObservedObject var prefs: Preferences
 
     enum Section: String, CaseIterable, Identifiable {
-        case viewing, information, browsing, compare, defaults, inside, about
+        case viewing, information, browsing, compare, defaults, updates, inside, about
         var id: String { rawValue }
+        /// Updates only where Pictty updates itself: the download, not the App Store build.
+        static var shown: [Section] { allCases.filter { $0 != .updates || Updates.shared.isAvailable } }
         var title: String {
             switch self {
             case .viewing: "Viewing"
@@ -18,6 +20,7 @@ struct SettingsView: View {
             case .browsing: "Browsing"
             case .compare: "Compare"
             case .defaults: "Default Viewer"
+            case .updates: "Updates"
             case .inside: "Inside Pictty"
             case .about: "About"
             }
@@ -29,6 +32,7 @@ struct SettingsView: View {
             case .browsing: "photo.stack"
             case .compare: "rectangle.split.2x1"
             case .defaults: "checkmark.seal"
+            case .updates: "arrow.down.circle"
             case .inside: "sparkles"
             case .about: "info.circle"
             }
@@ -40,6 +44,7 @@ struct SettingsView: View {
             case .browsing: [Color(hex: 0xFBBC04), Color(hex: 0xF57C3B)]
             case .compare: [Color(hex: 0xA05CE0), Color(hex: 0x7B61FF)]
             case .defaults: [Color(hex: 0x34A853), Color(hex: 0x4285F4)]
+            case .updates: [Color(hex: 0x34A8F0), Color(hex: 0x34A853)]
             case .inside: [Color(hex: 0x4285F4), Color(hex: 0xA05CE0)]
             case .about: [Color(hex: 0x34A853), Color(hex: 0x00ACC1)]
             }
@@ -129,7 +134,7 @@ struct SettingsView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 3) {
-            ForEach(Section.allCases) { s in
+            ForEach(Section.shown) { s in
                 Button { router.section = s } label: {
                     HStack(spacing: 9) {
                         SymbolTile(symbol: s.symbol, colors: s.colors, size: 24)
@@ -289,11 +294,49 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
         case .defaults:
             DefaultViewerView()
+        case .updates:
+            UpdatesView()
         case .inside:
             InsidePicttyView()
         case .about:
             AboutView(compact: true)
         }
+    }
+}
+
+/// Sparkle's settings: whether Pictty looks for a new version by itself, and installs it.
+private struct UpdatesView: View {
+    @ObservedObject private var updates = Updates.shared
+
+    private var version: String {
+        let info = Bundle.main.infoDictionary
+        return "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))"
+    }
+
+    private var lastCheck: String {
+        guard let date = updates.lastCheck else { return L("Not yet") }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    var body: some View {
+        Group_ {
+            Row("Check automatically", "Look for a new version of Pictty once a day", "arrow.triangle.2.circlepath") {
+                Toggle("", isOn: $updates.automaticallyChecks).toggleStyle(.switch).labelsHidden()
+            }
+            Row("Download and install automatically", "Install it in the background; it is in place next time Pictty opens",
+                "arrow.down.app") {
+                Toggle("", isOn: $updates.automaticallyDownloads).toggleStyle(.switch).labelsHidden()
+                    .disabled(!updates.automaticallyChecks)
+            }
+        }
+        Group_ {
+            Row("Pictty \(version)", L("Last checked: %@", lastCheck), "info.circle") {
+                Button(L("Check Now")) { updates.checkForUpdates(nil) }
+                    .controlSize(.small)
+                    .disabled(!updates.canCheck)
+            }
+        }
+        .onAppear { updates.start() }
     }
 }
 
