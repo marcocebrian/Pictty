@@ -706,6 +706,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         updateLightAvailability()
         updateDocumentEdited()
         if pendingShow, model.current?.url == d.url { showHeldWindow() }
+        if model.current?.url == d.url { loadEveryPixel(d) }
         if warmUpPending, model.current?.url == d.url {
             warmUpPending = false
             // After this frame is committed.
@@ -717,18 +718,17 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Measures histogram and clipping on a screen-sized decode, once per file (again when a
-    /// RAW's real develop replaces its camera preview), off the main thread.
+    /// Measures histogram and clipping on the decode on screen (every pixel aside), once per file
+    /// (again when a RAW's real develop replaces its camera preview), off the main thread.
     func analyse(_ d: DecodedImage) {
         let path = d.url.path
-        // A picture measured before gets its mask back whatever decode arrives: coming back to
-        // it usually delivers the cached full decode, which is never measured itself, and the
-        // canvas cleared the mask when the picture changed.
+        // A picture measured before gets its mask back whatever decode arrives: the canvas
+        // cleared the mask when the picture changed.
         let known = analyses[path]
-        let small = !d.isDetail && max(d.image.width, d.image.height) <= store.previewMaxPixel * 3 / 2
-        if let known, !(known.embedded && small && !d.isEmbedded) { publish(known.analysis, for: d.url); return }
+        let measurable = !d.isDetail
+        if let known, !(known.embedded && measurable && !d.isEmbedded) { publish(known.analysis, for: d.url); return }
         if let known { publish(known.analysis, for: d.url) }
-        guard small else { return }
+        guard measurable else { return }
         guard analysing.insert(path).inserted else { return }
         let image = d.image, embedded = d.isEmbedded
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -766,6 +766,22 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         store.develop(url) { [weak self] d in
             guard let self, let d else { return }
             self.deliver(d, animated: false)
+        }
+    }
+
+    /// A picture larger than a GPU texture is loaded whole as soon as its screen-sized decode is
+    /// on screen, so a zoom finds every pixel already there. Every other picture came whole.
+    private func loadEveryPixel(_ d: DecodedImage) {
+        let url = d.url
+        guard !d.isDetail, d.vector == nil, !ImageFormats.isRaw(url), ImageDecoder.needsDetail(d.pixelSize), !keepsEdits(url),
+              store.cachedDetail(url) == nil else { return }
+        // After this frame is committed.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.model.current?.url == url else { return }
+            self.store.loadWhole(url) { [weak self] d in
+                guard let self, let d, !self.keepsEdits(url) else { return }
+                self.deliver(d, animated: false)
+            }
         }
     }
 
@@ -1085,7 +1101,6 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             userZoomed()
             fitWindowToPicture(animated: true, scale: override)
         }
-        showToast(model.zoomLabel, symbol: "1.magnifyingglass")
     }
 
     @objc func resetZoom(_ sender: Any?) {
@@ -1652,14 +1667,11 @@ extension ViewerWindowController: CanvasDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             guard let self else { return }
             guard self.canvas.needsDetail(url) else { self.requestedDetail.remove(url.path); return }
-            self.showToast("Loading every pixel…", symbol: "square.grid.3x3.fill")
             self.store.loadDetail(url) { [weak self] d in
                 guard let self else { return }
                 self.requestedDetail.remove(url.path)
                 guard let d else { return }
                 self.deliver(d, animated: false)
-                self.showToast(L("Full detail · %ld × %ld", Int(d.pixelSize.width), Int(d.pixelSize.height)),
-                               symbol: "checkmark.seal", tone: .success)
             }
         }
     }

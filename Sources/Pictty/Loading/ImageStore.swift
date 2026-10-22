@@ -53,6 +53,36 @@ final class ImageStore {
         }
     }
 
+    /// A picture larger than a GPU texture, loaded whole behind its screen-sized decode: every
+    /// pixel decoded once, and the GPU-sized full made from those pixels instead of from the file
+    /// a second time. Holds the full and detail requests meanwhile, so a zoom that asks for either
+    /// waits for this one instead of starting its own. `done` is called with each.
+    func loadWhole(_ url: URL, _ done: @escaping (DecodedImage?) -> Void) {
+        let fullKey = "F" + url.path, detailKey = "X" + url.path
+        let haveFull = fulls.object(forKey: url as NSURL)
+        guard waiting[fullKey] == nil, waiting[detailKey] == nil, haveFull == nil || cachedDetail(url) == nil else { return }
+        waiting[fullKey] = [done]
+        waiting[detailKey] = [done]
+        urgent.async {
+            timingMark("whole start")
+            let detail = ImageDecoder.detail(url)
+            timingMark("whole: every pixel")
+            var full = haveFull
+            if full == nil {
+                full = detail.flatMap(ImageDecoder.reduced) ?? ImageDecoder.full(url)
+                full?.matchDisplay(to: EarlyDecode.displaySpace)
+                timingMark("whole: GPU-sized full")
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if let detail { self.details.setObject(detail, forKey: url as NSURL, cost: detail.cost) }
+                    for done in self.waiting.removeValue(forKey: detailKey) ?? [] { done(detail) }
+                    self.finish(fullKey, full)
+                }
+            }
+        }
+    }
+
     /// The cached screen-sized image is a RAW's embedded preview, not yet the real develop.
     func needsDevelop(_ url: URL) -> Bool {
         guard ImageFormats.isRaw(url), fulls.object(forKey: url as NSURL) == nil else { return false }
@@ -95,8 +125,9 @@ final class ImageStore {
         (isUrgent ? urgent : background).async {
             timingMark("decode start")
             let img = full ? ImageDecoder.full(url) : ImageDecoder.preview(url, maxPixel: maxPixel, backing: backing)
-            // Previews are what the screen shows at a glance: matched to it here, not on the main thread.
-            if !full { img?.matchDisplay(to: EarlyDecode.displaySpace) }
+            // Matched to the screen here, not on the main thread while committing the frame, where
+            // Core Animation would otherwise convert it: a third of a second for 150 megapixels.
+            img?.matchDisplay(to: EarlyDecode.displaySpace)
             timingMark("decode done")
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self.finish(key, img) }

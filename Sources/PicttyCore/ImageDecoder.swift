@@ -1,3 +1,4 @@
+import Accelerate
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -80,6 +81,34 @@ public enum ImageDecoder {
         let longest = Int(max(size.width, size.height))
         guard let img = decode(src, maxPixel: longest, allowEmbedded: false) else { return nil }
         return DecodedImage(url: url, image: img, pixelSize: size, isFull: true, frameCount: frames, isDetail: true)
+    }
+
+    /// The GPU-sized full made from `detail`'s pixels in memory instead of from the file a second
+    /// time: 0.3 s for a 200-megapixel map, where decoding it again at a size that is no exact
+    /// fraction takes 1.2 s. nil for pixels vImage cannot scale as they are (deep, HDR, or with
+    /// unpremultiplied alpha); the file is decoded again for those.
+    public static func reduced(_ detail: DecodedImage) -> DecodedImage? {
+        let img = detail.image
+        let longest = max(img.width, img.height)
+        let alpha = img.alphaInfo
+        guard longest > maxTexture, img.bitsPerComponent == 8, img.bitsPerPixel == 32, !isHDR(img),
+              alpha != .last, alpha != .first, let space = img.colorSpace,
+              let data = img.dataProvider?.data, let bytes = CFDataGetBytePtr(data) else { return nil }
+        let k = Double(maxTexture) / Double(longest)
+        let w = max(1, Int((Double(img.width) * k).rounded())), h = max(1, Int((Double(img.height) * k).rounded()))
+        var src = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: bytes), height: vImagePixelCount(img.height),
+                                width: vImagePixelCount(img.width), rowBytes: img.bytesPerRow)
+        guard let out = CFDataCreateMutable(nil, w * 4 * h) else { return nil }
+        CFDataSetLength(out, w * 4 * h)
+        guard let outBytes = CFDataGetMutableBytePtr(out) else { return nil }
+        var dst = vImage_Buffer(data: outBytes, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: w * 4)
+        // Lanczos3, vImage's default, on every core; it does not care which byte is which channel.
+        guard vImageScale_ARGB8888(&src, &dst, nil, vImage_Flags(kvImageNoFlags)) == kvImageNoError,
+              let provider = CGDataProvider(data: out),
+              let image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4, space: space,
+                                  bitmapInfo: img.bitmapInfo, provider: provider, decode: nil, shouldInterpolate: true,
+                                  intent: .defaultIntent) else { return nil }
+        return DecodedImage(url: detail.url, image: image, pixelSize: detail.pixelSize, isFull: true, frameCount: detail.frameCount)
     }
 
     static func source(_ url: URL) -> CGImageSource? {
@@ -184,23 +213,25 @@ public enum ImageDecoder {
         return CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
     }
 
-    /// First image, sized for the screen. A RAW's first image is the camera's embedded preview,
-    /// which is instant; `developed` follows with the real thing.
-    /// Images close to screen size are decoded once at full resolution (`isFull`).
+    /// First image. A picture that fits a GPU texture is decoded whole at once (`isFull`): what
+    /// shows first is every pixel, and zooming in has nothing left to load. Only a picture larger
+    /// than that (a 200-megapixel map) shows a screen-sized decode first, while every pixel loads
+    /// behind it. A RAW's first image is the camera's embedded preview, which is instant;
+    /// `developed` follows with the real thing.
     public static func preview(_ url: URL, maxPixel: Int, backing: CGFloat = 2) -> DecodedImage? {
         if ImageFormats.isVector(url) { return vector(url, maxPixel: maxPixel, backing: backing) }
         guard let src = source(url), let (size, frames) = info(src) else { return nil }
-        let longest = Int(max(size.width, size.height))
         if ImageFormats.isRaw(url) {
             if let img = decode(src, maxPixel: maxPixel, allowEmbedded: true) {
                 return DecodedImage(url: url, image: img, pixelSize: size, isFull: false, frameCount: frames, isEmbedded: true)
             }
-        } else if longest <= maxPixel * 3 / 2 {
+        } else if !needsDetail(size) {
             return full(url, src: src, size: size, frames: frames)
         }
         // An exact half, quarter or eighth comes straight out of a JPEG's own transform and costs
         // about half a full decode; any other size is a full decode and a resample on top, twice
         // as slow. The smallest such fraction that still covers the screen, when there is one.
+        let longest = Int(max(size.width, size.height))
         var target = maxPixel
         var fraction = longest
         while fraction % 2 == 0, fraction / 2 >= maxPixel { fraction /= 2 }
