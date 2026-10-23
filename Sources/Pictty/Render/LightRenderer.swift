@@ -5,8 +5,8 @@ import PicttyCore
 /// Runs the Light panel's renders off the main thread, the newest request first: a slider drag
 /// asks many times a second, and only the last value still matters when the GPU comes free.
 ///
-/// Pictures go through Pictty's own engine. Camera RAWs go through Apple's RAW engine for now
-/// (exposure in the develop itself, then Core Image's own tone filters).
+/// Pictures go through Pictty's own engine. Camera RAWs are developed by Apple's RAW engine for now
+/// (exposure, white balance and noise reduction in the develop itself), then Pictty's engine does the rest.
 final class LightRenderer: @unchecked Sendable {
     enum Engine: Equatable {
         case pictty
@@ -188,10 +188,10 @@ final class LightRenderer: @unchecked Sendable {
 }
 
 /// Apple's RAW engine with the panel's values: exposure and white balance go into the develop,
-/// where the sensor's headroom and its own colour are; the tones are Core Image's own filters on
-/// the result. Dehaze, texture, clarity, sharpening, vibrance, saturation and colour grading have no
-/// Apple counterpart (one that guards grain and halos, protects skin or keeps lightness): Pictty's
-/// engine does them on the developed picture.
+/// where the sensor's headroom and its own colour are. Everything else (highlights, shadows,
+/// contrast, brightness, dehaze, detail, vibrance, saturation, colour grading) is Pictty's engine on
+/// the developed picture, as for any other picture: Core Image's highlight filter greyed lamps
+/// and whites into a flat haze.
 final class AppleRAW {
     private let filter: CIRAWFilter
     private let context = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
@@ -230,39 +230,7 @@ final class AppleRAW {
         // Noise reduction: from the camera's default up to Apple's strongest.
         filter.luminanceNoiseReductionAmount = defaultLuminanceNR + (1 - defaultLuminanceNR) * Float(a.denoise)
         filter.colorNoiseReductionAmount = defaultColourNR + (1 - defaultColourNR) * Float(a.denoise)
-        guard var image = filter.outputImage else { return nil }
-        // Core Image's tone filters are made for gamma-encoded values, not linear light: they
-        // run between the sRGB curve and its inverse.
-        let tones = a.highlights != 0 || a.shadows != 0 || a.contrast != 0 || a.brightness != 0
-        if tones { image = image.applyingFilter("CILinearToSRGBToneCurve") }
-        if a.highlights < 0 || a.shadows != 0 {
-            let f = CIFilter(name: "CIHighlightShadowAdjust")!
-            f.setValue(image, forKey: kCIInputImageKey)
-            // Full strength at no radius flattens the picture and rings around faces; a radius of
-            // about 1 % of the picture and a gentler range look like a highlights slider should.
-            f.setValue(1 + 0.7 * min(a.highlights, 0), forKey: "inputHighlightAmount")
-            f.setValue(0.8 * a.shadows, forKey: "inputShadowAmount")
-            f.setValue(max(image.extent.width, image.extent.height) * 0.01, forKey: "inputRadius")
-            image = f.outputImage ?? image
-        }
-        if a.highlights > 0 {
-            let f = CIFilter(name: "CIToneCurve")!
-            f.setValue(image, forKey: kCIInputImageKey)
-            let h = CGFloat(a.highlights) * 0.12
-            for (i, (x, y)) in [(0.0, 0.0), (0.25, 0.25), (0.5, 0.5), (0.75, 0.75 + h), (1.0, 1.0)].enumerated() {
-                f.setValue(CIVector(x: x, y: y), forKey: "inputPoint\(i)")
-            }
-            image = f.outputImage ?? image
-        }
-        if a.contrast != 0 || a.brightness != 0 {
-            let f = CIFilter(name: "CIColorControls")!
-            f.setValue(image, forKey: kCIInputImageKey)
-            f.setValue(pow(2, a.contrast * 0.8), forKey: kCIInputContrastKey)
-            f.setValue(a.brightness * 0.2, forKey: kCIInputBrightnessKey)
-            f.setValue(1, forKey: kCIInputSaturationKey)
-            image = f.outputImage ?? image
-        }
-        if tones { image = image.applyingFilter("CISRGBToneCurveToLinear") }
+        guard let image = filter.outputImage else { return nil }
         let extent = image.extent
         if float ?? hdr, let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) {
             return context.createCGImage(image, from: extent, format: .RGBAh, colorSpace: space)
@@ -270,12 +238,17 @@ final class AppleRAW {
         return context.createCGImage(image, from: extent, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.displayP3))
     }
 
-    /// Dehaze, detail, vibrance, saturation and colour grading on a developed picture, through
-    /// Pictty's engine. Noise reduction stays Apple's, in the develop.
+    /// The tones, dehaze, detail, vibrance, saturation and colour grading on a developed picture,
+    /// through Pictty's engine. Exposure, white balance and noise reduction stay Apple's, in the develop.
     static func graded(_ image: CGImage, _ a: Adjustments, isHDR: Bool, output: LightEngine.Output? = nil) -> CGImage? {
         let detail = a.texture != 0 || a.clarity != 0 || a.sharpening != 0
-        guard !a.isGradingNeutral || !a.isSaturationNeutral || a.dehaze != 0 || detail else { return image }
+        let tones = a.highlights != 0 || a.shadows != 0 || a.contrast != 0 || a.brightness != 0
+        guard !a.isGradingNeutral || !a.isSaturationNeutral || a.dehaze != 0 || detail || tones else { return image }
         var g = Adjustments()
+        g.highlights = a.highlights
+        g.shadows = a.shadows
+        g.contrast = a.contrast
+        g.brightness = a.brightness
         g.dehaze = a.dehaze
         g.texture = a.texture
         g.clarity = a.clarity

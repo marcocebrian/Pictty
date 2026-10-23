@@ -161,6 +161,48 @@ final class LightEngineTests: XCTestCase {
         XCTAssertEqual(at(plain, 64, 100), at(linear(image), 64, 100), accuracy: 0.01, "no exposure: as before")
     }
 
+    /// Exposure raised with Highlights lowered: broad regions from dim to bright stay in their
+    /// order. Scaling the stops by how far a region was pushed made one at 0.4 land darker than one
+    /// at 0.3, and the picture broke into patches.
+    func testExposureWithHighlightsKeepsRegionsInOrder() throws {
+        let w = 256, h = 64
+        let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 32, bytesPerRow: w * 16, space: space,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+                                | CGBitmapInfo.byteOrder32Little.rawValue)!
+        let levels: [CGFloat] = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+        for (i, v) in levels.enumerated() {
+            ctx.setFillColor(CGColor(colorSpace: space, components: [v, v, v, 1])!)
+            ctx.fill(CGRect(x: i * 32, y: 0, width: 32, height: h))
+        }
+        let engine = try XCTUnwrap(LightEngine())
+        let src = try XCTUnwrap(engine.source(ctx.makeImage()!))
+        for (exposure, highlights) in [(1.0, -1.0), (1.0, -0.5), (2.0, -1.0)] {
+            var a = Adjustments()
+            a.exposure = exposure
+            a.highlights = highlights
+            let p = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
+            let centres = levels.indices.map { p[(32 * w + $0 * 32 + 16) * 4 + 1] }
+            for i in 1..<centres.count {
+                XCTAssertGreaterThanOrEqual(centres[i], centres[i - 1] - 0.002,
+                                            "exposure \(exposure), highlights \(highlights): \(centres)")
+            }
+        }
+    }
+
+    /// A lit face pulled down by Highlights keeps its colour: no more colourful than it was.
+    func testHighlightsDoNotSaturateSkin() throws {
+        let image = colour(242, 204, 178)
+        let engine = try XCTUnwrap(LightEngine())
+        let src = try XCTUnwrap(engine.source(image))
+        var a = Adjustments()
+        a.highlights = -1
+        let before = linear(image)[0..<4]
+        let after = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)[0..<4]
+        XCTAssertLessThan(after[1], before[1] - 0.02, "it comes down")
+        XCTAssertLessThan(colourfulness(after), colourfulness(before) * 1.05)
+    }
+
     /// A saturated colour pushed past white fades towards white, as on film: raised exposure never
     /// makes a colour more saturated than it was.
     func testRaisedExposureDoesNotSaturate() throws {
@@ -422,14 +464,14 @@ final class LightEngineTests: XCTestCase {
             a.highlights = -0.8
             let got = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)[64 * 128 * 4 + 256]
             // The curve, as the kernels have it, on encoded brightness: a pull of 0.21·h that rises
-            // from 0.4 to its full at 0.85 (where these pictures' highlights put it) and falls to none
+            // from 0.5 to its full at 0.85 (where these pictures' highlights put it) and falls to none
             // at white, linearly.
             func smoothstep(_ a: Float, _ b: Float, _ x: Float) -> Float {
                 let t = min(max((x - a) / (b - a), 0), 1)
                 return t * t * (3 - 2 * t)
             }
             let l = Float(value) / 255
-            let l1 = l + -0.8 * 0.21 * smoothstep(0.4, 0.85, l) * min(max((1 - l) / 0.15, 0), 1)
+            let l1 = l + -0.8 * 0.21 * smoothstep(0.5, 0.85, l) * min(max((1 - l) / 0.15, 0), 1)
             let expected = l1 <= 0.04045 ? l1 / 12.92 : pow((l1 + 0.055) / 1.055, 2.4)
             XCTAssertEqual(got, expected, accuracy: 0.006, "level \(value)")
         }

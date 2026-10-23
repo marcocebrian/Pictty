@@ -91,13 +91,15 @@ inline float rolloff(float x, float X) {
 /// `l` is encoded luminance on a 0…1 scale.
 inline float highlightCurve(float l, float h, float peak, float strength, float fall) {
     if (h == 0.0) return 0.0;
-    float s = smoothstep(0.4, 1.0, l);
+    // What counts as a highlight starts at half of white: from 0.4 it reached into faces and
+    // midtones.
+    float s = smoothstep(0.5, 1.0, l);
     // Lowered: the most at `peak` (where the picture's highlights are, 0.85 to 0.92) and none at
     // white, which stays white. Between them the curve is steep, and that is what spreads the
     // brightest things (white clouds) back out against the sky instead of greying them; `fall` is
     // how fast the pull fades towards white (as the first power, or the 0.8th for a sky that is
     // nearly blown, whose tones are all up there and need it).
-    float pull = smoothstep(0.4, peak, l) * pow(clamp((1.0 - l) / (1.0 - peak), 0.0, 1.0), fall);
+    float pull = smoothstep(0.5, peak, l) * pow(clamp((1.0 - l) / (1.0 - peak), 0.0, 1.0), fall);
     float d = h < 0.0 ? h * strength * pull : h * 0.6 * s * max(1.0 - l, 0.0);
     return l > 1.0 && h > 0.0 ? 0.0 : d;
 }
@@ -308,10 +310,15 @@ kernel void localExposure(texture2d<float, access::read> lit [[texture(0)]],
     float2 ab = guided.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
     float base = max(dec(clamp(ab.x * l + ab.y, 0.0, p.lumaWhite)) / p.white, 1e-5);
     float stops = p.exposure * (1.0 - 0.5 * litShare(base));
-    if (p.highlights < 0.0) {
-        // Where the region would land: from 0.6 of white (where the shoulder bites) to white and past.
-        float pushed = smoothstep(0.6, 1.0, base * exp2(stops));
-        stops *= 1.0 - p.highlights * p.highlights * pushed;
+    if (p.highlights < 0.0 && stops > 0.0) {
+        // Where the region would land past 0.6 of white (where the shoulder bites), it is
+        // compressed into the rest of the way to white instead, and never below where it was. Both
+        // rise with the region, so a brighter region always stays brighter: scaling the stops by
+        // how far a region was pushed turned a slightly brighter one darker than its neighbour.
+        float landed = base * exp2(stops);
+        float knee = landed < 0.6 ? landed : 0.6 + 0.4 * (1.0 - exp(-0.5 * (landed - 0.6) / 0.4));
+        float kept = mix(landed, max(base, knee), p.highlights * p.highlights);
+        stops = log2(max(kept, base) / base);
     }
     float gain = exp2(stops);
     float3 rgb = c.rgb * gain;
@@ -736,15 +743,15 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
     }
     if (l1 != l0) rgb = withLuminance(rgb, dec(l0), dec(l1));
     if ((p.localPaths & 2) && p.highlights < 0.0 && l0 > 0.0) {
-        // A highlight brought down keeps its true colour, as a sky does under a darker light: its
-        // chroma rises with how much it was darkened, so the sky comes back blue, not grey. Only
+        // A highlight brought down keeps its colour, as a sky does under a darker light: its
+        // chroma rises a little with how much it was darkened, so the sky does not go grey. Only
         // what has a colour: a white cloud, nearly neutral, would only take on the sky's tint and
-        // look less white.
+        // look less white. Never skin: a lit face would turn orange. At most a fifth more.
         float darkened = dec(l0) / max(dec(l0 + highlightChange), 1e-6);
         if (darkened > 1.0) {
             float3 o = toOklab(max(rgb, 0.0) / W);
             float coloured = smoothstep(0.005, 0.03, length(o.yz) / max(o.x, 1e-3));
-            float s = min(1.25 * (darkened - 1.0), 0.8) * coloured;
+            float s = min(0.4 * (darkened - 1.0), 0.2) * coloured * (1.0 - skinLikeness(o));
             rgb = vibranceAndSaturation(max(rgb, 0.0) / W, 0.0, s, o.yz) * W;
         }
     }

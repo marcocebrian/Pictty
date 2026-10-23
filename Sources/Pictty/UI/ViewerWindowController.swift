@@ -1540,6 +1540,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private var idleSeconds: TimeInterval = 0
     /// The strip was put away for idleness; it stays away until the pointer moves.
     private var filmstripRested = false
+    /// Whether the pointer was over the Adjust panel when no button was held: a slider drag that
+    /// strays onto the picture stays editing.
+    private var dragBeganInPanel = false
     private static let idleTick: TimeInterval = 0.1
     private static let chromeGrace: TimeInterval = 2.5
     private static let captionGrace: TimeInterval = 7
@@ -1550,7 +1553,11 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let location = NSEvent.mouseLocation
         let moved = hypot(location.x - lastPointerLocation.x, location.y - lastPointerLocation.y) > 1.5
         lastPointerLocation = location
-        if moved {
+        // The pointer working in the Adjust panel, or dragging a slider that began there, is
+        // editing, not looking for the toolbar: it counts as idle.
+        let inPanel = model.showLight && window.convertPoint(fromScreen: location).x >= canvas.frame.maxX
+        if NSEvent.pressedMouseButtons == 0 { dragBeganInPanel = inPanel }
+        if moved, !(inPanel || dragBeganInPanel) {
             filmstripRested = false
             revealChrome()
             return
