@@ -50,6 +50,7 @@ struct ShortcutsView: View {
             (["F", "↩"], "Full screen"),
             (["⌘", "C"], "Copy the picture"),
             (["⌘", "R"], "Reveal in Finder"),
+            (["⌘", "P"], "Print the picture"),
             (["⌘", "⌫"], "Move to Trash"),
         ]),
         Group(title: "Edit", symbol: "slider.horizontal.3", colors: [Color(hex: 0xFBBC04), Color(hex: 0xEA4335)], rows: [

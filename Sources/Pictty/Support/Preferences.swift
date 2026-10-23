@@ -32,6 +32,7 @@ final class Preferences: ObservableObject {
         static let pillFields = "pillFields"
         static let histogramStyle = "histogramStyle"
         static let exportOptions = "exportOptions"
+        static let printSettings = "printSettings"
     }
 
     private let defaults: UserDefaults
@@ -66,6 +67,8 @@ final class Preferences: ObservableObject {
     @Published var histogramStyle: HistogramStyle = .histogram { didSet { store(histogramStyle.rawValue, Key.histogramStyle) } }
     /// The last Save As settings, which the next one starts from.
     @Published var exportOptions = ExportOptions() { didSet { store(try? JSONEncoder().encode(exportOptions), Key.exportOptions) } }
+    /// The last Print sheet's printer, paper and choices.
+    @Published var printSettings = PrintSettings() { didSet { store(try? JSONEncoder().encode(printSettings), Key.printSettings) } }
 
     /// `PICTTY_DEFAULTS_SUITE` keeps a developer's test runs out of the real preferences.
     nonisolated static var store: UserDefaults {
@@ -115,6 +118,7 @@ final class Preferences: ObservableObject {
         pillFields = defaults.stringArray(forKey: Key.pillFields).map { $0.compactMap(PillField.init(rawValue:)) } ?? PillField.standard
         histogramStyle = defaults.string(forKey: Key.histogramStyle).flatMap(HistogramStyle.init(rawValue:)) ?? .histogram
         exportOptions = defaults.data(forKey: Key.exportOptions).flatMap { try? JSONDecoder().decode(ExportOptions.self, from: $0) } ?? ExportOptions()
+        printSettings = defaults.data(forKey: Key.printSettings).flatMap { try? JSONDecoder().decode(PrintSettings.self, from: $0) } ?? PrintSettings()
     }
 
     func shows(_ section: InspectorSection) -> Bool { !hiddenInspectorSections.contains(section) }

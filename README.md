@@ -84,6 +84,7 @@ Crop with ratios and rounded corners, flip to the original with Y, and save over
 - **Noise reduction** by a neural network on this Mac's GPU, at the scale the picture's grain needs.
 - **Crop** with ratios for social, screens and print, and rounded corners.
 - **Save and Save As**: over the file in its own format and quality, turns without re-encoding, or as JPEG, HEIC, AVIF, PNG, TIFF, OpenEXR and more, with the file's size shown before you save.
+- **Print**: the picture on your printer's own papers, dragged into place, at photo-lab sizes or your own, with its quality in ppi and an offer to upscale when the picture is short of pixels.
 - **Five zoom modes**: Actual Size, Best Fit, Fit to Window, Remember Zoom, and Lock Zoom & Window.
 - **Filmstrip**, slideshow, rotate, mirror, copy, reveal in Finder, move to Trash.
 - **Multiple windows**, one per folder, chosen automatically when you open pictures from Finder.
@@ -173,6 +174,14 @@ Several sliders work **by regions**. An edge-aware map of the picture's brightne
 
 **Saving.** ⌘S writes over the file in its own format, colour profile, bit depth and metadata; a JPEG is re-encoded at the quality it was made with, matched to its own quantisation table, so it does not grow or soften for nothing. A turn or a mirror on its own rewrites the orientation tag and no pixel. ⇧⌘S saves a copy or converts: each format is a card that says what it can hold (lossless, HDR, transparency, bit depth), every setting is there, and the foot shows how large the file will be. The file is written beside the destination and moved over it, so a failure never leaves half a picture behind. Moving away from unsaved edits asks first.
 
+### Printing
+
+**Print** (⌘P) shows the sheet of paper as it will come out, the printer's own papers and margins included, borderless ones too. The picture is dragged into place and clicks onto the centre and the margins; its corners resize it, ⌥-drag chooses what a crop keeps, and the arrow keys nudge it a millimetre (⇧ for ten). Sizes are the page fitted or filled, the sizes photo labs print (10 × 15 to 60 × 90 cm, 4 × 6 to 24 × 36 in) or any width and height, in centimetres, inches or millimetres; a frame of another shape is filled and cropped, or holds the whole picture.
+
+**Quality** is said in ppi and in words, judged from the distance a print that size is looked at: a 10 × 15 is held at reading distance and wants about 290 ppi, a 40 × 60 is seen from its diagonal and 150 is plenty. Below 240 ppi the printer would enlarge the pixels itself, coarsely, so Pictty recommends upscaling: it enlarges the printed part to 300 ppi with Lanczos before the printer sees it. It also says the largest size the picture prints at 300 ppi, and sets it in one click. Pictures with far more pixels than any printer uses go out at 600 ppi.
+
+What is printed is what Save would write, every pixel with the edits on screen; HDR is brought into the paper's range rather than clipped. Sharpening for the paper (off, low, standard, high; glossy or matte) is applied last, at the resolution sent. The colour profile goes with the picture, with perceptual or relative colorimetric rendering, and a caption (file name, date and camera, or your own text) can go under it. Then the system's panel takes the printer's own settings: paper type, quality, copies, or a PDF.
+
 ### Browsing and windows
 
 The filmstrip hides by itself and comes back at the bottom edge; T pins it. A picture opened from Finder goes to the window that already shows its folder, where it is selected; a picture from another folder opens a new window. Pictty can become the default viewer for the 28 picture types people actually have (photos, camera RAW, HDR, layers and vectors); macOS asks you to confirm each one, and Pictty never asks again for a type it already opens.
@@ -193,7 +202,7 @@ Pictty reads the pictures you open and the other pictures in their folder, and k
 | D · L · B · P · Tab | Compare · layout · blink · sync pan · next pane |
 | [ ] · M · two fingers | Rotate · mirror · rotate on the trackpad |
 | E · C · Y | Adjust · crop · the original and back |
-| ⌘S · ⇧⌘S | Save · Save As or convert |
+| ⌘S · ⇧⌘S · ⌘P | Save · Save As or convert · print |
 | S · T · F or ↩ | Slideshow · filmstrip · full screen |
 | ? · Esc | All shortcuts · close what is open, then leave full screen |
 

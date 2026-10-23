@@ -67,6 +67,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         case #selector(saveEditsAs(_:)): return model.current != nil && model.lightUnavailable == nil && !model.isSaving
         case #selector(toggleOriginal(_:)): return hasUnsavedAdjustments && !model.cropping
         case #selector(toggleCrop(_:)): return model.current != nil && model.lightUnavailable == nil
+        case #selector(printPicture(_:)): return canPrint
         default: return true
         }
     }
@@ -571,31 +572,18 @@ extension ViewerWindowController: NSMenuItemValidation {
     /// a turn or mirror alone saved over the file changes its orientation tag and nothing else.
     private func export(_ url: URL, to dest: URL, options: ExportOptions, then proceed: (() -> Void)?,
                         cancelled: (() -> Void)?) {
-        let a = model.light
-        let adjusted = hasUnsavedAdjustments
-        let crop = model.crop
-        let turn = orientationChange
-        let engine = lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .appleRAW : .pictty)
-        let renderer = lightSession?.renderer
+        let edits = editSnapshot(for: url)
         let inPlace = dest.standardizedFileURL == url.standardizedFileURL
         model.isSaving = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var failure: String?
             var lossless = false
-            if inPlace, !adjusted, let turn, ImageExporter.reorient(url, quarterTurns: turn.quarterTurns, mirror: turn.mirror) {
+            if inPlace, !edits.adjusted, let turn = edits.turn,
+               ImageExporter.reorient(url, quarterTurns: turn.quarterTurns, mirror: turn.mirror) {
                 lossless = true
-            } else if let original = ImageDecoder.full(url) {
-                let isHDR = original.isHDR
-                var picture = a.isNeutral
-                    ? original.image
-                    : LightRenderer.renderWhole(original.image, url: url, engine: engine, isHDR: isHDR, a, output: .linear,
-                                                progress: { fraction in
-                                                    DispatchQueue.main.async {
-                                                        MainActor.assumeIsolated { self?.denoiseProgressed(fraction, full: true) }
-                                                    }
-                                                }, renderer: renderer)
-                if let crop, let p = picture { picture = crop.apply(to: p) }
-                if let turn, let p = picture { picture = ImageExporter.oriented(p, quarterTurns: turn.quarterTurns, mirror: turn.mirror) }
+            } else if let (picture, isHDR) = Self.renderEdited(url, edits, progress: { fraction in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.denoiseProgressed(fraction, full: true) } }
+            }) {
                 var o = options
                 if o.matchQuality, o.format == .jpeg, let q = JPEGQuality.setting(for: url) { o.quality = q }
                 if let picture {
@@ -621,6 +609,39 @@ extension ViewerWindowController: NSMenuItemValidation {
                 }
             }
         }
+    }
+
+    /// The edits on screen for `url`, taken on the main thread for a render elsewhere.
+    struct EditSnapshot {
+        let light: Adjustments
+        /// The panel's adjustments or a crop, beyond a turn or mirror.
+        let adjusted: Bool
+        let crop: CropBox?
+        let turn: (quarterTurns: Int, mirror: Bool)?
+        let engine: LightRenderer.Engine
+        let renderer: LightRenderer?
+    }
+
+    func editSnapshot(for url: URL) -> EditSnapshot {
+        EditSnapshot(light: model.light, adjusted: hasUnsavedAdjustments, crop: model.crop, turn: orientationChange,
+                     engine: lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .appleRAW : .pictty),
+                     renderer: lightSession?.renderer)
+    }
+
+    /// Every pixel of `url` with `edits`, upright: what Save writes and Print prints. Nil when the
+    /// file cannot be read; a nil picture when the edit cannot be rendered.
+    nonisolated static func renderEdited(_ url: URL, _ edits: EditSnapshot,
+                                         progress: ((Double) -> Void)?) -> (picture: CGImage?, isHDR: Bool)? {
+        guard let original = ImageDecoder.full(url) else { return nil }
+        let isHDR = original.isHDR
+        let a = edits.light
+        var picture = a.isNeutral
+            ? original.image
+            : LightRenderer.renderWhole(original.image, url: url, engine: edits.engine, isHDR: isHDR, a, output: .linear,
+                                        progress: progress, renderer: edits.renderer)
+        if let crop = edits.crop, let p = picture { picture = crop.apply(to: p) }
+        if let turn = edits.turn, let p = picture { picture = ImageExporter.oriented(p, quarterTurns: turn.quarterTurns, mirror: turn.mirror) }
+        return (picture, isHDR)
     }
 
     private func saved(_ url: URL, to dest: URL, lossless: Bool, then proceed: (() -> Void)?) {

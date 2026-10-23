@@ -54,6 +54,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private var pendingShow = false
     /// The picture the network has been asked to go over, so its wait is announced only once.
     var denoisedOnce: URL?
+    /// The Print sheet while it is open.
+    var printSession: PrintSession?
     private var toolbarWidths: [Bool: CGFloat] = [:]
 
     /// Shows the window now if its picture is in it (or none is coming), else when it arrives,

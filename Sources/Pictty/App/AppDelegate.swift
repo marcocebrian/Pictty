@@ -391,6 +391,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(m, "Save As…", #selector(C.saveEditsAs(_:)), "s", [.command, .shift])
             add(m, "Revert to Original", #selector(C.revertEdits(_:)))
             m.addItem(.separator())
+            add(m, "Print…", #selector(C.printPicture(_:)), "p")
+            m.addItem(.separator())
             add(m, "Copy Image", #selector(C.copyCurrentImage(_:)), "c")
             add(m, "Reveal in Finder", #selector(C.revealInFinder(_:)), "r")
             add(m, "Open With Default App", #selector(C.openInDefaultApp(_:)), "o", [.command, .shift])
@@ -493,6 +495,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "Minimize": "minus.rectangle", "Zoom": "plus.rectangle", "Keyboard Shortcuts": "keyboard", "Make Pictty the Default Viewer…": "checkmark.seal", "Inside Pictty": "sparkles", "Pictty Website": "safari", "More Apps at noxdrop.com": "square.grid.2x2", "Clipping Warnings": "exclamationmark.triangle",
         "Save": "square.and.arrow.down", "Save As…": "square.and.arrow.down.on.square", "Adjust": "slider.horizontal.3",
         "Show Original": "rectangle.lefthalf.inset.filled", "Revert to Original": "arrow.uturn.backward", "Crop": "crop",
+        "Print…": "printer",
     ]
 
     func menuNeedsUpdate(_ menu: NSMenu) {

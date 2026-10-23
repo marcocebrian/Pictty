@@ -49,6 +49,22 @@ enum DevScript {
         case "blink": c.blink(nil)
         case "background": c.cycleBackground(nil)
         case "rotate": c.rotateRight(nil)
+        case "print": c.printPicture(nil)
+        case "printgo": c.printSession?.onPrint?()
+        case "printphoto":
+            // printphoto <i>: the i-th photo size of the open Print sheet.
+            if let s = c.printSession, let i = n.first, s.photoSizes.indices.contains(Int(i)) {
+                s.settings.sizing = .photo(s.photoSizes[Int(i)].size)
+            }
+        case "printfill": c.printSession?.settings.sizing = .fillPage
+        case "printfit": c.printSession?.settings.sizing = .fitPage
+        case "printupscale": c.printSession?.settings.upscale = (n.first ?? 1) != 0
+        case "printcaption": c.printSession?.settings.caption = .details
+        case "printmove":
+            // printmove <dx> <dy>: the frame moved by points on the paper.
+            if let s = c.printSession, n.count >= 2 {
+                s.layout.center = s.layout.clamped(CGPoint(x: s.layout.center.x + n[0], y: s.layout.center.y + n[1]))
+            }
         case "wipe":
             // wipe <to> [<from> <seconds>]: the split line, gliding when a duration is given.
             guard let to = n.first else { return }
