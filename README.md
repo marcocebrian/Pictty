@@ -85,7 +85,7 @@ Crop with ratios and rounded corners, flip to the original with Y, and save over
 - **Crop** with ratios for social, screens and print, and rounded corners.
 - **Save and Save As**: over the file in its own format and quality, turns without re-encoding, or as JPEG, HEIC, AVIF, PNG, TIFF, OpenEXR and more, with the file's size shown before you save.
 - **Print**: the picture on your printer's own papers, dragged into place, at photo-lab sizes or your own, with its quality in ppi and an offer to upscale when the picture is short of pixels.
-- **Five zoom modes**: Actual Size, Best Fit, Fit to Window, Remember Zoom, and Lock Zoom & Window.
+- **Five zoom modes**: Actual Size, Best Fit, Fit to Window, Remember Zoom, and Lock Zoom & Window, behind one toolbar button (or the keys 1 to 5).
 - **Filmstrip**, slideshow, rotate, mirror, copy, reveal in Finder, move to Trash.
 - **Multiple windows**, one per folder, chosen automatically when you open pictures from Finder.
 - **Default viewer**: Pictty can open your pictures on a double-click in Finder.

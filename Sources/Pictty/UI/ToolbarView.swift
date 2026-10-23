@@ -7,6 +7,7 @@
 // ask it to hurry up. A 200 ms delay and our own bubble is both faster and
 // better looking.
 
+import PicttyCore
 import SwiftUI
 
 /// Which button the pointer is resting on, and where to put its label.
@@ -54,29 +55,9 @@ struct ToolbarView: View {
 
     private var pill: some View {
         HStack(spacing: 2) {
-            glyph("1.square", "Actual size — 100% (Z)", isOn: model.zoomMode == .actual) {
-                controller.applyZoomMode(.actual)
-            }
-            glyph("arrow.up.left.and.arrow.down.right", "Best fit — the window adapts (2)",
-                  isOn: model.zoomMode == .bestFit) {
-                controller.applyZoomMode(.bestFit)
-            }
-            glyph("arrow.up.left.and.down.right.magnifyingglass", "Fit to window (3)",
-                  isOn: model.zoomMode == .fitWindow) {
-                controller.applyZoomMode(.fitWindow)
-            }
-            glyph("pin", "Remember zoom (4)", isOn: model.zoomMode == .remember) {
-                controller.applyZoomMode(.remember)
-            }
-            glyph("lock", "Lock zoom & window (5)", isOn: model.zoomMode == .locked) {
-                controller.applyZoomMode(.locked)
-            }
-
-            separator
-
-            glyph("minus.magnifyingglass", "Zoom out (⌘−)") { controller.zoomOut(nil) }
-            ZoomPicker(label: model.zoomLabel) { controller.zoom(toPercent: $0) }
-            glyph("plus.magnifyingglass", "Zoom in (⌘+)") { controller.zoomIn(nil) }
+            ZoomModeMenu(mode: model.zoomMode) { controller.applyZoomMode($0) }
+            ZoomControl(label: model.zoomLabel, zoomOut: { controller.zoomOut(nil) },
+                        zoomIn: { controller.zoomIn(nil) }, choose: { controller.zoom(toPercent: $0) })
 
             separator
 
@@ -182,11 +163,12 @@ struct GlyphButton: View {
     var help: String = ""
     var isOn: Bool = false
     var emphasized: Bool = false
+    var size: CGFloat = 12.5
+    var width: CGFloat = 27
+    var height: CGFloat = 25
     let action: () -> Void
 
     @State private var hovering = false
-    @State private var armed = false
-    @State private var armTask: Task<Void, Never>?
     @State private var taps = 0
 
     var body: some View {
@@ -195,10 +177,10 @@ struct GlyphButton: View {
             action()
         } label: {
             Image(systemName: symbol)
-                .font(.system(size: 12.5, weight: .medium))
+                .font(.system(size: size, weight: size < 11 ? .bold : .medium))
                 .symbolEffect(.bounce.down, value: taps)
                 .contentTransition(.symbolEffect(.replace))
-                .frame(width: 27, height: 25)
+                .frame(width: width, height: height)
                 .foregroundStyle(foreground)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -210,42 +192,61 @@ struct GlyphButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressScale())
-        // `.help()` would put AppKit's two-second tooltip on top of ours.
-        .accessibilityLabel(L(help))
-        .onHover { inside in
-            hovering = inside
-            armTask?.cancel()
-            guard inside, !help.isEmpty else {
-                armed = false
-                return
-            }
-            armTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: UInt64(ToolbarView.tooltipDelay * 1_000_000_000))
-                guard !Task.isCancelled, hovering else { return }
-                armed = true
-            }
-        }
-        .background(
-            GeometryReader { geometry in
-                Color.clear.preference(
-                    key: TooltipKey.self,
-                    value: armed
-                        ? TooltipRequest(text: help,
-                                         midX: geometry.frame(in: .named(ToolbarView.coordinateSpace)).midX)
-                        : nil
-                )
-            }
-        )
-        .onDisappear {
-            armTask?.cancel()
-            armed = false
-        }
+        .toolbarTooltip(help, hovering: $hovering)
     }
 
     private var foreground: Color {
         if isOn { return Color.accentColor.mix(with: .white, by: 0.25) }
         if emphasized { return .white.opacity(0.92) }
         return .white.opacity(hovering ? 0.95 : 0.62)
+    }
+}
+
+/// The toolbar's own quick tooltip over a control, and its hover state.
+private struct ToolbarTooltip: ViewModifier {
+    let help: String
+    @Binding var hovering: Bool
+    @State private var armed = false
+    @State private var armTask: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content
+            // `.help()` would put AppKit's two-second tooltip on top of ours.
+            .accessibilityLabel(L(help))
+            .onHover { inside in
+                hovering = inside
+                armTask?.cancel()
+                guard inside, !help.isEmpty else {
+                    armed = false
+                    return
+                }
+                armTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64(ToolbarView.tooltipDelay * 1_000_000_000))
+                    guard !Task.isCancelled, hovering else { return }
+                    armed = true
+                }
+            }
+            .background(
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: TooltipKey.self,
+                        value: armed
+                            ? TooltipRequest(text: help,
+                                             midX: geometry.frame(in: .named(ToolbarView.coordinateSpace)).midX)
+                            : nil
+                    )
+                }
+            )
+            .onDisappear {
+                armTask?.cancel()
+                armed = false
+            }
+    }
+}
+
+extension View {
+    func toolbarTooltip(_ help: String, hovering: Binding<Bool>) -> some View {
+        modifier(ToolbarTooltip(help: help, hovering: hovering))
     }
 }
 
@@ -258,38 +259,95 @@ struct PressScale: ButtonStyle {
     }
 }
 
-/// The zoom figure, which is also a menu of the usual zooms.
-private struct ZoomPicker: View {
+/// The five zoom modes behind one button: it shows the mode in use and opens them as a list.
+private struct ZoomModeMenu: View {
+    let mode: ZoomMode
+    let choose: (ZoomMode) -> Void
+    @State private var hovering = false
+
+    /// Each mode as the menu lists it, with its key.
+    private static let entries: [(mode: ZoomMode, title: String)] = [
+        (.actual, "Actual size — 100% (Z)"),
+        (.bestFit, "Best fit — the window adapts (2)"),
+        (.fitWindow, "Fit to window (3)"),
+        (.remember, "Remember zoom (4)"),
+        (.locked, "Lock zoom & window (5)"),
+    ]
+
+    var body: some View {
+        Menu {
+            ForEach(Self.entries, id: \.mode) { entry in
+                Toggle(isOn: Binding(get: { mode == entry.mode }, set: { _ in choose(entry.mode) })) {
+                    Label(L(entry.title), systemImage: entry.mode.symbol)
+                }
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: mode.symbol)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .contentTransition(.symbolEffect(.replace))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+                    .opacity(0.7)
+            }
+            .frame(width: 34, height: 25)
+            .foregroundStyle(.white.opacity(hovering ? 0.95 : 0.62))
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.white.opacity(hovering ? 0.13 : 0)))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .toolbarTooltip("Zoom mode (1–5)", hovering: $hovering)
+        .animation(.easeOut(duration: 0.14), value: hovering)
+        .animation(.easeOut(duration: 0.18), value: mode)
+    }
+}
+
+/// Zoom out, the zoom figure (also a menu of the usual zooms) and zoom in, in one small capsule.
+private struct ZoomControl: View {
     let label: String
+    let zoomOut: () -> Void
+    let zoomIn: () -> Void
     let choose: (Int) -> Void
     @State private var hovering = false
 
     static let percents = [50, 75, 100, 150, 200]
 
     var body: some View {
-        Menu {
-            ForEach(Self.percents, id: \.self) { p in
-                Button {
-                    choose(p)
-                } label: {
-                    if label == "\(p)%" { Label("\(p) %", systemImage: "checkmark") } else { Text("\(p) %") }
+        HStack(spacing: 0) {
+            step("minus", "Zoom out (⌘−)", zoomOut)
+            Menu {
+                ForEach(Self.percents, id: \.self) { p in
+                    Button {
+                        choose(p)
+                    } label: {
+                        if label == "\(p)%" { Label("\(p) %", systemImage: "checkmark") } else { Text("\(p) %") }
+                    }
                 }
+            } label: {
+                Text(label)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(hovering ? 0.95 : 0.62))
+                    .frame(minWidth: 34, minHeight: 21)
+                    .contentShape(Rectangle())
             }
-        } label: {
-            Text(label)
-                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(.white.opacity(hovering ? 0.95 : 0.6))
-                .frame(minWidth: 46, minHeight: 22)
-                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(.white.opacity(hovering ? 0.1 : 0)))
-                .contentShape(Rectangle())
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .toolbarTooltip("Zoom (click for 50–200 %)", hovering: $hovering)
+            step("plus", "Zoom in (⌘+)", zoomIn)
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .onHover { hovering = $0 }
+        .padding(.horizontal, 1)
+        .background(Capsule().fill(.white.opacity(0.07)))
+        .padding(.horizontal, 3)
         .animation(.easeOut(duration: 0.15), value: hovering)
-        .help(L("Zoom (click for 50–200 %)"))
+    }
+
+    private func step(_ symbol: String, _ help: String, _ action: @escaping () -> Void) -> some View {
+        GlyphButton(symbol: symbol, help: help, size: 9.5, width: 18, height: 21, action: action)
     }
 }
