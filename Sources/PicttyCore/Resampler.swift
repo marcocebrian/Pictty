@@ -28,9 +28,10 @@ public enum Resampler {
     /// darkens fine high-contrast detail (a black and white checkerboard shrinks to 128 instead
     /// of the 188 the eye expects); averaging light does not. Enlarging stays in the encoded
     /// space, which is what looks right there. Deep or HDR sources stay half float in their
-    /// own colour space with their content headroom; 8-bit sources come back 8-bit.
+    /// own colour space with their content headroom; 8-bit sources come back 8-bit, unless
+    /// `halfFloat` asks for half float throughout (printing: no rounding between the passes).
     public static func render(_ source: CGImage, from rect: CGRect, width: Int, height: Int,
-                              kernel: Kernel = .lanczos, linearLight: Bool = true) -> CGImage? {
+                              kernel: Kernel = .lanczos, linearLight: Bool = true, halfFloat: Bool = false) -> CGImage? {
         guard width > 0, height > 0, rect.width > 0, rect.height > 0 else { return nil }
         let bounds = CGRect(x: 0, y: 0, width: source.width, height: source.height)
         let sx = Double(width) / rect.width, sy = Double(height) / rect.height
@@ -41,7 +42,7 @@ public enum Resampler {
         let crop = rect.insetBy(dx: -pad, dy: -pad).integral.intersection(bounds)
         guard !crop.isNull, crop.width >= 1, crop.height >= 1, let cropped = source.cropping(to: crop) else { return nil }
 
-        let deep = source.bitsPerComponent > 8 || ImageDecoder.isHDR(source)
+        let deep = halfFloat || source.bitsPerComponent > 8 || ImageDecoder.isHDR(source)
         let linear = linearLight && (sx < 1 || sy < 1)
         let half = deep || linear
         guard var work = Self.format(for: source, deep: half, linearized: linear),

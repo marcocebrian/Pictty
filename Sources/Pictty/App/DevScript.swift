@@ -58,6 +58,7 @@ enum DevScript {
             }
         case "printfill": c.printSession?.settings.sizing = .fillPage
         case "printfit": c.printSession?.settings.sizing = .fitPage
+        case "printmax": c.printSession?.maximize()
         case "printupscale": c.printSession?.settings.upscale = (n.first ?? 1) != 0
         case "printcaption": c.printSession?.settings.caption = .details
         case "printmove":

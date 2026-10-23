@@ -117,6 +117,11 @@ final class PrintLayoutTests: XCTestCase {
         XCTAssertEqual(PrintQuality(ppi: 120, printed: PhotoSize(10, 15, .cm).points).rating, .soft)
         XCTAssertEqual(PrintQuality(ppi: 60, printed: PhotoSize(10, 15, .cm).points).rating, .pixelated)
         XCTAssertFalse(PrintQuality(ppi: 260, printed: PhotoSize(10, 15, .cm).points).upscaleRecommended)
+        // Upscaled from 120 to 300 ppi: better than 120, short of a true 300.
+        let up = PrintQuality.upscaled(ppi: 120, sent: 300, printed: PhotoSize(10, 15, .cm).points)
+        XCTAssertEqual(up.ppi, 180)
+        XCTAssertEqual(up.rating, .good)
+        XCTAssertEqual(PrintQuality.upscaled(ppi: 250, sent: 300, printed: PhotoSize(10, 15, .cm).points).ppi, 300)
     }
 
     func testResolutionSentToThePrinter() {
@@ -163,7 +168,38 @@ final class PrintRenderTests: XCTestCase {
         XCTAssertEqual(out.width, 750)
         XCTAssertEqual(out.height, 750)
         XCTAssertEqual(out.colorSpace?.name, CGColorSpace.displayP3)
-        XCTAssertEqual(out.bitsPerComponent, 8)
+        XCTAssertEqual(out.bitsPerComponent, 16, "enlarged in half float, sharpened at 16 bits")
+    }
+
+    /// The darkest and lightest red along the middle row, 0…1.
+    private func extremes(_ image: CGImage) -> (lo: Double, hi: Double) {
+        let w = image.width, h = image.height
+        var px = [Float](repeating: 0, count: w * h * 4)
+        let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 32, bytesPerRow: w * 16,
+                            space: CGColorSpace(name: CGColorSpace.extendedDisplayP3)!,
+                            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+                                | CGBitmapInfo.byteOrder32Little.rawValue)!
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let row = (0..<w).map { Double(px[(h / 2 * w + $0) * 4]) }
+        return (row.min()!, row.max()!)
+    }
+
+    func testEnlargingAHardEdgeLeavesNoHalo() throws {
+        // A grey that has room to ring both ways, against a darker grey.
+        let ctx = CGContext(data: nil, width: 40, height: 40, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpace(name: CGColorSpace.displayP3)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        ctx.setFillColor(CGColor(gray: 0.3, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 40, height: 40))
+        ctx.setFillColor(CGColor(gray: 0.7, alpha: 1)); ctx.fill(CGRect(x: 20, y: 0, width: 20, height: 40))
+        let edge = ctx.makeImage()!
+        let (lo, hi) = extremes(edge)
+        let region = CGRect(x: 0, y: 0, width: 40, height: 40)
+        let plain = try XCTUnwrap(Resampler.render(edge, from: region, width: 160, height: 160, halfFloat: true))
+        let held = try XCTUnwrap(PrintRender.enlarged(edge, from: region, width: 160, height: 160))
+        let p = extremes(plain), e = extremes(held)
+        XCTAssertGreaterThan(p.hi - hi, 0.02, "plain Lanczos overshoots the edge")
+        XCTAssertLessThan(e.hi - hi, (p.hi - hi) * 0.3)
+        XCTAssertGreaterThan(lo - e.lo, -0.01)
+        XCTAssertLessThan(lo - e.lo, (lo - p.lo) * 0.3 + 0.002)
     }
 
     func testWithoutASizeItIsTheCropAlone() throws {

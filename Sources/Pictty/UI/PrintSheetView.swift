@@ -118,7 +118,17 @@ final class PrintSession: ObservableObject {
         }
     }
 
+    /// The picture's own pixels on paper.
     var quality: PrintQuality { PrintQuality(ppi: layout.ppi, printed: layout.printedRect.size) }
+
+    /// The print as it comes out: with upscaling on, counted from what is sent.
+    var printQuality: PrintQuality {
+        guard upscaling else { return quality }
+        return .upscaled(ppi: layout.ppi, sent: sentPPI, printed: layout.printedRect.size)
+    }
+
+    /// True when upscaling is on and enlarges this print.
+    var upscaling: Bool { settings.upscale && sentPPI > layout.ppi + 0.5 }
 
     /// What Pictty sends to the printer, when it is not the picture's own pixels.
     var target: CGSize? {
@@ -205,6 +215,23 @@ final class PrintSession: ObservableObject {
         guard width > 0, height > 0 else { return }
         let k = min(1, Double(layout.paper.width) / width, Double(layout.paper.height) / height)
         settings.sizing = .custom(width: width * k, height: height * k)
+    }
+
+    /// The whole picture as large as this printer reaches on this paper, the paper turned
+    /// whichever way gives more, centred.
+    func maximize() {
+        let p = paper, pixels = picture.pixels
+        let area = { (landscape: Bool) -> CGFloat in
+            let sheet = PrintLayout.orient(p.size, landscape: landscape)
+            let box = PrintLayout.box(for: .fitPage, picture: pixels,
+                                      printable: PrintLayout.printable(p.printable, of: p.size, turned: sheet))
+            return box.width * box.height
+        }
+        let wide = area(true), tall = area(false)
+        let landscape = abs(wide - tall) < 1 ? pictureIsLandscape : wide > tall
+        settings.orientation = landscape == pictureIsLandscape ? .auto : landscape ? .landscape : .portrait
+        settings.sizing = .fitPage
+        center()
     }
 
     func useSharpestSize() {
@@ -317,7 +344,14 @@ private struct PaperPreview: View {
     @ObservedObject var session: PrintSession
     @State private var moveStart: (center: CGPoint, anchor: CGPoint, crop: Bool)?
     @State private var resizeStart: CGSize?
+    @State private var grab: Grab?
     @State private var hovering = false
+
+    /// What a drag took hold of, decided where it started: one gesture for the whole sheet, so
+    /// the corners and the picture never compete for it.
+    private enum Grab: Equatable {
+        case picture, corner(Int), nothing
+    }
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -342,7 +376,6 @@ private struct PaperPreview: View {
                     .frame(width: sheet.width, height: sheet.height)
                     .shadow(color: .black.opacity(0.28), radius: 14, y: 6)
                     .position(x: sheet.midX, y: sheet.midY)
-                    .onTapGesture { focused = true }
                 // What the printer cannot reach.
                 if !session.paper.borderless {
                     let p = map(layout.printable)
@@ -380,6 +413,20 @@ private struct PaperPreview: View {
                     .frame(width: geo.size.width - 40)
                     .position(x: geo.size.width / 2, y: geo.size.height - foot / 2 - 6)
             }
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in hover(phase, frame: frame) }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { drag in dragged(drag, frame: frame, k: k) }
+                    .onEnded { _ in
+                        grab = nil
+                        moveStart = nil
+                        resizeStart = nil
+                        withAnimation(.easeOut(duration: 0.2)) { session.guides = .init() }
+                    }
+            )
+            .onTapGesture(count: 2) { p in if frame.contains(p) { session.center() } }
+            .help(L("Drag to place it · ⌥-drag to choose what the crop keeps · double-click to centre"))
             .focusable()
             .focusEffectDisabled()
             .focused($focused)
@@ -416,22 +463,51 @@ private struct PaperPreview: View {
                                   style: StrokeStyle(lineWidth: 1, dash: session.layout.fill ? [] : [4, 3]))
             }
         }
-        .contentShape(Rectangle())
         .position(x: frame.midX, y: frame.midY)
-        .onHover { inside in
-            hovering = inside
-            if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
+        .allowsHitTesting(false)
+    }
+
+    private static let cornerReach: CGFloat = 11
+
+    private func corners(of frame: CGRect) -> [CGPoint] {
+        [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.minY),
+         CGPoint(x: frame.maxX, y: frame.maxY), CGPoint(x: frame.minX, y: frame.maxY)]
+    }
+
+    /// The corner within reach of `p`, the picture under it, or nothing.
+    private func target(at p: CGPoint, frame: CGRect) -> Grab {
+        let near = corners(of: frame).enumerated()
+            .map { (i: $0.offset, d: hypot($0.element.x - p.x, $0.element.y - p.y)) }
+            .min { $0.d < $1.d }
+        if let near, near.d <= Self.cornerReach { return .corner(near.i) }
+        return frame.contains(p) ? .picture : .nothing
+    }
+
+    private func dragged(_ drag: DragGesture.Value, frame: CGRect, k: CGFloat) {
+        if grab == nil { grab = target(at: drag.startLocation, frame: frame) }
+        switch grab {
+        case .picture: move(drag.translation, k: k)
+        case .corner(let i): resize(corner: i, by: drag.translation, k: k)
+        default: focused = true
         }
-        .gesture(
-            DragGesture(minimumDistance: 1)
-                .onChanged { drag in move(drag.translation, k: k) }
-                .onEnded { _ in
-                    moveStart = nil
-                    withAnimation(.easeOut(duration: 0.2)) { session.guides = .init() }
-                }
-        )
-        .onTapGesture(count: 2) { session.center() }
-        .help(L("Drag to place it · ⌥-drag to choose what the crop keeps · double-click to centre"))
+    }
+
+    private func hover(_ phase: HoverPhase, frame: CGRect) {
+        guard grab == nil else { return }
+        switch phase {
+        case .active(let p):
+            let t = target(at: p, frame: frame)
+            hovering = t != .nothing
+            switch t {
+            case .corner(let i):
+                NSCursor.frameResize(position: i % 2 == 0 ? .topLeft : .topRight, directions: .all).set()
+            case .picture: NSCursor.openHand.set()
+            default: NSCursor.arrow.set()
+            }
+        case .ended:
+            hovering = false
+            NSCursor.arrow.set()
+        }
     }
 
     private func move(_ t: CGSize, k: CGFloat) {
@@ -489,27 +565,15 @@ private struct PaperPreview: View {
 
     @ViewBuilder
     private func handles(frame: CGRect, k: CGFloat) -> some View {
-        let corners = [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.minY),
-                       CGPoint(x: frame.maxX, y: frame.maxY), CGPoint(x: frame.minX, y: frame.maxY)]
+        let corners = corners(of: frame)
         ForEach(0..<4, id: \.self) { i in
             Circle()
                 .fill(Color.white)
                 .overlay(Circle().strokeBorder(Color.accentColor, lineWidth: 1.5))
                 .frame(width: 11, height: 11)
                 .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
-                .frame(width: 22, height: 22)
-                .contentShape(Rectangle())
                 .position(corners[i])
-                .onHover { inside in
-                    if inside { (i % 2 == 0 ? NSCursor.frameResize(position: .topLeft, directions: .all)
-                                            : NSCursor.frameResize(position: .topRight, directions: .all)).push() }
-                    else { NSCursor.pop() }
-                }
-                .gesture(
-                    DragGesture(minimumDistance: 1)
-                        .onChanged { drag in resize(corner: i, by: drag.translation, k: k) }
-                        .onEnded { _ in resizeStart = nil }
-                )
+                .allowsHitTesting(false)
         }
     }
 
@@ -649,6 +713,9 @@ private struct PrintSettingsColumn: View {
             }
             HStack {
                 Button { session.center() } label: { Label("Centre on the page", systemImage: "align.horizontal.center") }
+                Button { session.maximize() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                    .help(L("Maximise area"))
+                    .accessibilityLabel(L("Maximise area"))
                 Spacer()
             }
             .controlSize(.small)
@@ -764,7 +831,7 @@ private struct QualityPanel: View {
     @ObservedObject var session: PrintSession
 
     var body: some View {
-        let q = session.quality
+        let q = session.printQuality
         let unit = session.settings.unit
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -772,10 +839,16 @@ private struct QualityPanel: View {
                 Text("Quality").font(.headline)
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("\(Int(q.ppi.rounded()))")
+                Text("\(Int((session.upscaling ? session.sentPPI : q.ppi).rounded()))")
                     .font(.system(size: 26, weight: .semibold, design: .rounded).monospacedDigit())
                     .contentTransition(.numericText())
                 Text("ppi").foregroundStyle(.secondary)
+                if session.upscaling {
+                    Text(L("upscaled from %ld", Int(session.quality.ppi.rounded())))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
                 Spacer()
                 Text(L(title(q.rating)))
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
@@ -804,6 +877,7 @@ private struct QualityPanel: View {
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.045)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
         .animation(.easeOut(duration: 0.2), value: q.rating)
+        .animation(.easeOut(duration: 0.2), value: session.upscaling)
     }
 
     @ViewBuilder
@@ -816,7 +890,7 @@ private struct QualityPanel: View {
                     Label(L("Upscaling recommended"), systemImage: "arrow.up.backward.and.arrow.down.forward.square.fill")
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(Color(hex: 0x4285F4))
-                    Text("The printer would enlarge these pixels itself, coarsely. Pictty can enlarge them first, to 300 ppi, with the Lanczos filter it draws with, then sharpen for the paper.")
+                    Text("The printer would enlarge these pixels itself, coarsely. Pictty can enlarge them first, to 300 ppi, with a fine Lanczos enlargement that keeps edges free of halos, then sharpen for the paper.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -848,8 +922,8 @@ private struct QualityPanel: View {
         case .excellent: "Excellent"
         case .veryGood: "Very good"
         case .good: "Good"
-        case .soft: "Soft"
-        case .pixelated: "Too few pixels"
+        case .soft: "Slightly blurry"
+        case .pixelated: "Low quality"
         }
     }
 
@@ -869,9 +943,9 @@ private struct QualityPanel: View {
                                      : L("%ld cm", Int((q.viewingDistance / 10).rounded()))
         return switch q.rating {
         case .excellent: L("As sharp as the eye can see from %@, where a print this size is looked at.", distance)
-        case .veryGood: L("Sharp from %@; held closer, the finest detail is a little soft.", distance)
-        case .good: L("Fine from a step further back than %@; up close it looks soft.", distance)
-        case .soft: L("Soft even from %@. A smaller print would be sharper.", distance)
+        case .veryGood: L("Sharp from %@; held closer, the finest detail is slightly blurry.", distance)
+        case .good: L("Fine from a step further back than %@; up close it looks slightly blurry.", distance)
+        case .soft: L("Slightly blurry even from %@. A smaller print would be sharper.", distance)
         case .pixelated: L("Too few pixels for this size: it will look blocky even from %@. Print it smaller.", distance)
         }
     }

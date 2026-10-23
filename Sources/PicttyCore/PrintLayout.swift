@@ -282,6 +282,16 @@ public struct PrintQuality: Equatable, Sendable {
     /// True when enlarging in Pictty before printing would give a better print than letting the
     /// printer do it.
     public var upscaleRecommended: Bool { ppi > 0 && ppi < Self.upscaleBelow }
+
+    /// The quality of a print sent at `sent` ppi made from `ppi` of the picture's own. Enlarging
+    /// makes no new detail, but a careful enlargement looks finer on paper than the printer's own:
+    /// counted as half as many pixels again, never more than were sent.
+    public static func upscaled(ppi: Double, sent: Double, printed: CGSize) -> PrintQuality {
+        PrintQuality(ppi: min(sent, ppi * upscaleGain), printed: printed)
+    }
+
+    /// How much finer an upscaled print looks than the picture's own pixels printed as they are.
+    public static let upscaleGain = 1.5
 }
 
 /// What Pictty sends to the printer: how many pixels across the printed part of the picture.
