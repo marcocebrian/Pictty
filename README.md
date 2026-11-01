@@ -12,13 +12,13 @@ Pictty always draws your picture with the best possible algorithm: the GPU while
 </p>
 
 <p align="center">
-  <a href="https://apps.apple.com/us/app/pictty/id6824167658?mt=12"><img src="https://www.noxdrop.com/img/badges/mac-app-store-black.svg" height="64" alt="Download on the Mac App Store"></a>
+  <a href="https://apps.apple.com/app/id6824167658?mt=12"><img src="https://www.noxdrop.com/img/badges/mac-app-store-black.svg" height="64" alt="Download on the Mac App Store"></a>
 </p>
 
-<p align="center"><b>Pictty is free and open source.</b> If it earns a place on your Mac, the Mac App Store version costs less than a coffee, and buying it supports its development. Thank you.<br>
-Prefer not to buy? <a href="https://www.noxdrop.com/pictty.html">Download it free from noxdrop.com</a>.</p>
+<p align="center"><b>Pictty is free and open source (GPL-3.0).</b> If it earns a place on your Mac, the Mac App Store version costs less than a coffee, and buying it supports its development. Thank you.<br>
+Prefer not to buy? <a href="https://www.noxdrop.com/pictty.html#download">Download it free from noxdrop.com</a>.</p>
 
-<p align="center">Free and open source (GPL-3.0) · macOS 15+ · Liquid Glass · <a href="https://www.noxdrop.com/pictty.html">noxdrop.com/pictty</a></p>
+<p align="center">macOS 15+ · Liquid Glass · <a href="https://www.noxdrop.com/pictty.html">noxdrop.com/pictty</a></p>
 
 ---
 
