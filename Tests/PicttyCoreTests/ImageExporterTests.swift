@@ -1,5 +1,6 @@
 import CoreGraphics
 import ImageIO
+import UniformTypeIdentifiers
 @testable import PicttyCore
 import XCTest
 
@@ -86,5 +87,39 @@ final class ImageExporterTests: XCTestCase {
             XCTAssertNoThrow(try ImageExporter.write(picture(), isHDR: false, original: nil, to: url, options: o), format.title)
             XCTAssertEqual(try properties(url)[kCGImagePropertyPixelWidth] as? Int, 300, format.title)
         }
+    }
+
+    /// A 10-bit HEIC edited and saved stays 10-bit: Save chose 16-bit or 8-bit only, and HEIC
+    /// has no 16-bit, so every edit of a camera's or phone's 10-bit HEIF came back 8-bit.
+    func testSavingKeepsADeepPicturesDepth() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let w = 1024, h = 64
+        var px = [UInt16](repeating: 65535, count: w * h * 4)
+        for y in 0..<h { for x in 0..<w { let v = UInt16((0.30 + 0.04 * Double(x) / Double(w)) * 65535); let i = (y * w + x) * 4; px[i] = v; px[i + 1] = v; px[i + 2] = v } }
+        let space = CGColorSpace(name: CGColorSpace.displayP3)!
+        let ctx = px.withUnsafeMutableBytes { CGContext(data: $0.baseAddress, width: w, height: h, bitsPerComponent: 16, bytesPerRow: w * 8, space: space,
+                                                        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder16Little.rawValue)! }
+        let deep = ctx.makeImage()!
+        let original = dir.appendingPathComponent("deep.heic")
+        let d = try XCTUnwrap(CGImageDestinationCreateWithURL(original as CFURL, UTType.heic.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(d, deep, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(d))
+        func depth(_ url: URL) -> Int? {
+            let src = CGImageSourceCreateWithURL(url as CFURL, nil)
+            return (src.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) } as? [CFString: Any])?[kCGImagePropertyDepth] as? Int
+        }
+        XCTAssertEqual(depth(original), 10)
+
+        XCTAssertEqual(ImageExporter.depthKeeping(original, format: .heic), .ten)
+        XCTAssertEqual(ImageExporter.depthKeeping(original, format: .tiff), .sixteen)
+        XCTAssertEqual(ImageExporter.depthKeeping(original, format: .jpeg), .eight)
+        var o = ExportOptions()
+        o.format = .heic
+        o.depth = ImageExporter.depthKeeping(original, format: .heic)
+        let saved = dir.appendingPathComponent("saved.heic")
+        try ImageExporter.write(deep, isHDR: false, original: original, to: saved, options: o)
+        XCTAssertEqual(depth(saved), 10, "saved at its own depth")
     }
 }

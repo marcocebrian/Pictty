@@ -185,6 +185,17 @@ public enum ImageExporter {
     /// `original` when the options keep it; the orientation tag is reset, because the pixels are
     /// upright now. Written beside the destination first and moved over it, so a failure never
     /// leaves half a file where a picture was.
+    /// The depth that keeps `original`'s own, as near as `format` can: a 10-bit HEIF or a 16-bit
+    /// TIFF saved again is not cut to 8 bits. 16 where the format has it, else 10, else 8.
+    public static func depthKeeping(_ original: URL, format: ExportFormat) -> ExportDepth {
+        let src = CGImageSourceCreateWithURL(original as CFURL, nil)
+        let props = src.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) } as? [CFString: Any]
+        guard let bits = props?[kCGImagePropertyDepth] as? Int, bits > 8 else { return .eight }
+        if format.depths.contains(.sixteen) { return .sixteen }
+        if format.depths.contains(.ten) { return .ten }
+        return .eight
+    }
+
     public static func write(_ image: CGImage, isHDR: Bool, original: URL?, to url: URL, options o: ExportOptions) throws {
         var picture = image
         if let edge = o.longEdge, edge > 0, max(image.width, image.height) > edge {

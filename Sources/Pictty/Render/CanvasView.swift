@@ -11,7 +11,8 @@ protocol CanvasDelegate: AnyObject {
     func canvasNeedsFull(_ url: URL)
     /// The picture is larger than a GPU texture and the zoom shows more than the capped decode.
     func canvasNeedsDetail(_ url: URL)
-    func canvasToggleFullScreen()
+    /// A double click: full screen from a window; in full screen, 100 % and back to fit.
+    func canvasDoubleClicked(pane: Int, at point: CGPoint)
     func canvasSmartZoom(pane: Int, at point: CGPoint)
     func canvasDidResize()
     func canvasRefined(pane: Int)
@@ -1023,8 +1024,8 @@ final class CanvasView: NSView {
             delegate?.canvasPickedColour(picked.hex)
             return
         }
-        if e.clickCount == 2 { delegate?.canvasToggleFullScreen(); return }
         let point = convert(e.locationInWindow, from: nil)
+        if e.clickCount == 2 { delegate?.canvasDoubleClicked(pane: paneIndex(at: point), at: point); return }
         // Wipe: grab the line or its grip, or click anywhere on a picture that is not zoomed
         // in for panning, and the split follows the pointer.
         if isOverlay, compareLayout == .wipe {

@@ -20,6 +20,8 @@ Prefer not to buy? <a href="https://www.noxdrop.com/pictty.html#download">Downlo
 
 <p align="center">macOS 15+ · Liquid Glass · <a href="https://www.noxdrop.com/pictty.html">noxdrop.com/pictty</a></p>
 
+<p align="center"><b>New in 1.5:</b> an in-house hybrid neural RAW engine. Also: sharper Sharpening, lens correction for RAWs, HDR highlights that stay smooth while you edit, 10- and 12-bit HEIF kept on save, and double-click for 100 % in full screen.</p>
+
 ---
 
 ## Nothing between you and the picture
@@ -74,7 +76,7 @@ Crop with ratios and rounded corners, flip to the original with Y, and save over
 - **Linear-light shrinking**: reductions average **real light**, not the stored numbers, so fine detail keeps its brightness.
 - **Clean enlarging**: up to 300 % with Lanczos; beyond that, smooth GPU filtering.
 - **Full refresh rate in motion**: the **GPU** moves, zooms and rotates the picture through Core Animation, on whole device pixels.
-- **Real RAW**: Apple's RAW engine develops every camera file; the camera's embedded preview shows at once.
+- **Real RAW**: Pictty's hybrid neural RAW engine develops camera files from the sensor itself, with lens correction; the camera's embedded preview shows at once.
 - **True HDR**: gain maps, PQ and HLG with extended dynamic range and the display's live headroom.
 - **Giant pictures**: **every pixel** past the GPU's 16,384-pixel texture limit, at 100 % and beyond.
 - **Huge folders, instantly**: a folder of 2,000+ photos is ready in milliseconds, and thumbnails load in parallel without weighing your Mac down.
@@ -119,7 +121,9 @@ Transparency is checked against the file: some decoders return RGBA for opaque f
 
 ### RAW
 
-A camera RAW opens with the preview the camera stored in it, so it appears **at once**. A floating RAW badge and the orb show while **Apple's RAW engine** develops the real picture at screen size; it replaces the preview when it is ready, and the full develop follows on zoom.
+A camera RAW opens with the preview the camera stored in it, so it appears **at once**. A floating RAW badge and the orb show while Apple's RAW engine develops it at screen size; then Pictty's own **hybrid neural RAW engine** develops every pixel in the background and takes its place.
+
+The hybrid engine reads the sensor's mosaic with **LibRaw** and demosaics and denoises it in one pass with a **neural network** on the GPU, before any demosaic has smeared the noise: fine texture and clean shadows. In the brightest areas, where the sensor clipped, it takes the light from Apple's develop, which reconstructs highlights well, and keeps its own detail on top. **Lens correction** (distortion, vignetting and colour fringing) is measured on each picture from Apple's corrected and uncorrected develops, so it follows Apple's lens profiles for any camera. RAWs the network cannot take (Fujifilm X-Trans, linear DNGs such as ProRAW) stay with Apple's engine. The Adjust panel says which engine developed the picture.
 
 ### HDR
 
@@ -166,10 +170,10 @@ Several sliders work **by regions**. An edge-aware map of the picture's brightne
 
 **Detail**
 
-- **Texture**, **Clarity** and **Sharpening** come from one Laplacian pyramid of the brightness: sharpening is the finest levels, at the radius the picture's own softness calls for (its edges are measured when it loads); texture the middle levels; clarity the coarse ones, in the midtones. A change no larger than the picture's noise is grain and is left alone; one as large as an edge is left alone too, which keeps halos away. Sharpening and texture never take a pixel more than a hair past its neighbours, so nothing overshoots or rings.
+- **Texture** and **Clarity** come from one Laplacian pyramid of the brightness: texture the middle levels, clarity the coarse ones, in the midtones. **Sharpening** is an unsharp mask at the radius the picture's own softness calls for (its edges are measured when it loads), strong enough to matter on fine detail and edges alike. A change no larger than the picture's noise is grain and is left alone. Sharpening and texture never take a pixel more than a hair past its neighbours, so nothing overshoots or rings.
 - **Noise reduction** is **SCUNet** (Zhang et al.), a neural network trained on realistic camera noise and JPEG compression, run by Core ML on the GPU in overlapping 512-pixel tiles. Nothing leaves the Mac. Pictty first measures how the noise changes as the picture shrinks: pixel-sized noise is taken out at full size; grain of about a pixel at half size and then full; coarser grain at half size only, where it is pixel-sized again, and only what the network removed there comes back up, so the picture's own detail is not smoothed. Along the Amount slider, colour noise goes twice as fast as brightness grain. **Auto** sets the amount from the measured noise and leaves a clean picture alone. The network runs once per picture and resolution; after that the slider is instant.
 
-**Camera RAWs** develop in Apple's RAW engine, where the sensor's headroom is: exposure, white balance and Apple's noise reduction in the develop. Everything else, from highlights, shadows, contrast and brightness to dehaze, detail, vibrance, saturation and colour grading, is Pictty's engine on the developed picture, as for any other picture.
+**Camera RAWs** develop in Pictty's hybrid RAW engine ([above](#raw)) into linear light with the sensor's highlights kept past white, and every slider runs on that develop, as for any other picture.
 
 **Crop** (C) puts a frame on the whole picture: corners and edges resize, the inside moves, thirds show while it moves. Ratios come as common, social (Instagram, Stories and Reels, YouTube, X, Facebook, LinkedIn, Pinterest), screens (iPhone, iPad, Mac, Apple Watch) and print (A-series, Letter, 4 × 6, 5 × 7, 8 × 10); X turns the ratio on its side and R rounds the corners, all four or one at a time. The crop is kept in the file's own coordinates, so turning the picture afterwards turns the crop with it.
 

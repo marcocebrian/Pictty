@@ -1684,6 +1684,20 @@ extension ViewerWindowController: CanvasDelegate {
             }
         }
     }
+    func canvasDoubleClicked(pane: Int, at point: CGPoint) {
+        guard window?.styleMask.contains(.fullScreen) == true else { return canvasToggleFullScreen() }
+        guard canvas.shown(pane: pane) != nil else { return }
+        if abs(canvas.viewport(pane: pane).scale - 1) < 0.001 {
+            // Back to the whole picture on the screen, whatever the zoom mode.
+            override = prefs.zoomMode == .fitWindow ? nil : canvas.fitScale(pane: 0)
+            recentre()
+            applyZoom(animated: true)
+        } else {
+            canvas.zoom(pane: pane, to: 1, about: point, animated: true)
+            userZoomed()
+        }
+    }
+
     func canvasToggleFullScreen() { window?.toggleFullScreen(nil) }
 
     func canvasSmartZoom(pane: Int, at point: CGPoint) { smartZoom(pane: pane, at: point) }

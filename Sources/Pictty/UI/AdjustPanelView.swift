@@ -205,11 +205,12 @@ struct AdjustPanelView: View {
                     }
                 }
                 SliderRow(control: .denoise, adjustments: a, showsAlgorithms: false, change: change)
-                Text(model.lightEngine == .appleRAW ? "Apple's RAW noise reduction, from the camera's own default up."
-                                                    : "SCUNet, a neural network for real camera noise, grain and JPEG, on this Mac's GPU. Nothing leaves it.")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.white.opacity(0.42))
-                    .fixedSize(horizontal: false, vertical: true)
+                if model.lightEngine != .raw {
+                    Text("SCUNet, a neural network for real camera noise, grain and JPEG, on this Mac's GPU. Nothing leaves it.")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.white.opacity(0.42))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .animation(.easeOut(duration: 0.18), value: model.denoising)
@@ -218,10 +219,11 @@ struct AdjustPanelView: View {
     private var engineFooter: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Image(systemName: model.lightEngine == .appleRAW ? "camera.aperture" : "cpu")
+                Image(systemName: model.lightEngine == .raw ? "camera.aperture" : "cpu")
                     .font(.system(size: 9.5, weight: .semibold))
                     .foregroundStyle(Color.accentColor.opacity(0.85))
-                Text(model.lightEngine == .appleRAW ? "APPLE RAW ENGINE" : "PICTTY ENGINE")
+                Text(model.lightEngine != .raw ? "PICTTY ENGINE"
+                     : model.rawByApple ? "DEVELOPMENT · APPLE RAW ENGINE" : "DEVELOPMENT · INTERNAL RAW ENGINE")
                     .font(.system(size: 9.5, weight: .heavy, design: .rounded))
                     .tracking(0.8)
                     .foregroundStyle(.white.opacity(0.66))
@@ -232,12 +234,12 @@ struct AdjustPanelView: View {
                         .foregroundStyle(.white.opacity(0.5))
                 }
             }
-            Text(model.lightEngine == .appleRAW
-                 ? "Camera RAWs develop in Apple's engine for now: exposure and white balance in the develop, then Core Image's own tone filters."
-                 : "Linear light in half float on the GPU.")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.white.opacity(0.5))
-                .fixedSize(horizontal: false, vertical: true)
+            if model.lightEngine != .raw {
+                Text("Linear light in half float on the GPU.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 5) {
                 KeyCap(text: "⌘S")
                 Text("Save").foregroundStyle(.white.opacity(0.5))

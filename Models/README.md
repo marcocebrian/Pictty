@@ -14,3 +14,12 @@ worse than before.
 Converted to Core ML for 512 × 512 tiles, weights quantised to 8 bits (20 MB) by
 `make-denoise-model.py`, which says how to rebuild it and why the attention is rewritten.
 `build.sh` compiles it into the app. Measured on an M5 Pro: about 100 ms a tile on the GPU.
+
+`SensorNetwork.mlpackage` is how Pictty develops camera RAWs: a learned demosaic and denoise on the
+sensor's mosaic itself, read by LibRaw (`Sources/LibRaw`), before any demosaic has smeared the noise.
+It develops 24 megapixels in 1.3 s. Converted to Core ML for 608 × 608 packed tiles in half precision
+(9.7 MB) by `make-sensor-network.py`. SCUNet stays for every other picture, and for RAWs the network
+cannot take (Fujifilm X-Trans, linear DNGs such as Apple ProRAW).
+
+Credit: the network is by Jess Olmstead (https://github.com/jessolmstead/greycard), GPL-3.0-or-later;
+its licence is `SensorNetwork-LICENSE`, shipped in the app.

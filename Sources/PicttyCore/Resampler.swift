@@ -132,7 +132,20 @@ public enum Resampler {
 
     /// Hands the buffer to the image without a copy when vImage accepts the format, else copies.
     /// Either way `buffer` is owned by the result (or freed) afterwards.
+    /// Half float is wrapped by hand: vImage makes it a 16-bit integer image, which cuts everything
+    /// past white (an HDR picture's highlights) to white.
     private static func makeImage(_ buffer: inout vImage_Buffer, format: inout vImage_CGImageFormat) -> CGImage? {
+        if format.bitmapInfo.contains(.floatComponents) {
+            let b = buffer
+            let provider = CGDataProvider(dataInfo: nil, data: b.data, size: b.rowBytes * Int(b.height)) { _, data, _ in
+                free(UnsafeMutableRawPointer(mutating: data))
+            }
+            guard let provider, let space = format.colorSpace?.takeUnretainedValue() else { buffer.free(); return nil }
+            return CGImage(width: Int(b.width), height: Int(b.height), bitsPerComponent: Int(format.bitsPerComponent),
+                           bitsPerPixel: Int(format.bitsPerPixel), bytesPerRow: b.rowBytes, space: space,
+                           bitmapInfo: format.bitmapInfo, provider: provider, decode: nil, shouldInterpolate: true,
+                           intent: .defaultIntent)
+        }
         var error = kvImageNoError
         if let image = vImageCreateCGImageFromBuffer(&buffer, &format, nil, nil, vImage_Flags(kvImageNoAllocate), &error) {
             return image.takeRetainedValue()

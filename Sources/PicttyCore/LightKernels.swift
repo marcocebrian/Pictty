@@ -57,6 +57,15 @@ struct Params {
     /// Highlights lowered: where the curve pulls hardest (the picture's highlights), how hard, and
     /// how fast the pull falls away towards white.
     float hlPeak, hlStrength, hlFall;
+    /// 1 when the denoised picture was clipped to 0…1: the change is taken within that range only.
+    int denoiseClip;
+    /// How far the picture's light goes past white in its brightest channel, as a multiple of white
+    /// (1 for most pictures; a RAW's develop holds more): the shoulders land this on white.
+    float peak;
+    /// Sharpening, 0…1, for the finish: how far past its neighbours a sharpened edge may go.
+    float sharpen;
+    float sharpSigma;
+    float sharpAmount;
 };
 
 constant float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
@@ -77,14 +86,40 @@ inline float3 enc3(float3 c) { return float3(enc(c.r), enc(c.g), enc(c.b)); }
 inline float3 dec3(float3 c) { return float3(dec(c.r), dec(c.g), dec(c.b)); }
 
 /// Identity up to a knee, then a smooth shoulder that lands the old white (`X`, > 1) on 1.
-/// Continuous in value and slope at the knee; the knee drops from 1 towards 0.5 as X grows.
+/// Continuous in value and slope at the knee; the knee drops from 1 as X grows, but not below 0.7 of
+/// white, so a long shoulder does not squeeze the whole upper half of the picture. Past
+/// the knee it is Reinhard's extended curve on what lies above it, which still rises where it
+/// reaches 1 (a curve flat there merged the brightest tones of a lamp into one).
 inline float rolloff(float x, float X) {
     if (X <= 1.0001) return x;
-    float k = 1.0 - 0.5 * (1.0 - 1.0 / X);
+    float k = max(1.0 - 0.5 * (1.0 - 1.0 / X), 0.7);
     if (x <= k) return x;
-    float t = min((x - k) / (X - k), 1.0);
-    float p = (X - k) / (1.0 - k);
-    return k + (1.0 - k) * (1.0 - pow(1.0 - t, p));
+    float u = (min(x, X) - k) / (1.0 - k), U = (X - k) / (1.0 - k);
+    return k + (1.0 - k) * u * (1.0 + u / (U * U)) / (1.0 + u);
+}
+
+/// Light rolled off into white on a shoulder, `X` (> 1) the light that lands on white. The shoulder
+/// is taken on each pixel's brightest channel and the three are scaled together, so a colour keeps
+/// its hue and its strength as it is compressed: on the luminance, a red neon's red went far past
+/// white before its luminance did, and coming back it had to be greyed to fit, which turned it pink
+/// and every bright light dull. Where the compression is strong the light fades towards white, as
+/// film does with what it can barely hold: in full (`fade` 1) when only the exposure is raised, a
+/// sky pushed three stops goes pale, and hardly at all when Highlights is lowered (`highlightFade`).
+inline float3 shoulder(float3 rgb, float X, float white, float fade) {
+    float n = max(rgb.r, max(rgb.g, rgb.b)) / white;
+    if (n <= 0.0) return rgb;
+    float n1 = rolloff(n, X);
+    rgb *= n1 / n;
+    float squeeze = clamp(1.0 - n1 / n, 0.0, 1.0);
+    float3 grey = float3(dot(rgb, lumaWeights));
+    return mix(rgb, grey, fade * sqrt(squeeze));
+}
+
+/// How much the shoulder fades compressed light towards white: in full, unless Highlights is
+/// lowered, which asks for the colour of the bright light back (a neon, a lamp's glow); at −1 a
+/// tenth of it.
+inline float highlightFade(constant Params& p) {
+    return p.highlights < 0.0 ? 1.0 - 0.9 * p.highlights * p.highlights : 1.0;
 }
 
 /// Highlights: −1 pulls the bright end down to show what is in it, +1 lifts it towards white.
@@ -262,7 +297,8 @@ kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
     // Noise reduction first, before anything else is done: the denoised picture mixed in, its
     // brightness by the amount and its colour twice as fast, since colour noise is never wanted.
     if (p.hasDenoised && p.denoise > 0.0) {
-        float3 change = denoised.read(gid).rgb - c.rgb;
+        float3 d = denoised.read(gid).rgb;
+        float3 change = p.denoiseClip ? clamp(d, 0.0, c.a) - clamp(c.rgb, 0.0, c.a) : d - c.rgb;
         float y = dot(change, lumaWeights);
         c.rgb += y * p.denoise + (change - y) * min(1.0, 2.0 * p.denoise);
     }
@@ -273,7 +309,14 @@ kernel void prepare(texture2d<float, access::read> src [[texture(0)]],
                      dot(float3(p.wb6, p.wb7, p.wb8), rgb));
     }
     // Exposure lowered multiplies the light; raised, it is its own pass by regions, after this one.
+    // Light past white (a RAW's) rolls off into white here when there is no such pass, keeping its
+    // colour: a neon or a lamp that was that bright stays the colour it was (faded towards white, the
+    // OPEN sign's red-orange tubes came out white), as Lightroom has them.
     if (p.exposure < 0.0) rgb *= exp2(p.exposure);
+    if (p.exposure <= 0.0) {
+        float X = p.peak * exp2(min(p.exposure, 0.0));
+        if (X > 1.0001) rgb = shoulder(rgb, X, p.white, 0.0);
+    }
     lit.write(float4(rgb, c.a), gid);
     luma.write(float4(enc(dot(rgb, lumaWeights))), gid);
 }
@@ -308,31 +351,31 @@ kernel void localExposure(texture2d<float, access::read> lit [[texture(0)]],
     float l = luma.read(gid).r;
     constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
     float2 ab = guided.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
-    float base = max(dec(clamp(ab.x * l + ab.y, 0.0, p.lumaWhite)) / p.white, 1e-5);
+    // A region's light as it is, past white too: a lamp's glow is as bright as it was, so with
+    // Highlights lowered it keeps that light and its tones rather than taking the exposure.
+    float base = max(dec(clamp(ab.x * l + ab.y, 0.0, enc(p.peak * p.white))) / p.white, 1e-5);
     float stops = p.exposure * (1.0 - 0.5 * litShare(base));
     if (p.highlights < 0.0 && stops > 0.0) {
-        // Where the region would land past 0.6 of white (where the shoulder bites), it is
-        // compressed into the rest of the way to white instead, and never below where it was. Both
-        // rise with the region, so a brighter region always stays brighter: scaling the stops by
-        // how far a region was pushed turned a slightly brighter one darker than its neighbour.
+        // Where the region would land past 0.6 of white (where the shoulder bites), it is placed on
+        // a knee instead, by as much as Highlights is lowered (as its square): at half the slope from
+        // 0.6, as it always was (what gives a pale sky its clouds back), and towards 0.85 of white:
+        // the region's own light, brought back from the picture as it came, with room above it for
+        // its detail. A region already past the knee before the exposure (a lamp's glow, past white)
+        // comes down onto it. The knee rises with the region, so a brighter region always stays
+        // brighter: scaling the stops by how far a region was pushed turned a slightly brighter one
+        // darker than its neighbour.
         float landed = base * exp2(stops);
-        float knee = landed < 0.6 ? landed : 0.6 + 0.4 * (1.0 - exp(-0.5 * (landed - 0.6) / 0.4));
-        float kept = mix(landed, max(base, knee), p.highlights * p.highlights);
-        stops = log2(max(kept, base) / base);
+        // In stops past 0.6: each one becomes 0.4 of a stop, eased in over about half a stop, so
+        // the knee has no corner and never goes flat. A knee that levelled off (at 0.85) put every
+        // bright region on the same plateau, and the edge-aware map drew a hard line around it.
+        float over = log2(max(landed, 1e-6) / 0.6);
+        const float g = 0.4, ease = 0.6;
+        float knee = over <= 0.0 ? landed : 0.6 * exp2(g * over + (1.0 - g) * ease * (1.0 - exp(-over / ease)));
+        stops = log2(mix(landed, knee, p.highlights * p.highlights) / base);
     }
     float gain = exp2(stops);
-    float3 rgb = c.rgb * gain;
-    float y = dot(rgb, lumaWeights) / p.white;
-    if (y > 0.0) {
-        float y1 = rolloff(y, gain);
-        rgb *= y1 / y;
-        float3 grey = float3(y1 * p.white);
-        rgb = mix(rgb, grey, clamp(1.0 - y1 / y, 0.0, 1.0));
-        // Still past white in a channel (a saturated colour near white): towards grey, keeping the
-        // luminance, until it fits.
-        float m = max(rgb.r, max(rgb.g, rgb.b));
-        if (m > p.white) rgb = mix(grey, rgb, (p.white - grey.r) / max(m - grey.r, 1e-6));
-    }
+    // The picture's brightest light, raised by this pixel's gain, lands on white.
+    float3 rgb = shoulder(c.rgb * gain, gain * p.peak, p.white, highlightFade(p));
     litOut.write(float4(rgb, c.a), gid);
     lumaOut.write(float4(enc(dot(rgb, lumaWeights))), gid);
 }
@@ -614,9 +657,13 @@ kernel void highlightChange(texture2d<float, access::read> luma [[texture(0)]],
 
 /// One level of detail: this level's band of the luminance (the level minus the coarser one),
 /// boosted by what the sliders ask for, but only where it is detail. A band no larger than the
-/// picture's noise at this scale is grain and is left alone; a band as large as an edge is left
-/// alone too, which is what keeps halos away; the deepest shadows, where noise lives, get less.
-/// Negative texture and clarity soften instead, without guards. Writes the change only.
+/// picture's noise at this scale is grain and is left alone; for texture and clarity a band as large
+/// as an edge is left alone too, which is what keeps their halos away; the deepest shadows, where
+/// noise lives, get less. Sharpening is for edges: it takes the moderate ones, but not the strongest
+/// (a lamp against the night, bright lettering on black), which would show a halo, and its halos are
+/// kept away by the finish, which holds fine detail within each pixel's neighbours; guarded like
+/// texture, it found nothing to do in a night street, where everything sharp is an edge or dark. Negative texture and clarity soften instead, without
+/// guards. Writes the change only.
 kernel void detailBand(texture2d<float, access::read> level [[texture(0)]],
                        texture2d<float, access::sample> coarser [[texture(1)]],
                        texture2d<float, access::write> out [[texture(2)]],
@@ -636,10 +683,37 @@ kernel void detailBand(texture2d<float, access::read> level [[texture(0)]],
     float notEdge = 1.0 - smoothstep(p.edgeLow, p.edgeHigh, a);
     float lit = smoothstep(0.02, 0.12, base);
     float midtones = 1.0 - (2.0 * base - 1.0) * (2.0 * base - 1.0);
-    float boost = (max(p.detailS, 0.0) + max(p.detailT, 0.0)) * aboveNoise * notEdge * lit
+    float notHugeEdge = 1.0 - smoothstep(0.25, 0.45, a);
+    float boost = max(p.detailS, 0.0) * aboveNoise * notHugeEdge * smoothstep(0.0, 0.04, base)
+                + max(p.detailT, 0.0) * aboveNoise * notEdge * lit
                 + max(p.detailC, 0.0) * midtones * aboveNoise * notEdge;
     float soften = max(min(p.detailT, 0.0) + min(p.detailC, 0.0) * midtones, -1.0);
     out.write(float4((boost + soften) * c), gid);
+}
+
+/// Sharpening: the brightness less its Gaussian blur at `sharpSigma` pixels (an unsharp mask), by
+/// `sharpAmount`, added to texture's fine detail (`fineIn`). What is no larger than about twice the
+/// picture's noise is grain and is left out, fading in up to four times it.
+kernel void sharpenMask(texture2d<float, access::read> luma [[texture(0)]],
+                        texture2d<float, access::read> fineIn [[texture(1)]],
+                        texture2d<float, access::write> out [[texture(2)]],
+                        constant Params& p [[buffer(0)]],
+                        uint2 gid [[thread_position_in_grid]]) {
+    uint2 size = uint2(out.get_width(), out.get_height());
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    float l = luma.read(gid).r;
+    float k = 1.0 / (2.0 * p.sharpSigma * p.sharpSigma), sum = 0.0, wsum = 0.0;
+    for (int j = -3; j <= 3; j++) {
+        for (int i = -3; i <= 3; i++) {
+            uint2 q = uint2(clamp(int(gid.x) + i, 0, int(size.x) - 1), clamp(int(gid.y) + j, 0, int(size.y) - 1));
+            float wt = exp(-float(i * i + j * j) * k);
+            sum += wt * luma.read(q).r; wsum += wt;
+        }
+    }
+    float d = l - sum / wsum;
+    float a = fabs(d) / p.lumaWhite;
+    float notGrain = smoothstep(2.0 * p.noise, 4.0 * p.noise + 1e-4, a);
+    out.write(float4(fineIn.read(gid).r + p.sharpAmount * notGrain * d), gid);
 }
 
 // MARK: - Guided filter (He, Sun and Tang), on a reduced copy of the luminance
@@ -712,6 +786,7 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
     // Highlights: the change the local Laplacian made on its reduced copy, as a local linear model
     // of the brightness, evaluated here at full size.
     float highlightChange = 0.0;
+    float fineChange = 0.0;
     if (p.localPaths & 2) {
         constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
         float2 ab = laplacian.sample(s, (float2(gid) + 0.5) / float2(size)).xy;
@@ -728,7 +803,9 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
     }
     if (p.localPaths & 4) {
         // Fine detail (sharpening, texture) never takes a pixel past its neighbours, plus a hair:
-        // no overshoot, no ringing halo. Clarity works at a larger scale and is edge-stopped instead.
+        // no ringing halo. Sharpening may go past them a little more, by up to 8 % of the edge's
+        // own height at 100: a slight overshoot along the edge reads as crisp, and held to the
+        // 3 × 3 it cannot spread. Clarity works at a larger scale and is edge-stopped instead.
         float lo = l0, hi = l0;
         for (int j = -1; j <= 1; j++) {
             for (int i = -1; i <= 1; i++) {
@@ -737,11 +814,20 @@ kernel void finish(texture2d<float, access::read> lit [[texture(0)]],
                 lo = min(lo, v); hi = max(hi, v);
             }
         }
-        float hair = 0.015 * lw;
-        float fine = clamp(detailFine.read(gid).r, lo - l0 - hair, hi - l0 + hair);
-        l1 += fine + detailCoarse.read(gid).r;
+        float hair = 0.015 * lw + 0.08 * p.sharpen * (hi - lo);
+        fineChange = clamp(detailFine.read(gid).r, lo - l0 - hair, hi - l0 + hair);
+        l1 += detailCoarse.read(gid).r;
     }
     if (l1 != l0) rgb = withLuminance(rgb, dec(l0), dec(l1));
+    if (fineChange != 0.0) {
+        // Fine detail goes onto the colour as a ratio of light, held to ±30 %, and not at all where
+        // there is next to no light: a deep blue neon, past what sRGB holds, has hardly any (or
+        // less than none), and divided by it the change sent pixels to black and its grain to
+        // green and yellow specks, an outline around every bright light.
+        float y0 = dec(l1), y1 = dec(l1 + fineChange);
+        if (y0 > 1e-3) rgb *= clamp(y1 / y0, 0.7, 1.3);
+        l1 += fineChange;
+    }
     if ((p.localPaths & 2) && p.highlights < 0.0 && l0 > 0.0) {
         // A highlight brought down keeps its colour, as a sky does under a darker light: its
         // chroma rises a little with how much it was darkened, so the sky does not go grey. Only

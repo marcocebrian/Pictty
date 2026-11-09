@@ -218,4 +218,21 @@ final class AlphaTests: XCTestCase {
         XCTAssertTrue(ImageDecoder.isOpaque(try image(clearPixel: false)))
         XCTAssertFalse(ImageDecoder.isOpaque(try image(clearPixel: true)))
     }
+
+    /// An HDR edit's light past white survives the settled view, shrunk or enlarged: it was cut to
+    /// white, and zoom to fit showed blown highlights 100 % did not.
+    func testLightPastWhiteSurvivesResampling() throws {
+        let w = 64, h = 64
+        var px = [Float16](repeating: 0, count: w * h * 4)
+        for i in 0..<(w * h) { px[i * 4] = 3; px[i * 4 + 1] = 2; px[i * 4 + 2] = 0.5; px[i * 4 + 3] = 1 }
+        let img = try XCTUnwrap(LookMatch.image(px, w, h))
+        for size in [32, 100] {
+            let out = try XCTUnwrap(Resampler.render(img, from: CGRect(x: 0, y: 0, width: w, height: h), width: size, height: size))
+            let o = try XCTUnwrap(LookMatch.halfFloats(out))
+            let c = (size / 2 * size + size / 2) * 4
+            XCTAssertEqual(Float(o[c]), 3, accuracy: 0.01, "size \(size)")
+            XCTAssertEqual(Float(o[c + 1]), 2, accuracy: 0.01, "size \(size)")
+            XCTAssertEqual(Float(o[c + 2]), 0.5, accuracy: 0.01, "size \(size)")
+        }
+    }
 }

@@ -35,16 +35,26 @@ public final class LightEngine: @unchecked Sendable {
         public let chroma: Float
         /// Where its highlights sit: the 90th percentile of its encoded luminance above 0.6.
         public let highlights: Float
+        /// How far its light goes past white in its brightest channel, as a multiple of white: 1 for
+        /// most pictures, more for a RAW's develop. Where the brightest thousandth of the picture
+        /// begins: a neon's tubes or a bulb may go past it and clip, rather than set a shoulder so long
+        /// that every other light in the picture is squeezed into it and dulled.
+        public let peak: Float
         /// The light of its haze, linear, on a 0…1 scale of `white`.
         public let airlight: SIMD3<Float>
         /// The same picture through the denoiser, once it has been.
         fileprivate(set) var denoised: MTLTexture?
+        /// Set when the denoiser saw this picture clipped to 0…1 in linear sRGB (a RAW's unclipped
+        /// develop): only what lies within that range is mixed in, and the light past white and the
+        /// colours past sRGB stay as they were instead of being pulled back to its edges.
+        public var denoiseClipsToUnit = false
         fileprivate var scratch: [String: MTLTexture] = [:]
 
         public var hasDenoised: Bool { denoised != nil }
 
         init(width: Int, height: Int, white: Float, isHDR: Bool, input: MTLTexture, noise: Float, blur: Float, key: Float,
-             chroma: Float, highlights: Float, airlight: SIMD3<Float>) {
+             chroma: Float, highlights: Float, airlight: SIMD3<Float>, peak: Float = 1) {
+            self.peak = peak
             self.width = width; self.height = height; self.white = white; self.isHDR = isHDR; self.input = input
             self.noise = noise; self.blur = blur; self.key = key; self.chroma = chroma
             self.highlights = highlights
@@ -64,7 +74,7 @@ public final class LightEngine: @unchecked Sendable {
         self.device = device
         self.queue = queue
         for name in ["prepare", "downsample", "remap", "accumulate", "collapse", "guidedMoments", "boxHorizontal",
-                     "boxVertical", "guidedCoefficients", "detailBand", "localExposure", "colourMoments", "colourCoefficients", "hazeDark",
+                     "boxVertical", "guidedCoefficients", "detailBand", "sharpenMask", "localExposure", "colourMoments", "colourCoefficients", "hazeDark",
                      "hazeLocal", "hazeMask", "hazeMoments", "highlightChange", "hazeCoefficients", "dehaze", "finish"] {
             guard let f = library.makeFunction(name: name),
                   let state = try? device.makeComputePipelineState(function: f) else { return nil }
@@ -99,7 +109,31 @@ public final class LightEngine: @unchecked Sendable {
         return Source(width: w, height: h, white: hdr ? headroom : 1, isHDR: hdr, input: texture,
                       noise: measured.noise, blur: measured.blur, key: medians.luma, chroma: medians.chroma, highlights: medians.highlights,
                       airlight: PictureMeasure.airlight(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
-                                                        rowFloats: ctx.bytesPerRow / 2, white: hdr ? headroom : 1))
+                                                        rowFloats: ctx.bytesPerRow / 2, white: hdr ? headroom : 1),
+                      peak: Self.peak(data.assumingMemoryBound(to: Float16.self), width: w, height: h,
+                                      rowFloats: ctx.bytesPerRow / 2, white: hdr ? headroom : 1))
+    }
+
+    /// The brightest channel a thousandth of the picture is brighter than, as a multiple of `white`,
+    /// at least 1: in a histogram of what lies past white, up to 64 times it, in 1024 steps of log2.
+    static func peak(_ px: UnsafePointer<Float16>, width w: Int, height h: Int, rowFloats: Int, white: Float) -> Float {
+        let bins = 1024, top: Float = 6
+        var counts = [Int](repeating: 0, count: bins)
+        for y in 0..<h {
+            let row = px + y * rowFloats
+            for x in 0..<w {
+                let l = max(Float(row[x * 4]), Float(row[x * 4 + 1]), Float(row[x * 4 + 2])) / white
+                guard l > 1 else { continue }
+                counts[min(Int(log2(l) / top * Float(bins)), bins - 1)] += 1
+            }
+        }
+        var above = 0
+        let allowed = w * h / 1000
+        for i in stride(from: bins - 1, through: 0, by: -1) {
+            above += counts[i]
+            if above > allowed { return exp2(Float(i + 1) / Float(bins) * top) }
+        }
+        return 1
     }
 
     /// Gives `src` its denoised counterpart, the same size, colour-managed the same way.
@@ -161,6 +195,10 @@ public final class LightEngine: @unchecked Sendable {
         var hlPeak: Float = 0.85
         var hlStrength: Float = 0.21
         var hlFall: Float = 1
+        var denoiseClip: Int32 = 0
+        var peak: Float = 1
+        var sharpen: Float = 0
+        var sharpSigma: Float = 1, sharpAmount: Float = 0
     }
 
     /// Samples of the Laplacian remap across the brightness range.
@@ -218,6 +256,8 @@ public final class LightEngine: @unchecked Sendable {
             p.gradeOn = 1
         }
         p.white = src.white
+        p.peak = src.peak
+        p.sharpen = Float(max(a.sharpening, 0))
         p.clampWhite = src.isHDR ? 0 : 1
         p.outputEncoding = output == .display ? 1 : 0
         p.lumaWhite = Self.encode(src.white)
@@ -229,6 +269,7 @@ public final class LightEngine: @unchecked Sendable {
         if a.denoise > 0, src.denoised != nil {
             p.denoise = Float(a.denoise)
             p.hasDenoised = 1
+            p.denoiseClip = src.denoiseClipsToUnit ? 1 : 0
         }
 
         guard let cb = queue.makeCommandBuffer() else { return nil }
@@ -372,7 +413,8 @@ public final class LightEngine: @unchecked Sendable {
                 let coarser = l < n ? gauss[l + 1] : gauss[l]
                 if l <= fineTop {
                     p.top = l == fineTop ? 1 : 0
-                    p.detailS = Float(a.sharpening) * 1.6 * weights.sharpen[l]
+                    // Sharpening is its own pass, below, at every pixel.
+                    p.detailS = 0
                     // Texture at three quarters of its first strength: finer steps along the slider.
                     p.detailT = Float(a.texture) * 0.825 * weights.texture[l]
                     p.detailC = 0
@@ -395,6 +437,16 @@ public final class LightEngine: @unchecked Sendable {
             }
             fine = fineLevels[0]
             coarse = coarseLevels[0]
+            // Sharpening: an unsharp mask of the brightness at every pixel, at the radius the
+            // picture's own blur calls for, on top of texture's fine bands. Grain (up to about twice
+            // the picture's noise) is left out; the finish keeps each pixel within its neighbours.
+            if a.sharpening > 0, let sharpened = scratch(src, "DS", .r32Float, w, h) {
+                p.sharpSigma = min(max(0.55 + 0.45 * src.blur, 0.8), 1.8)
+                p.sharpAmount = Float(a.sharpening) * Self.sharpenStrength
+                p.noise = src.noise
+                dispatch(cb, "sharpenMask", [gauss[0], fineLevels[0], sharpened], &p, w, h)
+                fine = sharpened
+            }
         }
 
         // Brightness works by regions, on the same kind of base as local exposure.
@@ -447,6 +499,9 @@ public final class LightEngine: @unchecked Sendable {
     /// How much each level of the pyramid carries of each slider. Sharpening sits where the
     /// picture's own blur is: a crisp picture's softness is in the finest level, a softer one's
     /// spreads to the next. Texture is the middle levels, clarity the coarse ones.
+    /// The unsharp mask's amount at Sharpening 100.
+    static let sharpenStrength: Float = 3.0
+
     static func detailWeights(blur: Float, levels n: Int) -> (sharpen: [Float], texture: [Float], clarity: [Float]) {
         var sharpen: [Float]
         switch blur {

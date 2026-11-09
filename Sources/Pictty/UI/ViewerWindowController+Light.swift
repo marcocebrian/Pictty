@@ -7,6 +7,7 @@
 // they are encoded.
 
 import AppKit
+import ImageIO
 import PicttyCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -102,7 +103,7 @@ extension ViewerWindowController: NSMenuItemValidation {
             reason = L("Open a picture to edit it.")
         }
         if model.lightUnavailable != reason { model.lightUnavailable = reason }
-        let engine: LightRenderer.Engine? = model.current.map { ImageFormats.isRaw($0.url) ? .appleRAW : .pictty }
+        let engine: LightRenderer.Engine? = model.current.map { ImageFormats.isRaw($0.url) ? .raw : .pictty }
         if model.lightEngine != engine { model.lightEngine = engine }
     }
 
@@ -113,7 +114,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         let wasDenoised = model.light.denoise > 0
         model.light = a
         // The network's first pass over a picture takes a second; the panel says so.
-        if a.denoise > 0, !wasDenoised, !model.denoising, lightSession?.renderer.engine != .appleRAW,
+        if a.denoise > 0, !wasDenoised, !model.denoising,
            denoisedOnce != model.current?.url {
             denoisedOnce = model.current?.url
             model.denoising = true
@@ -213,13 +214,28 @@ extension ViewerWindowController: NSMenuItemValidation {
         let out = crop?.apply(to: image) ?? image
         let size = crop?.croppedSize(session.pixelSize) ?? session.pixelSize
         let resized = canvas.shown(pane: 0)?.pixelSize != size
-        canvas.showEdited(out, full: full, pane: 0, pixelSize: size, hasAlpha: session.hasAlpha || crop?.isRounded == true)
+        canvas.showEdited(Self.screenCopy(out), full: full, pane: 0, pixelSize: size, hasAlpha: session.hasAlpha || crop?.isRounded == true)
         if resized {
             // A crop is a different picture to fit: the zoom mode and the window follow it.
             applyZoom(animated: false)
             fitWindowToPicture(animated: true)
         }
         if crop != nil, !full { analyseEdit(out, url: session.renderer.url) }
+    }
+
+    /// An HDR edit as the screen takes it: in PQ, as the picture's own HDR decode comes. Handed over
+    /// as linear half float, the light past what the screen could show at the moment was cut
+    /// flat instead of tone-mapped into it, and the first touch of any slider wiped a lamp's or a
+    /// neon's highlights out, while the untouched picture (Apple's PQ decode) showed them.
+    static func screenCopy(_ image: CGImage) -> CGImage {
+        guard image.contentHeadroom > 1, let pq = CGColorSpace(name: CGColorSpace.itur_2100_PQ),
+              let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 16, bytesPerRow: 0,
+                                  space: pq, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                                      | CGBitmapInfo.byteOrder16Little.rawValue) else { return image }
+        ctx.setBlendMode(.copy)
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard let out = ctx.makeImage() else { return image }
+        return CGImageCreateCopyWithContentHeadroom(image.contentHeadroom, out) ?? out
     }
 
     /// The untouched picture at screen size: a full decode on screen is edited at screen size, and
@@ -240,7 +256,9 @@ extension ViewerWindowController: NSMenuItemValidation {
               r.adjustments == model.light, !model.showingOriginal else { return }
         session.editedFullRequested = false
         present(r.image, full: false, session: session)
-        let engine = session.renderer.engine == .pictty ? L("Pictty engine") : L("Apple RAW engine")
+        let byApple = session.renderer.engine == .raw && session.renderer.developedByApple
+        if model.rawByApple != byApple { model.rawByApple = byApple }
+        let engine = session.renderer.engine == .pictty ? L("Pictty engine") : byApple ? L("Apple RAW engine") : L("Internal RAW engine")
         model.lightTiming = String(format: "%@ · %.0f ms · %ld×%ld", engine, r.milliseconds, r.image.width, r.image.height)
         if model.crop == nil || model.cropping { analyseEdit(r.image, url: url) }
         updateStatus()
@@ -267,7 +285,8 @@ extension ViewerWindowController: NSMenuItemValidation {
         guard let session = lightSession, !session.editedFullRequested else { return }
         // Every pixel waits for the screen-sized noise reduction: they would only compete for the
         // GPU, and the larger one takes its coarse grain from the smaller. Asked again when it is done.
-        guard !(model.denoising && model.light.denoise > 0 && !model.denoiseFull) else { return }
+        // (A RAW's base noise reduction runs the network with the slider at 0.)
+        guard !(model.denoising && !model.denoiseFull) else { return }
         session.editedFullRequested = true
         let a = model.light
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
@@ -286,7 +305,8 @@ extension ViewerWindowController: NSMenuItemValidation {
                     self.updateStatus()
                 }
             }
-            if session.renderer.engine == .appleRAW { return render(session.preview) }
+            // A RAW is developed again at every pixel; the decode is not needed.
+            if session.renderer.engine == .raw { return render(session.preview) }
             if let full = self.store.cached(url, full: true) { return render(full.image) }
             self.store.load(url, full: true) { d in if let d { render(d.image) } }
         }
@@ -506,7 +526,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         o.longEdge = nil
         o.metadata = .all
         o.hdr = .gainMap
-        o.depth = (canvas.shown(pane: 0)?.preview?.bitsPerComponent ?? 8) > 8 && format.depths.contains(.sixteen) ? .sixteen : .eight
+        o.depth = ImageExporter.depthKeeping(item.url, format: format)
         o.matchQuality = true
         var dest = item.url
         if model.crop?.isRounded == true, !format.keepsAlpha {
@@ -624,7 +644,7 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     func editSnapshot(for url: URL) -> EditSnapshot {
         EditSnapshot(light: model.light, adjusted: hasUnsavedAdjustments, crop: model.crop, turn: orientationChange,
-                     engine: lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .appleRAW : .pictty),
+                     engine: lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .raw : .pictty),
                      renderer: lightSession?.renderer)
     }
 
@@ -676,3 +696,4 @@ extension ViewerWindowController: NSMenuItemValidation {
         }
     }
 }
+

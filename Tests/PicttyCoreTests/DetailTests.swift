@@ -78,9 +78,83 @@ final class DetailTests: XCTestCase {
         let before = encodedRow(image, y: 32), after = encodedRow(out, y: 32)
         let slope = { (r: [Double]) in (128 - 3...128 + 2).map { abs(r[$0 + 1] - r[$0]) }.max() ?? 0 }
         XCTAssertGreaterThan(slope(after), slope(before) * 1.15, "steeper")
-        // No ringing: nothing beyond the edge's own ends, but for a hair.
-        XCTAssertLessThan(after.max() ?? 1, (before.max() ?? 1) + 0.025)
-        XCTAssertGreaterThan(after.min() ?? 0, (before.min() ?? 0) - 0.025)
+        assertNoHalo(before, after, edgeAt: 128, height: 0.5)
+    }
+
+    /// A sharpened edge may overshoot its ends a little, right at the edge (that is what reads as
+    /// sharp), but by no more than a twentieth of its height, and a few pixels away by no more than the
+    /// finish's hair (1.5 % of white, 4 levels): no ringing, no halo.
+    private func assertNoHalo(_ before: [Double], _ after: [Double], edgeAt x: Int, height: Double,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        let hi = before.max() ?? 1, lo = before.min() ?? 0
+        XCTAssertLessThan(after.max() ?? 1, hi + 0.05 * height, "overshoot above", file: file, line: line)
+        XCTAssertGreaterThan(after.min() ?? 0, lo - 0.05 * height, "overshoot below", file: file, line: line)
+        for i in Array(0..<(x - 6)) + Array((x + 6)..<before.count) {
+            XCTAssertEqual(after[i], before[i], accuracy: 0.02, "no halo at \(i)", file: file, line: line)
+        }
+    }
+
+    /// Chalk on a blackboard: a strong edge from near black. Sharpening is for edges like this one;
+    /// kept off strong edges and the dark, as texture is, it did nothing in a night street.
+    func testSharpeningSteepensAStrongEdgeFromTheDark() throws {
+        let engine = try XCTUnwrap(LightEngine())
+        let w = 256
+        let image = picture(w, 64) { x, _ in
+            let t = (Double(x) - Double(w) / 2) / (1.5 * 2.0.squareRoot())
+            return 0.06 + 0.6 * 0.5 * (1 + erf(t))
+        }
+        let src = try XCTUnwrap(engine.source(image))
+        var a = Adjustments()
+        a.sharpening = 1
+        let out = try XCTUnwrap(engine.render(src, a, output: .display)).image
+        let before = encodedRow(image, y: 32), after = encodedRow(out, y: 32)
+        let slope = { (r: [Double]) in (128 - 3...128 + 2).map { abs(r[$0 + 1] - r[$0]) }.max() ?? 0 }
+        XCTAssertGreaterThan(slope(after), slope(before) * 1.15, "steeper")
+        assertNoHalo(before, after, edgeAt: 128, height: 0.6)
+    }
+
+    /// The 10–90 % rise of an edge in a row, in pixels (interpolated).
+    private func riseWidth(_ r: [Double], around x: Int) -> Double {
+        let seg = Array(r[(x - 12)...(x + 12)])
+        let lo = seg.first!, hi = seg.last!
+        func cross(_ level: Double) -> Double {
+            let v = lo + (hi - lo) * level
+            for i in 0..<(seg.count - 1) where (seg[i] - v) * (seg[i + 1] - v) <= 0 && seg[i] != seg[i + 1] {
+                return Double(i) + (v - seg[i]) / (seg[i + 1] - seg[i])
+            }
+            return 0
+        }
+        return abs(cross(0.9) - cross(0.1))
+    }
+
+    /// Sharpening at 100 makes a soft edge clearly crisper: its rise at least a third narrower.
+    /// Fenced off the finest scale, it only lifted mid-size detail and felt weak.
+    func testSharpeningMakesASoftEdgeClearlyCrisper() throws {
+        let engine = try XCTUnwrap(LightEngine())
+        let image = edge(sigma: 1.5)
+        let src = try XCTUnwrap(engine.source(image))
+        var a = Adjustments()
+        a.sharpening = 1
+        let out = try XCTUnwrap(engine.render(src, a, output: .display)).image
+        let before = riseWidth(encodedRow(image, y: 32), around: 128), after = riseWidth(encodedRow(out, y: 32), around: 128)
+        XCTAssertLessThan(after, before * 0.65, "rise \(before) → \(after)")
+    }
+
+    /// And fine texture (a fabric, foliage, hair) gains real contrast.
+    func testSharpeningBringsOutFineTexture() throws {
+        let engine = try XCTUnwrap(LightEngine())
+        // A soft weave of 5-pixel period, well above any grain.
+        let image = picture(256, 64) { x, y in 0.5 + 0.06 * sin(Double(x) * 2 * .pi / 5) * sin(Double(y) * 2 * .pi / 7) }
+        let src = try XCTUnwrap(engine.source(image))
+        var a = Adjustments()
+        a.sharpening = 1
+        let out = try XCTUnwrap(engine.render(src, a, output: .display)).image
+        func spread(_ img: CGImage) -> Double {
+            let r = (16..<48).flatMap { encodedRow(img, y: $0)[16..<240] }
+            let m = r.reduce(0, +) / Double(r.count)
+            return (r.map { ($0 - m) * ($0 - m) }.reduce(0, +) / Double(r.count)).squareRoot()
+        }
+        XCTAssertGreaterThan(spread(out), spread(image) * 1.6, "\(spread(image)) → \(spread(out))")
     }
 
     func testSharpeningLeavesGrainAlone() throws {

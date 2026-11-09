@@ -5,12 +5,17 @@ import PicttyCore
 /// Runs the Light panel's renders off the main thread, the newest request first: a slider drag
 /// asks many times a second, and only the last value still matters when the GPU comes free.
 ///
-/// Pictures go through Pictty's own engine. Camera RAWs are developed by Apple's RAW engine for now
-/// (exposure, white balance and noise reduction in the develop itself), then Pictty's engine does the rest.
+/// Every picture goes through Pictty's own engine. A camera RAW is developed from its sensor mosaic
+/// (`SensorDevelop`: LibRaw and a learned demosaic and denoise, its tones matched to Apple's
+/// develop of the same frame), and that develop is the picture: exposure, white balance, noise
+/// reduction, sharpening and the rest are Pictty's. Apple's develop (`RAWDevelop`) is shown first,
+/// at once, while the sensor develop runs (about a second), and stays the picture for a RAW the
+/// sensor develop cannot take, with SCUNet for its noise; nothing is asked of the person either way.
 final class LightRenderer: @unchecked Sendable {
     enum Engine: Equatable {
         case pictty
-        case appleRAW
+        /// A camera RAW: Apple's develop, then Pictty's engine.
+        case raw
     }
 
     struct Rendered {
@@ -29,10 +34,43 @@ final class LightRenderer: @unchecked Sendable {
 
     // Queue-only state.
     private var source: LightEngine.Source?
-    private var raw: AppleRAW?
+    /// What the network is given at screen size: the decode on screen, or a RAW's develop.
+    private var denoiseInput: CGImage
+    /// Whether the network's pass is on `source` (a RAW's stand-in does not count).
+    private var neuralOnSource = false
 
-    /// The screen-sized picture, kept for the denoiser.
-    private let preview: CGImage
+    /// Whether the sensor develop is still under way: Apple's develop is on screen meanwhile, and the
+    /// network is not run on it, since it is about to be replaced.
+    private var sensorPending = false
+    /// Whether `source` is the sensor develop (which has its own base of colour). Queue-only.
+    private var sensorOnSource = false
+    private var appleDevelop = LightRenderer.sensorModel == nil
+    /// True when the RAW is Apple's develop for good: the internal engine could not read it.
+    var developedByApple: Bool { lock.lock(); defer { lock.unlock() }; return appleDevelop }
+
+    /// The whole picture as the sensor develop made it, once it has; nil when it could not.
+    private var sensorFull: CGImage?
+    /// The HDR headroom of the RAW's develop on screen, measured once and given to the screen-sized
+    /// edit and the whole one alike: measured on each, they were told two different whites and
+    /// showed two different pictures, one while a slider moved and the other when it stopped.
+    private var rawHeadroom: Float = 1
+    var rawWhite: Float {
+        lock.lock(); defer { lock.unlock() }
+        return rawHeadroom
+    }
+    private let sensorGroup = DispatchGroup()
+    private static let sensorQueue = DispatchQueue(label: "pictty.sensor", qos: .userInitiated)
+    /// The sensor network, in the app.
+    static let sensorModel = Bundle.main.url(forResource: "SensorNetwork", withExtension: "mlmodelc")
+
+    /// A RAW's base of noise reduction, measured once on its screen-sized develop (0 once the
+    /// sensor develop, already denoised, is the picture).
+    private var rawBase: Double?
+    var rawBaseDenoise: Double? {
+        lock.lock(); defer { lock.unlock() }
+        return rawBase
+    }
+
     /// The network runs on a queue of its own, so the sliders stay live while it works.
     private let denoiseQueue = DispatchQueue(label: "pictty.denoise", qos: .userInitiated)
     private var denoising = false
@@ -55,38 +93,139 @@ final class LightRenderer: @unchecked Sendable {
         denoisedCache[image.width] = image
     }
 
-    /// Whether this picture can have Pictty's noise reduction (not HDR, and the network is here).
-    var offersNeuralDenoise: Bool { engine == .pictty && !isHDR && NeuralDenoiser.shared.isAvailable }
+    /// Whether this picture can have the network: the network is here, and the picture is SDR or a
+    /// RAW (whose light past white the denoiser leaves alone, see `denoiseClipsToUnit`).
+    var offersNeuralDenoise: Bool { NeuralDenoiser.shared.isAvailable && (engine == .raw || !isHDR) }
 
     /// `preview` is the screen-sized decode on screen now.
     init(url: URL, preview: CGImage, isHDR: Bool, maxPixel: Int) {
         self.url = url
         self.isHDR = isHDR
-        self.preview = preview
-        engine = ImageFormats.isRaw(url) ? .appleRAW : .pictty
+        denoiseInput = preview
+        engine = ImageFormats.isRaw(url) ? .raw : .pictty
         let headroom = isHDR ? max(preview.contentHeadroom, 1) : 1
         queue.async { [engine] in
-            if engine == .appleRAW {
-                self.raw = AppleRAW(url: url, maxPixel: maxPixel, hdr: isHDR)
+            if engine == .raw {
+                guard let (develop, src) = Self.rawSource(url, maxPixel: maxPixel, hdr: isHDR, standIn: true) else { return }
+                self.lock.lock(); self.rawHeadroom = develop.headroom; self.lock.unlock()
+                let base = RAWDevelop.baseDenoise(develop.image)
+                self.lock.lock(); self.rawBase = base; self.lock.unlock()
+                self.denoiseInput = develop.image
+                self.source = src
+                timingMark(String(format: "RAW developed by Apple %ld×%ld, base noise reduction %.2f", src.width, src.height, base))
+                if Self.sensorModel != nil {
+                    self.sensorPending = true
+                    self.developSensor(reference: develop.image, size: (src.width, src.height), hdr: isHDR)
+                }
             } else {
                 self.source = LightEngine.shared?.source(preview, headroom: headroom)
             }
         }
     }
 
+    /// The sensor develop, on its own queue; when it is done it becomes the picture, at the size of
+    /// Apple's develop on screen, and the canvas renders again. Queue-only.
+    private func developSensor(reference: CGImage, size: (Int, Int), hdr: Bool) {
+        sensorGroup.enter()
+        Self.sensorQueue.async {
+            let full = Self.sensorDevelop(self.url, reference: reference, hdr: hdr)
+            let headroom = hdr ? (full.map { LookMatch.peak($0) } ?? 1) : 1
+            self.lock.lock(); self.sensorFull = full; if full != nil { self.rawHeadroom = headroom } else { self.appleDevelop = true }; self.lock.unlock()
+            self.sensorGroup.leave()
+            self.queue.async {
+                self.sensorPending = false
+                // The same framing as Apple's develop, or it is not used.
+                if let full, abs(Double(full.width) / Double(full.height) - Double(size.0) / Double(size.1)) < 0.01,
+                   let preview = LookMatch.downscaled(full, width: size.0, height: size.1),
+                   let src = LightEngine.shared?.source(preview, headroom: headroom) {
+                    src.denoiseClipsToUnit = true
+                    self.source = src
+                    self.denoiseInput = preview
+                    self.neuralOnSource = false
+                    self.sensorOnSource = true
+                    self.cacheLock.lock(); self.denoisedCache.removeAll(); self.cacheLock.unlock()
+                    self.lock.lock(); self.rawBase = 0; self.lock.unlock()
+                } else if full != nil {
+                    self.lock.lock(); self.sensorFull = nil; self.appleDevelop = true; self.lock.unlock()
+                    timingMark("RAW: the sensor develop's framing is not Apple's; Apple's develop stays")
+                }
+                DispatchQueue.main.async { MainActor.assumeIsolated { self.onDenoised?() } }
+            }
+        }
+    }
+
+    /// The whole picture from the sensor, its tones matched to `reference` (Apple's develop of the
+    /// same frame); nil, said in the log, when it cannot be done.
+    static func sensorDevelop(_ url: URL, reference: CGImage, hdr: Bool, cancelled: () -> Bool = { false }) -> CGImage? {
+        guard let model = sensorModel else { return nil }
+        let start = CFAbsoluteTimeGetCurrent()
+        do {
+            let (raw, clipped) = try SensorDevelop.developed(url, model: model, cancelled: cancelled)
+            guard let look = LookMatch.fit(raw, to: reference), var out = look.apply(raw) else {
+                timingMark("RAW: no tones to match; Apple's develop stays")
+                return nil
+            }
+            // Apple's develop, every pixel, without lens corrections, with this develop's detail on it.
+            guard !cancelled(),
+                  let apple = RAWDevelop(url: url, maxPixel: nil, hdr: hdr, standIn: false, lensCorrection: false),
+                  apple.image.width == out.width, apple.image.height == out.height,
+                  let combined = DetailTransfer.apply(apple: apple.image, sensor: out, clipped: clipped) else {
+                timingMark("RAW: Apple's develop does not meet the sensor's; Apple's develop stays")
+                return nil
+            }
+            out = combined
+            // Apple's lens corrections, measured on its two develops of this picture.
+            if let uncorrected = LookMatch.downscaled(apple.image, width: reference.width, height: reference.height),
+               let lens = LensMatch.measure(corrected: reference, uncorrected: uncorrected) {
+                timingMark(String(format: "RAW lens: distortion %.4f %.4f %.4f, scale %.4f, vignetting %.3f %.3f, %ld points, %.2f px",
+                                  lens.k[0], lens.k[1], lens.k[2], lens.scale, lens.v[0], lens.v[1], lens.points, lens.residual))
+                if !lens.isIdentity, let corrected = lens.apply(out) { out = corrected }
+            } else {
+                timingMark("RAW lens: not measured; the sensor develop stays uncorrected")
+            }
+            timingMark(String(format: "RAW developed from the sensor %ld×%ld in %.0f ms", out.width, out.height,
+                              (CFAbsoluteTimeGetCurrent() - start) * 1000))
+            return out
+        } catch {
+            timingMark("RAW: sensor develop not possible (\(error)); Apple's develop stays")
+            return nil
+        }
+    }
+
+    /// The sensor develop of every pixel, waiting for it if it is under way; nil when there is none.
+    func sensorDeveloped() -> CGImage? {
+        sensorGroup.wait()
+        lock.lock(); defer { lock.unlock() }
+        return sensorFull
+    }
+
+    /// A RAW developed and uploaded: the denoiser's 0…1 kept to that range, and Apple's own noise
+    /// reduction standing in for the network's until it is done.
+    /// `headroom` nil takes the develop's own.
+    private static func rawSource(_ url: URL, maxPixel: Int?, hdr: Bool, standIn: Bool,
+                                  headroom: Float? = nil) -> (RAWDevelop, LightEngine.Source)? {
+        guard let engine = LightEngine.shared,
+              let develop = RAWDevelop(url: url, maxPixel: maxPixel, hdr: hdr, standIn: standIn),
+              let src = engine.source(develop.image, headroom: headroom ?? develop.headroom) else { return nil }
+        src.denoiseClipsToUnit = true
+        if let standIn = develop.standIn { engine.setDenoised(standIn, on: src) }
+        return (develop, src)
+    }
+
+    /// What the engine is asked for: a RAW's sliders on top of its base.
+    private static func effective(_ a: Adjustments, engine: Engine, base: Double?, sensor: Bool = false) -> Adjustments {
+        engine == .raw ? RAWDevelop.effective(a, baseDenoise: base ?? 0, sensor: sensor) : a
+    }
+
     /// The screen-sized picture with `a`; `done` runs on the main thread, and only for the newest request.
     func render(_ a: Adjustments, done: @escaping @MainActor (Rendered) -> Void) {
         let ticket = bump(&latest)
         queue.async {
-            guard self.isLatest(ticket, self.latest) else { return }
+            guard self.isLatest(ticket, self.latest), let source = self.source else { return }
             let start = CFAbsoluteTimeGetCurrent()
-            var image: CGImage?
-            if let raw = self.raw {
-                image = raw.render(a).flatMap { AppleRAW.graded($0, a, isHDR: self.isHDR) }
-            } else if let source = self.source {
-                if a.denoise > 0, !source.hasDenoised { self.denoisePreview(source) }
-                image = LightEngine.shared?.render(source, a, output: self.isHDR ? .linear : .display)?.image
-            }
+            let e = Self.effective(a, engine: self.engine, base: self.rawBaseDenoise, sensor: self.sensorOnSource)
+            if e.denoise > 0, !self.neuralOnSource, !self.sensorPending { self.denoisePreview(source) }
+            let image = LightEngine.shared?.render(source, e, output: self.isHDR ? .linear : .display)?.image
             guard let image, self.isLatest(ticket, self.latest) else { return }
             let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
             DispatchQueue.main.async { MainActor.assumeIsolated { done(Rendered(image: image, milliseconds: ms, adjustments: a)) } }
@@ -98,19 +237,21 @@ final class LightRenderer: @unchecked Sendable {
     private func denoisePreview(_ source: LightEngine.Source) {
         guard offersNeuralDenoise, !denoising else { return }
         denoising = true
-        let preview = preview
+        let input = denoiseInput
         denoiseQueue.async {
             let start = CFAbsoluteTimeGetCurrent()
             let report = self.onDenoiseProgress
-            let denoised = NeuralDenoiser.shared.denoise(preview, progress: { fraction in
+            let denoised = NeuralDenoiser.shared.denoise(input, progress: { fraction in
                 DispatchQueue.main.async { MainActor.assumeIsolated { report?(fraction, false) } }
             })
-            timingMark(String(format: "denoised %ld×%ld in %.0f ms", preview.width, preview.height,
+            timingMark(String(format: "denoised %ld×%ld in %.0f ms", input.width, input.height,
                               (CFAbsoluteTimeGetCurrent() - start) * 1000))
             self.queue.async {
-                if let denoised {
+                // Unless the picture was replaced meanwhile (the sensor develop arrived).
+                if let denoised, self.source === source {
                     self.storeDenoised(denoised)
                     LightEngine.shared?.setDenoised(denoised, on: source)
+                    self.neuralOnSource = true
                 }
                 self.denoising = false
                 DispatchQueue.main.async { MainActor.assumeIsolated { self.onDenoised?() } }
@@ -147,27 +288,57 @@ final class LightRenderer: @unchecked Sendable {
     }
 
     /// The whole picture with `a`, for saving or zooming. `output` nil picks what the screen wants.
+    /// A RAW is developed again at every pixel; `original` is used only for other pictures.
     static func renderWhole(_ original: CGImage, url: URL, engine: Engine, isHDR: Bool, _ a: Adjustments,
                             output: LightEngine.Output?, progress: ((Double) -> Void)? = nil,
                             renderer: LightRenderer? = nil, cancelled: @escaping () -> Bool = { false }) -> CGImage? {
-        if engine == .appleRAW {
-            return AppleRAW(url: url, maxPixel: nil, hdr: isHDR)?.render(a, float: output == .linear || isHDR)
-                .flatMap { AppleRAW.graded($0, a, isHDR: isHDR, output: output) }
+        guard let engineRef = LightEngine.shared else { return nil }
+        let src: LightEngine.Source
+        let denoiseInput: CGImage
+        var e = a
+        if engine == .raw, let full = renderer.map({ $0.sensorDeveloped() }) ?? standaloneSensor(url, isHDR: isHDR),
+           let s = engineRef.source(full, headroom: isHDR ? (renderer?.rawWhite ?? LookMatch.peak(full)) : 1) {
+            // Developed from the sensor, and denoised there already: the slider's noise reduction
+            // only adds to it.
+            s.denoiseClipsToUnit = true
+            src = s
+            denoiseInput = full
+            e = effective(a, engine: engine, base: 0, sensor: true)
+        } else if engine == .raw {
+            // Apple's noise reduction stands in only when there is no network to do it.
+            guard let (develop, s) = rawSource(url, maxPixel: nil, hdr: isHDR, standIn: !NeuralDenoiser.shared.isAvailable,
+                                               headroom: renderer?.rawWhite) else { return nil }
+            src = s
+            denoiseInput = develop.image
+            // The base as the screen-sized develop measured it: noise is measured per pixel, and
+            // the same picture at every pixel would measure noisier than on screen.
+            let base = renderer?.rawBaseDenoise ?? RAWDevelop(url: url, maxPixel: 2048, hdr: isHDR, standIn: false)
+                .map { RAWDevelop.baseDenoise($0.image) } ?? 0
+            e = effective(a, engine: engine, base: base)
+        } else {
+            guard let s = engineRef.source(original, headroom: isHDR ? max(original.contentHeadroom, 1) : 1) else { return nil }
+            src = s
+            denoiseInput = original
         }
-        guard let engineRef = LightEngine.shared,
-              let src = engineRef.source(original, headroom: isHDR ? max(original.contentHeadroom, 1) : 1) else { return nil }
         // Every pixel through the network too, when noise reduction is asked for.
         // Done once per resolution: the screen-sized pass is reused when the picture is that size,
         // and a full-size pass is kept for the next change of a slider.
-        if a.denoise > 0, !isHDR {
-            if let known = renderer?.cachedDenoised(width: original.width) {
+        if e.denoise > 0, engine == .raw || !isHDR {
+            if let known = renderer?.cachedDenoised(width: denoiseInput.width) {
                 engineRef.setDenoised(known, on: src)
-            } else if let denoised = NeuralDenoiser.shared.denoise(original, progress: progress, cancelled: cancelled) {
+            } else if let denoised = NeuralDenoiser.shared.denoise(denoiseInput, progress: progress, cancelled: cancelled) {
                 renderer?.storeDenoised(denoised)
                 engineRef.setDenoised(denoised, on: src)
             }
         }
-        return engineRef.render(src, a, output: output ?? (isHDR ? .linear : .display))?.image
+        return engineRef.render(src, e, output: output ?? (isHDR ? .linear : .display))?.image
+    }
+
+    /// The sensor develop for a save with no session on screen: its tones matched to a small
+    /// Apple develop of the frame.
+    private static func standaloneSensor(_ url: URL, isHDR: Bool) -> CGImage? {
+        guard sensorModel != nil, let reference = RAWDevelop(url: url, maxPixel: 2048, hdr: isHDR, standIn: false) else { return nil }
+        return sensorDevelop(url, reference: reference.image, hdr: isHDR)
     }
 
     func cancelAll() {
@@ -184,83 +355,5 @@ final class LightRenderer: @unchecked Sendable {
     private func isLatest(_ ticket: Int, _ counter: Int) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return ticket == counter
-    }
-}
-
-/// Apple's RAW engine with the panel's values: exposure and white balance go into the develop,
-/// where the sensor's headroom and its own colour are. Everything else (highlights, shadows,
-/// contrast, brightness, dehaze, detail, vibrance, saturation, colour grading) is Pictty's engine on
-/// the developed picture, as for any other picture: Core Image's highlight filter greyed lamps
-/// and whites into a flat haze.
-final class AppleRAW {
-    private let filter: CIRAWFilter
-    private let context = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
-                                              .workingFormat: CIFormat.RGBAh, .cacheIntermediates: true])
-    private let hdr: Bool
-    /// What the camera recorded, which the white balance sliders move from.
-    private let asShotTemperature: Float
-    private let asShotTint: Float
-    /// Apple's own noise reduction for this camera, which Noise reduction raises from.
-    private let defaultLuminanceNR: Float
-    private let defaultColourNR: Float
-
-    /// `maxPixel` nil develops every pixel.
-    init?(url: URL, maxPixel: Int?, hdr: Bool) {
-        guard let filter = CIRAWFilter(imageURL: url) else { return nil }
-        self.filter = filter
-        self.hdr = hdr
-        asShotTemperature = filter.neutralTemperature
-        asShotTint = filter.neutralTint
-        defaultLuminanceNR = filter.luminanceNoiseReductionAmount
-        defaultColourNR = filter.colorNoiseReductionAmount
-        if let maxPixel {
-            let native = filter.nativeSize
-            let longest = max(native.width, native.height)
-            if longest > 0 { filter.scaleFactor = Float(min(1, CGFloat(maxPixel) / longest)) }
-        }
-        if hdr { filter.extendedDynamicRangeAmount = 1 }
-        if #available(macOS 26, *), filter.isHighlightRecoverySupported { filter.isHighlightRecoveryEnabled = true }
-    }
-
-    func render(_ a: Adjustments, float: Bool? = nil) -> CGImage? {
-        filter.exposure = Float(a.exposure)
-        // Warmer means the light is assumed bluer: the same doubling either way as Pictty's own.
-        filter.neutralTemperature = asShotTemperature * Float(pow(2, a.temperature))
-        filter.neutralTint = asShotTint + Float(a.tint) * 60
-        // Noise reduction: from the camera's default up to Apple's strongest.
-        filter.luminanceNoiseReductionAmount = defaultLuminanceNR + (1 - defaultLuminanceNR) * Float(a.denoise)
-        filter.colorNoiseReductionAmount = defaultColourNR + (1 - defaultColourNR) * Float(a.denoise)
-        guard let image = filter.outputImage else { return nil }
-        let extent = image.extent
-        if float ?? hdr, let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) {
-            return context.createCGImage(image, from: extent, format: .RGBAh, colorSpace: space)
-        }
-        return context.createCGImage(image, from: extent, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.displayP3))
-    }
-
-    /// The tones, dehaze, detail, vibrance, saturation and colour grading on a developed picture,
-    /// through Pictty's engine. Exposure, white balance and noise reduction stay Apple's, in the develop.
-    static func graded(_ image: CGImage, _ a: Adjustments, isHDR: Bool, output: LightEngine.Output? = nil) -> CGImage? {
-        let detail = a.texture != 0 || a.clarity != 0 || a.sharpening != 0
-        let tones = a.highlights != 0 || a.shadows != 0 || a.contrast != 0 || a.brightness != 0
-        guard !a.isGradingNeutral || !a.isSaturationNeutral || a.dehaze != 0 || detail || tones else { return image }
-        var g = Adjustments()
-        g.highlights = a.highlights
-        g.shadows = a.shadows
-        g.contrast = a.contrast
-        g.brightness = a.brightness
-        g.dehaze = a.dehaze
-        g.texture = a.texture
-        g.clarity = a.clarity
-        g.sharpening = a.sharpening
-        g.vibrance = a.vibrance
-        g.saturation = a.saturation
-        g.shadowColour = a.shadowColour
-        g.midtoneColour = a.midtoneColour
-        g.highlightColour = a.highlightColour
-        g.balance = a.balance
-        guard let engine = LightEngine.shared,
-              let src = engine.source(image, headroom: isHDR ? max(image.contentHeadroom, 1) : 1) else { return image }
-        return engine.render(src, g, output: output ?? (isHDR ? .linear : .display))?.image ?? image
     }
 }

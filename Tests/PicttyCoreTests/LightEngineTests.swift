@@ -54,6 +54,40 @@ final class LightEngineTests: XCTestCase {
         XCTAssertLessThan(maxDifference(linear(out), linear(image)), 0.002)
     }
 
+    /// Two halves of linear light in half float: `left` and `right`.
+    private func halves(_ left: Float, _ right: Float) -> CGImage {
+        let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        let ctx = CGContext(data: nil, width: 64, height: 32, bitsPerComponent: 32, bytesPerRow: 64 * 16, space: space,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+                                | CGBitmapInfo.byteOrder32Little.rawValue)!
+        let px = ctx.data!.assumingMemoryBound(to: Float.self)
+        for i in 0..<(64 * 32) {
+            let v = i % 64 < 32 ? left : right
+            px[i * 4] = v; px[i * 4 + 1] = v; px[i * 4 + 2] = v; px[i * 4 + 3] = 1
+        }
+        return ctx.makeImage()!
+    }
+
+    /// A RAW develop keeps light past white; the denoiser sees it clipped to 1. Mixed in, it must
+    /// take out only what changed within 0…1, never pull the light past white down to it.
+    func testDenoiseClippedToUnitLeavesLightPastWhite() throws {
+        let engine = try XCTUnwrap(LightEngine())
+        var a = Adjustments()
+        a.denoise = 1
+        a.exposure = -1  // brings the light past white into view
+        func render(clips: Bool) throws -> [Float] {
+            let src = try XCTUnwrap(engine.source(halves(2, 0.5)))
+            src.denoiseClipsToUnit = clips
+            engine.setDenoised(halves(1, 0.45), on: src)
+            return linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
+        }
+        let kept = try render(clips: true)
+        XCTAssertEqual(kept[(16 * 64 + 8) * 4 + 1], 1, accuracy: 0.01, "past white, untouched by the denoiser")
+        XCTAssertEqual(kept[(16 * 64 + 56) * 4 + 1], 0.225, accuracy: 0.01, "within 0…1, denoised")
+        let pulled = try render(clips: false)
+        XCTAssertEqual(pulled[(16 * 64 + 8) * 4 + 1], 0.5, accuracy: 0.01, "without the flag it is pulled to white")
+    }
+
     func testLoweredExposureHalvesTheLight() throws {
         let engine = try XCTUnwrap(LightEngine())
         let image = flat(160)
@@ -159,6 +193,65 @@ final class LightEngineTests: XCTestCase {
         XCTAssertLessThan(at(both, 64, 32), at(exposed, 64, 32) - 0.1, "the sky comes down out of white")
         XCTAssertEqual(at(both, 64, 100), at(exposed, 64, 100), accuracy: 0.02, "the ground keeps its exposure")
         XCTAssertEqual(at(plain, 64, 100), at(linear(image), 64, 100), accuracy: 0.01, "no exposure: as before")
+    }
+
+    /// A RAW's develop holds light past white (a lamp, a neon). Shown as it is, that light rolls off
+    /// into white instead of being cut flat at it; with the exposure raised and Highlights lowered it
+    /// comes back from where it was, its tones and all, blended into the brightened rest, instead of
+    /// staying a flat white blob that Highlights only greys.
+    func testLightPastWhiteComesBackWithHighlights() throws {
+        let w = 128, h = 128
+        let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 32, bytesPerRow: w * 16, space: space,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+                                | CGBitmapInfo.byteOrder32Little.rawValue)!
+        // Top half a light past white in 4-pixel stripes, 1.2 and 1.5; bottom half a dark ground.
+        for stripe in 0..<32 {
+            let v: CGFloat = stripe % 2 == 0 ? 1.2 : 1.5
+            ctx.setFillColor(CGColor(colorSpace: space, components: [v, v, v, 1])!)
+            ctx.fill(CGRect(x: stripe * 4, y: 64, width: 4, height: 64))
+        }
+        ctx.setFillColor(CGColor(colorSpace: space, components: [0.05, 0.05, 0.05, 1])!)
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: 64))
+        let engine = try XCTUnwrap(LightEngine())
+        let src = try XCTUnwrap(engine.source(try XCTUnwrap(ctx.makeImage())))
+        func render(_ exposure: Double, _ highlights: Double) throws -> [Float] {
+            var a = Adjustments()
+            a.exposure = exposure
+            a.highlights = highlights
+            return linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
+        }
+        func at(_ p: [Float], _ x: Int, _ y: Int) -> Float { p[(y * w + x) * 4 + 1] }
+        func stripes(_ p: [Float]) -> Float { abs(at(p, 66, 32) - at(p, 62, 32)) }
+        let shown = try render(0, 0), exposed = try render(2, 0), both = try render(2, -1)
+        XCTAssertGreaterThan(stripes(shown), 0.02, "as it is: the light past white rolls off, its stripes still there")
+        XCTAssertGreaterThan(stripes(both), 0.04, "exposed, Highlights down: the stripes come back")
+        XCTAssertLessThan(max(at(both, 62, 32), at(both, 66, 32)), 0.97, "out of white")
+        XCTAssertEqual(at(both, 64, 100), at(exposed, 64, 100), accuracy: 0.02, "the ground keeps its exposure")
+    }
+
+    /// A saturated light (a red neon) with the exposure raised and Highlights lowered keeps its
+    /// colour: compressed on the luminance, its red went far past white first and had to be greyed
+    /// to fit, which turned it pink.
+    func testASaturatedLightKeepsItsColourWithHighlights() throws {
+        let w = 64, h = 64
+        let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 32, bytesPerRow: w * 16, space: space,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+                                | CGBitmapInfo.byteOrder32Little.rawValue)!
+        ctx.setFillColor(CGColor(colorSpace: space, components: [0.02, 0.02, 0.02, 1])!)
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.setFillColor(CGColor(colorSpace: space, components: [0.9, 0.06, 0.08, 1])!)
+        ctx.fill(CGRect(x: 24, y: 24, width: 16, height: 16))
+        let engine = try XCTUnwrap(LightEngine())
+        let src = try XCTUnwrap(engine.source(try XCTUnwrap(ctx.makeImage())))
+        var a = Adjustments()
+        a.exposure = 2
+        a.highlights = -1
+        let p = linear(try XCTUnwrap(engine.render(src, a, output: .linear)).image)
+        let i = (32 * w + 32) * 4
+        let saturation = (p[i] - min(p[i + 1], p[i + 2])) / max(p[i], 1e-6)
+        XCTAssertGreaterThan(saturation, 0.8, "still red, not pink")
     }
 
     /// Exposure raised with Highlights lowered: broad regions from dim to bright stay in their

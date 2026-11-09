@@ -1,0 +1,11 @@
+greycard denoise, best (v20): a learned demosaic and denoise for Bayer RAW mosaics.
+
+Copyright Jess Olmstead and the greycard contributors.
+Source: https://github.com/jessolmstead/greycard (tools/denoise)
+Weights: https://huggingface.co/jessolmstead/greycard-denoise (denoise-v20.onnx)
+
+Licensed under the GNU General Public License, version 3 or (at your option) any later version:
+https://www.gnu.org/licenses/gpl-3.0.html. Pictty is under the same licence (LICENSE).
+
+GreycardDenoise.mlpackage is those weights converted to Core ML, unchanged in substance, by
+make-greycard-model.py.

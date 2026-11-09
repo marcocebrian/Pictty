@@ -77,6 +77,8 @@ final class ViewerModel: ObservableObject {
     @Published var light = Adjustments()
     /// Which engine edits the picture on screen, or why it cannot be edited.
     @Published var lightEngine: LightRenderer.Engine?
+    /// A RAW developed by Apple's engine: the internal one could not read it.
+    @Published var rawByApple = false
     @Published var lightUnavailable: String?
     /// "Pictty engine · 12 ms", for the panel's footer.
     @Published var lightTiming = ""
