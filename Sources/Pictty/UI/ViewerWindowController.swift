@@ -671,6 +671,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
         // The picture being edited keeps its edited pixels; sharper decodes go through the Light engine.
         if keepsEdits(d.url) { return }
+        // A RAW's camera preview stays on screen while Pictty's engine develops it from Apple's develop.
+        let held = !d.isEmbedded && !d.isFull && !d.isDetail && model.current?.url == d.url && developsOwnRAW(d.url)
+            ? store.cameraPreview(d.url) ?? (canvas.shown(pane: 0)?.url == d.url ? canvas.shown(pane: 0)?.preview : nil) : nil
         CATransaction.begin()
         defer { CATransaction.commit() }
         for pane in 0..<model.paneCount where model.item(forPane: pane)?.url == d.url {
@@ -699,6 +702,18 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             if d.isEmbedded {
                 withAnimation(Chrome.spring) { model.rawStatus = .developing }
                 requestDevelop(d.url)
+            } else if developsOwnRAW(d.url) {
+                // Pictty's engine takes it from here; the camera's preview, if it was on screen, stays
+                // until the engine's develop fades in.
+                updateLightAvailability()
+                refreshEdit()
+                if ownsRAW(d.url), lightSession?.renderer.settled == false {
+                    if let held { canvas.showEdited(held, full: false, pane: 0) }
+                    timingMark("RAW: Apple's develop in; \(held != nil ? "the camera's preview stays" : "it shows") while Pictty develops")
+                    if model.rawStatus != .developing { withAnimation(Chrome.spring) { model.rawStatus = .developing } }
+                } else {
+                    rawSettled(d.url)
+                }
             } else if model.rawStatus != .developed {
                 withAnimation(Chrome.spring) { model.rawStatus = .developed }
             }

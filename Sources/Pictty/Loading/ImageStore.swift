@@ -8,6 +8,8 @@ import PicttyCore
 @MainActor
 final class ImageStore {
     private let previews = NSCache<NSURL, DecodedImage>()
+    /// A RAW's camera preview, kept after its develop replaces it: what shows while Pictty develops it.
+    private let cameraPreviews = NSCache<NSURL, CGImage>()
     private let fulls = NSCache<NSURL, DecodedImage>()
     /// Uncapped decodes of pictures larger than a GPU texture. One or two at most: they are huge.
     private let details = NSCache<NSURL, DecodedImage>()
@@ -20,6 +22,7 @@ final class ImageStore {
     init() {
         fulls.totalCostLimit = Int(min(ProcessInfo.processInfo.physicalMemory / 4, 4 << 30))
         previews.totalCostLimit = 768 << 20
+        cameraPreviews.totalCostLimit = 192 << 20
         details.countLimit = 2
         details.totalCostLimit = Int(min(ProcessInfo.processInfo.physicalMemory / 3, 8 << 30))
         previewMaxPixel = EarlyDecode.screenMaxPixel
@@ -137,6 +140,7 @@ final class ImageStore {
 
     private func finish(_ key: String, _ img: DecodedImage?) {
         if let img { (img.isFull ? fulls : previews).setObject(img, forKey: img.url as NSURL, cost: img.cost) }
+        if let img, img.isEmbedded { cameraPreviews.setObject(img.image, forKey: img.url as NSURL, cost: img.cost) }
         for done in waiting.removeValue(forKey: key) ?? [] { done(img) }
     }
 
@@ -148,6 +152,7 @@ final class ImageStore {
         previews.removeAllObjects()
         fulls.removeAllObjects()
         details.removeAllObjects()
+        cameraPreviews.removeAllObjects()
         for d in kept { (d.isFull ? fulls : previews).setObject(d, forKey: d.url as NSURL, cost: d.cost) }
     }
 
@@ -155,7 +160,10 @@ final class ImageStore {
         previews.removeObject(forKey: url as NSURL)
         fulls.removeObject(forKey: url as NSURL)
         details.removeObject(forKey: url as NSURL)
+        cameraPreviews.removeObject(forKey: url as NSURL)
     }
+
+    func cameraPreview(_ url: URL) -> CGImage? { cameraPreviews.object(forKey: url as NSURL) }
 }
 
 /// Filmstrip thumbnails, at most four decodes at a time. Sized for a retina cell at the

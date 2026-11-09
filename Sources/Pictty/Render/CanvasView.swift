@@ -344,7 +344,7 @@ final class CanvasView: NSView {
     /// A screen-sized edit drops the sharper decodes, which no longer match it; the canvas asks
     /// for them again (`canvasNeedsFull`) if the zoom needs them, and the edited full one comes
     /// back here with `full`.
-    func showEdited(_ image: CGImage, full: Bool, pane i: Int, pixelSize: CGSize? = nil, hasAlpha: Bool? = nil) {
+    func showEdited(_ image: CGImage, full: Bool, pane i: Int, pixelSize: CGSize? = nil, hasAlpha: Bool? = nil, fade: Bool = false) {
         guard panes.indices.contains(i), var s = panes[i].shown else { return }
         let p = panes[i]
         if let pixelSize { s.pixelSize = pixelSize }
@@ -362,6 +362,12 @@ final class CanvasView: NSView {
         p.shown = s
         dropSharp(p)
         p.displayed = nil
+        if fade {
+            let t = CATransition()
+            t.type = .fade
+            t.duration = 0.25
+            p.container.add(t, forKey: "develop")
+        }
         layoutPane(i, animated: false)
     }
 

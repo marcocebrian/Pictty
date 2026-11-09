@@ -8,9 +8,10 @@ import PicttyCore
 /// Every picture goes through Pictty's own engine. A camera RAW is developed from its sensor mosaic
 /// (`SensorDevelop`: LibRaw and a learned demosaic and denoise, its tones matched to Apple's
 /// develop of the same frame), and that develop is the picture: exposure, white balance, noise
-/// reduction, sharpening and the rest are Pictty's. Apple's develop (`RAWDevelop`) is shown first,
-/// at once, while the sensor develop runs (about a second), and stays the picture for a RAW the
-/// sensor develop cannot take, with SCUNet for its noise; nothing is asked of the person either way.
+/// reduction, sharpening and the rest are Pictty's. Every RAW opened gets one, sliders or not: the
+/// camera's preview stays on screen while the sensor develop runs (about three seconds). Apple's
+/// develop (`RAWDevelop`) feeds it, and is the picture only for a RAW the sensor develop cannot
+/// take, with SCUNet for its noise; nothing is asked of the person either way.
 final class LightRenderer: @unchecked Sendable {
     enum Engine: Equatable {
         case pictty
@@ -45,6 +46,17 @@ final class LightRenderer: @unchecked Sendable {
     /// Whether `source` is the sensor develop (which has its own base of colour). Queue-only.
     private var sensorOnSource = false
     private var appleDevelop = LightRenderer.sensorModel == nil
+    /// Whether the develop on `source` is final: the sensor develop, or Apple's for good.
+    private var sensorSettled = LightRenderer.sensorModel == nil
+    /// True once the RAW's develop is the one it keeps; until then the camera's preview stays.
+    var settled: Bool { lock.lock(); defer { lock.unlock() }; return sensorSettled }
+    /// The picture was left: a sensor develop not yet begun is skipped, one under way stops.
+    private var abandoned = false
+    private var isAbandoned: Bool { lock.lock(); defer { lock.unlock() }; return abandoned }
+    func abandon() {
+        lock.lock(); abandoned = true; lock.unlock()
+        cancelAll()
+    }
     /// True when the RAW is Apple's develop for good: the internal engine could not read it.
     var developedByApple: Bool { lock.lock(); defer { lock.unlock() }; return appleDevelop }
 
@@ -106,7 +118,11 @@ final class LightRenderer: @unchecked Sendable {
         let headroom = isHDR ? max(preview.contentHeadroom, 1) : 1
         queue.async { [engine] in
             if engine == .raw {
-                guard let (develop, src) = Self.rawSource(url, maxPixel: maxPixel, hdr: isHDR, standIn: true) else { return }
+                guard let (develop, src) = Self.rawSource(url, maxPixel: maxPixel, hdr: isHDR, standIn: true) else {
+                    self.lock.lock(); self.sensorSettled = true; self.appleDevelop = true; self.lock.unlock()
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self.onDenoised?() } }
+                    return
+                }
                 self.lock.lock(); self.rawHeadroom = develop.headroom; self.lock.unlock()
                 let base = RAWDevelop.baseDenoise(develop.image)
                 self.lock.lock(); self.rawBase = base; self.lock.unlock()
@@ -128,7 +144,7 @@ final class LightRenderer: @unchecked Sendable {
     private func developSensor(reference: CGImage, size: (Int, Int), hdr: Bool) {
         sensorGroup.enter()
         Self.sensorQueue.async {
-            let full = Self.sensorDevelop(self.url, reference: reference, hdr: hdr)
+            let full = self.isAbandoned ? nil : Self.sensorDevelop(self.url, reference: reference, hdr: hdr, cancelled: { self.isAbandoned })
             let headroom = hdr ? (full.map { LookMatch.peak($0) } ?? 1) : 1
             self.lock.lock(); self.sensorFull = full; if full != nil { self.rawHeadroom = headroom } else { self.appleDevelop = true }; self.lock.unlock()
             self.sensorGroup.leave()
@@ -149,6 +165,7 @@ final class LightRenderer: @unchecked Sendable {
                     self.lock.lock(); self.sensorFull = nil; self.appleDevelop = true; self.lock.unlock()
                     timingMark("RAW: the sensor develop's framing is not Apple's; Apple's develop stays")
                 }
+                self.lock.lock(); self.sensorSettled = true; self.lock.unlock()
                 DispatchQueue.main.async { MainActor.assumeIsolated { self.onDenoised?() } }
             }
         }

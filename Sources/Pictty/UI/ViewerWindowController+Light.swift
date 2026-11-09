@@ -20,6 +20,8 @@ final class LightSession {
     let pixelSize: CGSize
     let hasAlpha: Bool
     var editedFullRequested = false
+    /// Whether the RAW's own develop has been on screen yet (the first one fades in over the camera's preview).
+    var ownShown = false
     /// Before and After: each side as it was last on screen, to swap back to without resampling or
     /// rendering again. The edit's is good while its adjustments and crop are what they were.
     var editedFrame: (frame: CanvasView.Frame, light: Adjustments, crop: CropBox?, analysis: ImageAnalysis?)?
@@ -49,9 +51,28 @@ extension ViewerWindowController: NSMenuItemValidation {
         return vp.rotation != 0 || vp.mirror ? (vp.rotation, vp.mirror) : nil
     }
 
-    /// The edited picture keeps its own pixels on the canvas.
+    /// The edited picture keeps its own pixels on the canvas; so does a RAW Pictty develops itself.
     func keepsEdits(_ url: URL) -> Bool {
-        lightSession?.renderer.url == url && hasPixelEdits
+        lightSession?.renderer.url == url && (hasPixelEdits || ownsRAW(url))
+    }
+
+    /// A RAW on screen that Pictty's own engine develops, sliders or not: what shows is the engine's
+    /// develop, never Apple's (unless the engine cannot read the file).
+    func ownsRAW(_ url: URL) -> Bool {
+        guard let renderer = lightSession?.renderer, renderer.url == url, renderer.engine == .raw else { return false }
+        return !renderer.developedByApple
+    }
+
+    /// Whether a RAW opened now is developed by Pictty's own engine: Apple's develop only feeds it.
+    func developsOwnRAW(_ url: URL) -> Bool {
+        ImageFormats.isRaw(url) && LightRenderer.sensorModel != nil && !model.isComparing
+    }
+
+    /// The RAW's develop is the one it keeps: the orb says so.
+    func rawSettled(_ url: URL) {
+        guard model.current?.url == url, ImageFormats.isRaw(url), model.rawStatus != .developed else { return }
+        timingMark("RAW on screen: \(ownsRAW(url) ? "Pictty's develop" : "Apple's develop")")
+        withAnimation(Chrome.spring) { model.rawStatus = .developed }
     }
 
     /// The dot in the close button, as every Mac document window shows unsaved changes.
@@ -177,12 +198,17 @@ extension ViewerWindowController: NSMenuItemValidation {
         guard model.lightUnavailable == nil, let url = model.current?.url, let shown = canvas.shown(pane: 0),
               shown.url == url else { return }
         if lightSession?.renderer.url != url {
-            guard hasPixelEdits || model.cropping else { return }
+            // A RAW begins at once with its own develop, once Apple's (which feeds it) is in.
+            let ownRAW = developsOwnRAW(url) && !store.needsDevelop(url)
+            guard hasPixelEdits || model.cropping || ownRAW else { return }
             beginLight(url: url, shown: shown)
         }
         guard let session = lightSession else { return }
         if model.showingOriginal { model.showingOriginal = false }
-        if model.light.isNeutral {
+        // Until the engine's develop is ready, what is on screen (the camera's preview) stays.
+        if ownsRAW(url), !session.renderer.settled { return }
+        if model.light.isNeutral && !ownsRAW(url) {
+            rawSettled(url)
             session.renderer.cancelAll()
             model.lightTiming = ""
             present(session.preview, full: false, session: session)
@@ -214,7 +240,10 @@ extension ViewerWindowController: NSMenuItemValidation {
         let out = crop?.apply(to: image) ?? image
         let size = crop?.croppedSize(session.pixelSize) ?? session.pixelSize
         let resized = canvas.shown(pane: 0)?.pixelSize != size
-        canvas.showEdited(Self.screenCopy(out), full: full, pane: 0, pixelSize: size, hasAlpha: session.hasAlpha || crop?.isRounded == true)
+        let first = !session.ownShown && ownsRAW(session.renderer.url)
+        if first { session.ownShown = true }
+        canvas.showEdited(Self.screenCopy(out), full: full, pane: 0, pixelSize: size, hasAlpha: session.hasAlpha || crop?.isRounded == true,
+                          fade: first)
         if resized {
             // A crop is a different picture to fit: the zoom mode and the window follow it.
             applyZoom(animated: false)
@@ -256,6 +285,7 @@ extension ViewerWindowController: NSMenuItemValidation {
               r.adjustments == model.light, !model.showingOriginal else { return }
         session.editedFullRequested = false
         present(r.image, full: false, session: session)
+        rawSettled(url)
         let byApple = session.renderer.engine == .raw && session.renderer.developedByApple
         if model.rawByApple != byApple { model.rawByApple = byApple }
         let engine = session.renderer.engine == .pictty ? L("Pictty engine") : byApple ? L("Apple RAW engine") : L("Internal RAW engine")
@@ -295,7 +325,7 @@ extension ViewerWindowController: NSMenuItemValidation {
                 return
             }
             let render: (CGImage) -> Void = { original in
-                guard !a.isNeutral else { return self.present(original, full: true, session: session) }
+                guard !a.isNeutral || self.ownsRAW(url) else { return self.present(original, full: true, session: session) }
                 session.renderer.renderFull(original, a) { [weak self] r in
                     guard let self else { return }
                     if self.model.denoiseFull { self.denoiseFinished() }
@@ -316,6 +346,21 @@ extension ViewerWindowController: NSMenuItemValidation {
     private func showOriginalPixels() {
         guard let session = lightSession else { return }
         let url = session.renderer.url
+        // A RAW Pictty develops: its original is the engine's own develop, sliders at zero.
+        if ownsRAW(url) {
+            session.renderer.render(model.light.valuesReset) { [weak self] r in
+                guard let self, self.lightSession === session, self.model.showingOriginal else { return }
+                let resized = self.canvas.shown(pane: 0)?.pixelSize != session.pixelSize
+                self.canvas.showEdited(Self.screenCopy(r.image), full: false, pane: 0, pixelSize: session.pixelSize, hasAlpha: session.hasAlpha)
+                if resized {
+                    self.applyZoom(animated: false)
+                    self.fitWindowToPicture(animated: true)
+                }
+                self.analyseEdit(r.image, url: url)
+                self.updateStatus()
+            }
+            return
+        }
         let resized = canvas.shown(pane: 0)?.pixelSize != session.pixelSize
         canvas.showEdited(session.preview, full: false, pane: 0, pixelSize: session.pixelSize, hasAlpha: session.hasAlpha)
         if let full = store.cached(url, full: true) { canvas.showEdited(full.image, full: true, pane: 0) }
@@ -405,7 +450,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         model.crop = nil
         model.cropping = false
         syncCropChrome()
-        lightSession?.renderer.cancelAll()
+        lightSession?.renderer.abandon()
         lightSession = nil
         lightAnalysisTicket &+= 1
         model.light = model.light.valuesReset
@@ -683,9 +728,12 @@ extension ViewerWindowController: NSMenuItemValidation {
             model.light = model.light.valuesReset
             canvas.clear(pane: 0)
         } else {
+            let ownRAW = ownsRAW(url)
             setLight(model.light.valuesReset)
             endLight()
             resetOrientation()
+            // The engine's develop starts again from the file, as when it was opened.
+            if ownRAW { canvas.clear(pane: 0) }
         }
         updateDocumentEdited()
         if let proceed {

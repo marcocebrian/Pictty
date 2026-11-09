@@ -20,7 +20,7 @@ Prefer not to buy? <a href="https://www.noxdrop.com/pictty.html#download">Downlo
 
 <p align="center">macOS 15+ · Liquid Glass · <a href="https://www.noxdrop.com/pictty.html">noxdrop.com/pictty</a></p>
 
-<p align="center"><b>New in 1.5:</b> an in-house hybrid neural RAW engine. Also: sharper Sharpening, lens correction for RAWs, HDR highlights that stay smooth while you edit, 10- and 12-bit HEIF kept on save, and double-click for 100 % in full screen.</p>
+<p align="center"><b>New in 1.5.1:</b> every RAW opens with Pictty's own develop, sliders untouched.<br><b>New in 1.5:</b> an in-house hybrid neural RAW engine. Also: sharper Sharpening, lens correction for RAWs, HDR highlights that stay smooth while you edit, 10- and 12-bit HEIF kept on save, and double-click for 100 % in full screen.</p>
 
 ---
 
@@ -121,7 +121,7 @@ Transparency is checked against the file: some decoders return RGBA for opaque f
 
 ### RAW
 
-A camera RAW opens with the preview the camera stored in it, so it appears **at once**. A floating RAW badge and the orb show while Apple's RAW engine develops it at screen size; then Pictty's own **hybrid neural RAW engine** develops every pixel in the background and takes its place.
+A camera RAW opens with the preview the camera stored in it, so it appears **at once**. A floating RAW badge and the orb show while Pictty's own **hybrid neural RAW engine** develops every pixel, in about three seconds, and its develop fades in over the preview. It is the picture from the start, whether you touch a slider or not.
 
 The hybrid engine reads the sensor's mosaic with **LibRaw** and demosaics and denoises it in one pass with a **neural network** on the GPU, before any demosaic has smeared the noise: fine texture and clean shadows. In the brightest areas, where the sensor clipped, it takes the light from Apple's develop, which reconstructs highlights well, and keeps its own detail on top. **Lens correction** (distortion, vignetting and colour fringing) is measured on each picture from Apple's corrected and uncorrected develops, so it follows Apple's lens profiles for any camera. RAWs the network cannot take (Fujifilm X-Trans, linear DNGs such as ProRAW) stay with Apple's engine. The Adjust panel says which engine developed the picture.
 
