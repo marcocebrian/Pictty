@@ -20,7 +20,7 @@ Prefer not to buy? <a href="https://www.noxdrop.com/pictty.html#download">Downlo
 
 <p align="center">macOS 15+ · Liquid Glass · <a href="https://www.noxdrop.com/pictty.html">noxdrop.com/pictty</a></p>
 
-<p align="center"><b>New in 1.5.1:</b> every RAW opens with Pictty's own develop, sliders untouched.<br><b>New in 1.5:</b> an in-house hybrid neural RAW engine. Also: sharper Sharpening, lens correction for RAWs, HDR highlights that stay smooth while you edit, 10- and 12-bit HEIF kept on save, and double-click for 100 % in full screen.</p>
+<p align="center"><b>New in 1.5.1:</b> an in-house hybrid neural RAW engine. Also: sharper Sharpening, lens correction for RAWs, HDR highlights that stay smooth while you edit, 10- and 12-bit HEIF kept on save, and double-click for 100 % in full screen.</p>
 
 ---
 
