@@ -56,6 +56,9 @@ struct ShortcutsView: View {
         Group(title: "Edit", symbol: "slider.horizontal.3", colors: [Color(hex: 0xFBBC04), Color(hex: 0xEA4335)], rows: [
             (["E"], "Adjust: light and colour"),
             (["C"], "Crop (↩ done, Esc cancel, X turn the ratio, R round the corners)"),
+            (["⇧", "⌘", "A"], "Annotate (V select, A arrow, R box, T text, N steps, B blur, X censor, M magnifier, S spotlight)"),
+            (["⌥", "⌘", "I"], "Resize"),
+            (["⌘", "Z"], "Undo, and ⇧⌘Z redo"),
             (["Y"], "The original, and back"),
             (["⌘", "S"], "Save"),
             (["⇧", "⌘", "S"], "Save As, or convert"),
