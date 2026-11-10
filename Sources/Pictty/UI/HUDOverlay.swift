@@ -70,19 +70,27 @@ struct HUDOverlay: View {
                 Spacer()
             }
 
-            // Work going on in the picture, top left: the RAW develop, the noise reduction.
-            if model.denoiseProgress != nil || model.denoiseDone, model.current != nil, !model.isComparing {
-                VStack {
-                    HStack {
+            // Work going on in the picture, top left: the RAW develop, the noise reduction, Enlarge.
+            let denoiseShown = model.denoiseProgress != nil || model.denoiseDone
+            let enlargeShown = model.enlargeProgress != nil || model.enlargeDone
+            if denoiseShown || enlargeShown, model.current != nil, !model.isComparing {
+                VStack(alignment: .leading, spacing: 6) {
+                    if denoiseShown {
                         DenoiseBadge(progress: model.denoiseProgress, everyPixel: model.denoiseFull)
-                        Spacer()
+                    }
+                    if enlargeShown {
+                        WorkBadge(label: "ENLARGE", symbol: "arrow.up.left.and.arrow.down.right", progress: model.enlargeProgress,
+                                  working: model.enlarge == 2 ? "enlarging 2×" : "enlarging 4×", done: "enlarged",
+                                  colors: [Color(hex: 0x34A8F0), Color(hex: 0x4285F4)])
                     }
                     Spacer()
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, model.rawStatus == nil ? 62 : 106)
                 .padding(.leading, 18)
                 .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .topLeading)))
                 .animation(Chrome.spring, value: model.denoiseProgress == nil)
+                .animation(Chrome.spring, value: model.enlargeProgress == nil)
             }
 
             if let raw = model.rawStatus, model.current != nil, !model.isComparing {
@@ -454,17 +462,36 @@ struct DenoiseBadge: View {
     let progress: Double?
     /// Going over every pixel (zoomed in, or saving) rather than the picture on screen.
     let everyPixel: Bool
+
+    var body: some View {
+        WorkBadge(label: "NOISE", symbol: "wand.and.sparkles", progress: progress,
+                  working: everyPixel ? "reducing noise in every pixel" : "reducing noise", done: "noise reduced",
+                  colors: [Color(hex: 0x9C8CF0), Color(hex: 0x6A4CE0)])
+    }
+}
+
+/// The network at work on the picture, top left: its name in a capsule, the mascot bouncing beside
+/// what it is doing and a fine line filling up; then a moment of done.
+struct WorkBadge: View {
+    let label: LocalizedStringKey
+    let symbol: String
+    /// nil once done.
+    let progress: Double?
+    let working: LocalizedStringKey
+    let done: LocalizedStringKey
+    /// The line's colours, the network's own.
+    let colors: [Color]
     @State private var floating = false
 
     var body: some View {
         HStack(spacing: 6) {
             HStack(spacing: 4) {
-                Image(systemName: progress == nil ? "checkmark.seal.fill" : "wand.and.sparkles")
+                Image(systemName: progress == nil ? "checkmark.seal.fill" : symbol)
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(progress == nil ? Color(hex: 0x34A853) : Color(hex: 0xB9A8FF))
+                    .foregroundStyle(progress == nil ? Color(hex: 0x34A853) : colors[0].mix(with: .white, by: 0.25))
                     .contentTransition(.symbolEffect(.replace))
                     .symbolEffect(.pulse, isActive: progress != nil)
-                Text("NOISE")
+                Text(label)
                     .font(.system(size: 10.5, weight: .heavy, design: .rounded))
                     .tracking(0.6)
                     .foregroundStyle(.white.opacity(0.92))
@@ -484,7 +511,7 @@ struct DenoiseBadge: View {
                     .animation(.easeInOut(duration: 1.7).repeatForever(autoreverses: true), value: floating)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 5) {
-                            Text(everyPixel ? "reducing noise in every pixel" : "reducing noise")
+                            Text(working)
                             Text("\(Int((progress * 100).rounded())) %")
                                 .monospacedDigit()
                                 .foregroundStyle(.white.opacity(0.6))
@@ -492,15 +519,13 @@ struct DenoiseBadge: View {
                         }
                         .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white.opacity(0.85))
-                        // A fine line filling up, in the network's colour.
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {
                                 Capsule().fill(.white.opacity(0.15))
                                 Capsule()
-                                    .fill(LinearGradient(colors: [Color(hex: 0x9C8CF0), Color(hex: 0x6A4CE0)],
-                                                         startPoint: .leading, endPoint: .trailing))
+                                    .fill(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
                                     .frame(width: max(3, geo.size.width * progress))
-                                    .shadow(color: Color(hex: 0x9C8CF0).opacity(0.7), radius: 3)
+                                    .shadow(color: colors[0].opacity(0.7), radius: 3)
                             }
                         }
                         .frame(width: 120, height: 3)
@@ -511,7 +536,7 @@ struct DenoiseBadge: View {
                 .transition(.asymmetric(insertion: .scale(scale: 0.6, anchor: .leading).combined(with: .opacity),
                                         removal: .scale(scale: 1.3).combined(with: .opacity).combined(with: .offset(y: -10))))
             } else {
-                Text("noise reduced")
+                Text(done)
                     .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.85))
                     .shadow(color: .black.opacity(0.6), radius: 3)

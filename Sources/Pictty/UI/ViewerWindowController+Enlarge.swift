@@ -63,6 +63,14 @@ extension ViewerWindowController {
         updateDocumentEdited()
     }
 
+    /// The menu's Enlarge: the toolbar's strip, or why this picture cannot be enlarged.
+    @objc func showEnlarge(_ sender: Any?) {
+        if let r = enlargeRefusal { return showToast(Self.refusalText(r), symbol: "exclamationmark.triangle") }
+        revealChrome()
+        NeuralUpscaler.shared.warmUp()
+        model.enlargePickerOpen = true
+    }
+
     /// A new crop: past 8 MP, the enlargement goes, with a word why.
     func enlargeCropChanged() {
         guard model.enlarge != nil, enlargeRefusal == .tooLarge else { return }

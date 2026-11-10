@@ -1621,6 +1621,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         if idleSeconds > Self.chromeGrace, model.chromeVisible, !model.showInspector, !model.items.isEmpty,
            !(model.filmstripRevealed && !filmstripRested) {
             if model.comparePickerOpen { model.comparePickerOpen = false }
+            if model.enlargePickerOpen { model.enlargePickerOpen = false }
             setChromeVisible(false)
             if window.styleMask.contains(.fullScreen) { NSCursor.setHiddenUntilMouseMoves(true) }
         }

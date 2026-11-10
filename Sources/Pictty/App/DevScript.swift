@@ -5,6 +5,7 @@
 import AppKit
 import ImageIO
 import PicttyCore
+import SwiftUI
 
 @MainActor
 enum DevScript {
@@ -92,7 +93,7 @@ enum DevScript {
         case "reveal": c.revealChrome()
         case "focus": c.window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         case "state":
-            print("state items=\(c.model.items.count) folder=\(c.model.folderURL?.path ?? "-") sheet=\(c.window?.attachedSheet != nil) sandbox=\(FolderAccess.isSandboxed) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") zoom=\(c.model.zoomLabel) comparing=\(c.model.isComparing) chrome=\(c.model.chromeVisible) strip=\(c.model.comparePickerOpen)")
+            print("state items=\(c.model.items.count) folder=\(c.model.folderURL?.path ?? "-") sheet=\(c.window?.attachedSheet != nil) sandbox=\(FolderAccess.isSandboxed) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") zoom=\(c.model.zoomLabel) comparing=\(c.model.isComparing) chrome=\(c.model.chromeVisible) strip=\(c.model.comparePickerOpen) enlargestrip=\(c.model.enlargePickerOpen)")
             fflush(stdout)
         case "snapshot":
             // snapshot <path>: what the canvas shows of the picture, as a PNG, for checking edits.
@@ -166,6 +167,20 @@ enum DevScript {
             // enlarge <0|2|4>: Enlarge off, 2× or 4×.
             if let f = n.first { c.setEnlarge(f == 0 ? nil : Int(f)) }
         case "enlargepicker": c.model.enlargePickerOpen.toggle()
+        case "badgeshot":
+            // badgeshot <path>: the Enlarge badge mid-run, drawn on its own over a grey.
+            let view = ZStack {
+                Color(white: 0.35)
+                WorkBadge(label: "ENLARGE", symbol: "arrow.up.left.and.arrow.down.right", progress: 0.42,
+                          working: "enlarging 4×", done: "enlarged", colors: [Color(hex: 0x34A8F0), Color(hex: 0x4285F4)])
+            }
+            .frame(width: 360, height: 70)
+            let r = ImageRenderer(content: view)
+            r.scale = 2
+            if let image = r.cgImage, let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: text) as CFURL, "public.png" as CFString, 1, nil) {
+                CGImageDestinationAddImage(dest, image, nil)
+                CGImageDestinationFinalize(dest)
+            }
         case "quit": NSApp.terminate(nil)
         default: break
         }

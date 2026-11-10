@@ -84,6 +84,9 @@ struct ToolbarView: View {
             glyph("crop", "Crop (C)", isOn: model.cropping) {
                 controller.toggleCrop(nil)
             }
+            if NeuralUpscaler.shared.isAvailable {
+                EnlargeButton(model: model, controller: controller)
+            }
             glyph(model.slideshowRunning ? "pause.rectangle" : "play.rectangle",
                   model.slideshowRunning ? "Stop slideshow (S)" : "Slideshow (S)",
                   isOn: model.slideshowRunning) {
@@ -285,6 +288,70 @@ private struct CompareButton: View {
     }
 }
 
+/// Enlarge: one button next to Crop; its strip holds 2×, 4× and Off. Past 8 MP (as cropped) or on
+/// an HDR picture it stays dim, and says why.
+private struct EnlargeButton: View {
+    @ObservedObject var model: ViewerModel
+    let controller: ViewerWindowController
+    @State private var hovering = false
+
+    var body: some View {
+        let refusal = controller.offersEnlarge ? controller.enlargeRefusal : nil
+        let usable = controller.offersEnlarge && refusal == nil
+        let on = model.enlarge != nil
+        Button {
+            if let refusal { return controller.showToast(ViewerWindowController.refusalText(refusal), symbol: "exclamationmark.triangle") }
+            guard usable else { return }
+            NeuralUpscaler.shared.warmUp()
+            model.enlargePickerOpen.toggle()
+        } label: {
+            HStack(spacing: 2) {
+                if let f = model.enlarge {
+                    Text("\(f)×").font(.system(size: 11.5, weight: .bold, design: .rounded))
+                } else {
+                    Image(systemName: "arrow.up.backward.and.arrow.down.forward.square")
+                        .font(.system(size: 12.5, weight: .medium))
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+                    .opacity(0.7)
+            }
+            .frame(width: 34, height: 25)
+            .foregroundStyle(on ? Color.accentColor.mix(with: .white, by: 0.25)
+                                : .white.opacity(!usable ? 0.3 : hovering || model.enlargePickerOpen ? 0.95 : 0.62))
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(on ? Color.accentColor.opacity(hovering ? 0.3 : 0.2)
+                             : .white.opacity(usable && (hovering || model.enlargePickerOpen) ? 0.13 : 0))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScale())
+        .toolbarTooltip(model.enlargePickerOpen ? "" : refusal.map { ViewerWindowController.refusalText($0) } ?? "Enlarge",
+                        hovering: $hovering)
+        .popover(isPresented: $model.enlargePickerOpen, arrowEdge: .bottom) {
+            HStack(spacing: 1) {
+                ForEach(EnlargeRule.factors, id: \.self) { f in
+                    CompareTile(symbol: "", text: "\(f)×", title: "Enlarge \(f)×", help: "Enlarge \(f)×", isOn: model.enlarge == f) {
+                        model.enlargePickerOpen = false
+                        controller.setEnlarge(f)
+                    }
+                }
+                Rectangle().fill(.primary.opacity(0.12)).frame(width: 0.5, height: 13).padding(.horizontal, 4)
+                CompareTile(symbol: "xmark", title: "Turn Enlarge off", help: "Turn Enlarge off", isOn: false) {
+                    model.enlargePickerOpen = false
+                    controller.setEnlarge(nil)
+                }
+                .disabled(model.enlarge == nil)
+                .opacity(model.enlarge == nil ? 0.35 : 1)
+            }
+            .padding(4)
+        }
+        .animation(.easeOut(duration: 0.14), value: hovering)
+        .animation(.easeOut(duration: 0.18), value: on)
+    }
+}
+
 /// The strip under the Compare button: one row of tiles, each an icon with its name.
 private struct ComparePicker: View {
     @ObservedObject var model: ViewerModel
@@ -362,6 +429,8 @@ private struct ComparePicker: View {
 /// is the tooltip.
 private struct CompareTile: View {
     let symbol: String
+    /// Words in place of the symbol ("2×").
+    var text: String?
     let title: String
     let help: String
     var isOn = false
@@ -374,9 +443,15 @@ private struct CompareTile: View {
             taps += 1
             action()
         } label: {
-            Image(systemName: symbol)
-                .font(.system(size: 12.5, weight: .medium))
-                .symbolEffect(.bounce.down, value: taps)
+            Group {
+                if let text {
+                    Text(text).font(.system(size: 12, weight: .semibold, design: .rounded))
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .symbolEffect(.bounce.down, value: taps)
+                }
+            }
                 .frame(width: 27, height: 25)
                 .foregroundStyle(isOn ? Color.accentColor : .primary.opacity(hovering ? 0.95 : 0.7))
                 .background(

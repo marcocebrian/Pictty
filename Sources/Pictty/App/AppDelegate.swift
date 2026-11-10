@@ -433,6 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(m, "Show Information", #selector(C.toggleInspector(_:)), "i", [])
             add(m, "Adjust", #selector(C.toggleLight(_:)), "e", [])
             add(m, "Crop", #selector(C.toggleCrop(_:)), "c", [])
+            if NeuralUpscaler.shared.isAvailable { add(m, "Enlarge", #selector(C.showEnlarge(_:)), "", []) }
             add(m, "Show Original", #selector(C.toggleOriginal(_:)), "y", [])
             add(m, "Show Info Pill", #selector(C.toggleHUD(_:)), "/", [])
             add(m, "Clipping Warnings", #selector(C.toggleClipping(_:)), "j", [])
@@ -494,7 +495,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "First Image": "backward.end", "Last Image": "forward.end",
         "Minimize": "minus.rectangle", "Zoom": "plus.rectangle", "Keyboard Shortcuts": "keyboard", "Make Pictty the Default Viewer…": "checkmark.seal", "Inside Pictty": "sparkles", "Pictty Website": "safari", "More Apps at noxdrop.com": "square.grid.2x2", "Clipping Warnings": "exclamationmark.triangle",
         "Save": "square.and.arrow.down", "Save As…": "square.and.arrow.down.on.square", "Adjust": "slider.horizontal.3",
-        "Show Original": "rectangle.lefthalf.inset.filled", "Revert to Original": "arrow.uturn.backward", "Crop": "crop",
+        "Show Original": "rectangle.lefthalf.inset.filled", "Revert to Original": "arrow.uturn.backward", "Crop": "crop", "Enlarge": "arrow.up.backward.and.arrow.down.forward.square",
         "Print…": "printer",
     ]
 
