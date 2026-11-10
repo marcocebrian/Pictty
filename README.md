@@ -220,6 +220,8 @@ Pictty reads the pictures you open and the other pictures in their folder, and k
 | D · L · B · P · Tab | Compare · layout · blink · sync pan · next pane |
 | [ ] · M · two fingers | Rotate · mirror · rotate on the trackpad |
 | E · C · Y | Adjust · crop · the original and back |
+| ⇧⌘A · ⌥⌘I · ⌘Z ⇧⌘Z | Annotate · resize · undo and redo |
+| While annotating: V A R U O T N H B X M S | Select · arrow · rectangle · rounded · circle · text · steps · highlighter · blur · censor · magnifier · spotlight |
 | ⌘S · ⇧⌘S · ⌘P | Save · Save As or convert · print |
 | S · T · F or ↩ | Slideshow · filmstrip · full screen |
 | ? · Esc | All shortcuts · close what is open, then leave full screen |
