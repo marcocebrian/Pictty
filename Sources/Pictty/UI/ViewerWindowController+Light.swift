@@ -111,6 +111,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         case #selector(toggleOriginal(_:)): return hasUnsavedAdjustments && !model.cropping
         case #selector(toggleCrop(_:)): return model.current != nil && model.lightUnavailable == nil
         case #selector(showEnlarge(_:)): return offersEnlarge
+        case #selector(copy(_:)): return model.current != nil
         case #selector(printPicture(_:)): return canPrint
         default: return true
         }

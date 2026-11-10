@@ -181,6 +181,19 @@ enum DevScript {
                 CGImageDestinationAddImage(dest, image, nil)
                 CGImageDestinationFinalize(dest)
             }
+        case "menus":
+            // menus: every menu and its items, as the menu bar has them now.
+            for top in NSApp.mainMenu?.items ?? [] {
+                let items = (top.submenu?.items ?? []).map { $0.isSeparatorItem ? "|" : $0.title + ($0.isHidden ? "[hidden]" : "") + ($0.isAlternate ? "[alt]" : "") }
+                print("menu \(top.submenu?.title ?? "-"): \(items.joined(separator: ", "))")
+            }
+            fflush(stdout)
+        case "copytest":
+            // copytest: Edit ▸ Copy through the responder chain, then what the pasteboard holds.
+            NSPasteboard.general.clearContents()
+            NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+            print("pasteboard: \((NSPasteboard.general.types ?? []).map(\.rawValue).joined(separator: ", "))")
+            fflush(stdout)
         case "quit": NSApp.terminate(nil)
         default: break
         }

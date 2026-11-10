@@ -393,13 +393,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             m.addItem(.separator())
             add(m, "Print…", #selector(C.printPicture(_:)), "p")
             m.addItem(.separator())
-            add(m, "Copy Image", #selector(C.copyCurrentImage(_:)), "c")
             add(m, "Reveal in Finder", #selector(C.revealInFinder(_:)), "r")
             add(m, "Open With Default App", #selector(C.openInDefaultApp(_:)), "o", [.command, .shift])
             m.addItem(.separator())
             add(m, "Move to Trash", #selector(C.moveToTrash(_:)), "\u{8}")
             m.addItem(.separator())
             add(m, "Close Window", #selector(NSWindow.performClose(_:)), "w")
+        }
+
+        // Edit: the standard text commands (fields such as Save As's name need them), Copy for the
+        // picture itself when no text is being edited, and the editing tools.
+        _ = submenu("Edit") { m in
+            add(m, "Undo", Selector(("undo:")), "z")
+            add(m, "Redo", Selector(("redo:")), "z", [.command, .shift])
+            m.addItem(.separator())
+            add(m, "Cut", #selector(NSText.cut(_:)), "x")
+            add(m, "Copy", #selector(NSText.copy(_:)), "c")
+            add(m, "Paste", #selector(NSText.paste(_:)), "v")
+            add(m, "Select All", #selector(NSText.selectAll(_:)), "a")
+            m.addItem(.separator())
+            add(m, "Adjust", #selector(C.toggleLight(_:)), "e", [])
+            add(m, "Crop", #selector(C.toggleCrop(_:)), "c", [])
+            if NeuralUpscaler.shared.isAvailable { add(m, "Enlarge", #selector(C.showEnlarge(_:)), "", []) }
+            add(m, "Show Original", #selector(C.toggleOriginal(_:)), "y", [])
+            m.addItem(.separator())
+            add(m, "Rotate Right", #selector(C.rotateRight(_:)), "]", [])
+            add(m, "Rotate Left", #selector(C.rotateLeft(_:)), "[", [])
+            add(m, "Mirror", #selector(C.toggleMirror(_:)), "m", [])
         }
 
         _ = submenu("View") { m in
@@ -425,16 +445,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             m.addItem(background)
             m.addItem(.separator())
 
-            add(m, "Rotate Right", #selector(C.rotateRight(_:)), "]", [])
-            add(m, "Rotate Left", #selector(C.rotateLeft(_:)), "[", [])
-            add(m, "Mirror", #selector(C.toggleMirror(_:)), "m", [])
-            m.addItem(.separator())
             add(m, "Show Filmstrip", #selector(C.toggleFilmstrip(_:)), "t", [])
             add(m, "Show Information", #selector(C.toggleInspector(_:)), "i", [])
-            add(m, "Adjust", #selector(C.toggleLight(_:)), "e", [])
-            add(m, "Crop", #selector(C.toggleCrop(_:)), "c", [])
-            if NeuralUpscaler.shared.isAvailable { add(m, "Enlarge", #selector(C.showEnlarge(_:)), "", []) }
-            add(m, "Show Original", #selector(C.toggleOriginal(_:)), "y", [])
             add(m, "Show Info Pill", #selector(C.toggleHUD(_:)), "/", [])
             add(m, "Clipping Warnings", #selector(C.toggleClipping(_:)), "j", [])
             m.addItem(.separator())
@@ -495,7 +507,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "First Image": "backward.end", "Last Image": "forward.end",
         "Minimize": "minus.rectangle", "Zoom": "plus.rectangle", "Keyboard Shortcuts": "keyboard", "Make Pictty the Default Viewer…": "checkmark.seal", "Inside Pictty": "sparkles", "Pictty Website": "safari", "More Apps at noxdrop.com": "square.grid.2x2", "Clipping Warnings": "exclamationmark.triangle",
         "Save": "square.and.arrow.down", "Save As…": "square.and.arrow.down.on.square", "Adjust": "slider.horizontal.3",
-        "Show Original": "rectangle.lefthalf.inset.filled", "Revert to Original": "arrow.uturn.backward", "Crop": "crop", "Enlarge": "arrow.up.backward.and.arrow.down.forward.square",
+        "Show Original": "rectangle.lefthalf.inset.filled", "Revert to Original": "arrow.uturn.backward", "Crop": "crop", "Undo": "arrow.uturn.backward", "Redo": "arrow.uturn.forward", "Cut": "scissors",
+        "Copy": "doc.on.doc", "Paste": "doc.on.clipboard", "Select All": "checkmark.rectangle", "Enlarge": "arrow.up.backward.and.arrow.down.forward.square",
         "Print…": "printer",
     ]
 

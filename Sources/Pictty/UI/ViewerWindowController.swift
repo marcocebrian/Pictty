@@ -1415,6 +1415,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     private var targetItem: ImageItem? { model.item(forPane: model.activePane) ?? model.current }
 
+    /// Edit ▸ Copy with no text being edited: the picture.
+    @objc func copy(_ sender: Any?) { copyCurrentImage(sender) }
+
     /// The file itself (Finder pastes a copy) and its encoded bytes (editors paste the picture).
     @objc func copyCurrentImage(_ sender: Any?) {
         guard let item = targetItem else { return }
