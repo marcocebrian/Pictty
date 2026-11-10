@@ -63,7 +63,7 @@ extension ViewerWindowController {
         model.enlarge = factor
         refreshEdit()
         applyZoom(animated: true)
-        fitWindowToPicture(animated: true)
+        fitWindowToPicture(animated: true, scale: override)
         updateDocumentEdited()
     }
 

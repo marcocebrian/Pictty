@@ -91,7 +91,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     /// The user's own zoom for pane 0 (device pixels per image pixel), or nil to follow the
     /// zoom mode. In Remember mode it survives navigation.
-    private var override: CGFloat?
+    private(set) var override: CGFloat?
 
     // MARK: - Init
 

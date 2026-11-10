@@ -40,7 +40,8 @@ extension ViewerWindowController {
         model.resize = size
         refreshEdit()
         applyZoom(animated: true)
-        fitWindowToPicture(animated: true)
+        // The window fits the new size at the zoom in use, as zooming in or out does.
+        fitWindowToPicture(animated: true, scale: override)
         updateDocumentEdited()
     }
 
