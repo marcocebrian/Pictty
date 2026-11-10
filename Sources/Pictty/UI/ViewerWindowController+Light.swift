@@ -36,8 +36,26 @@ final class LightSession {
 }
 
 extension ViewerWindowController: NSMenuItemValidation {
-    /// Edits that are only on screen: adjustments, or a turn or mirror of the picture.
-    var hasUnsavedEdits: Bool { hasUnsavedAdjustments || orientationChange != nil }
+    /// Edits on screen: adjustments, or a turn or mirror of the picture.
+    var hasEdits: Bool { hasUnsavedAdjustments || orientationChange != nil }
+
+    /// Edits on screen that no file holds yet: after Save As they stay on screen, saved, until they change.
+    var hasUnsavedEdits: Bool { hasEdits && (savedEdits == nil || savedEdits != editState) }
+
+    /// What the edits on screen are, to tell whether they have changed since they were saved.
+    struct EditState: Equatable {
+        let url: URL?
+        let light: Adjustments
+        let crop: CropBox?
+        let quarterTurns: Int
+        let mirror: Bool
+    }
+
+    var editState: EditState {
+        let turn = orientationChange
+        return EditState(url: model.current?.url, light: model.light, crop: model.crop,
+                         quarterTurns: turn?.quarterTurns ?? 0, mirror: turn?.mirror ?? false)
+    }
 
     var hasUnsavedAdjustments: Bool { lightSession != nil && hasPixelEdits }
 
@@ -452,6 +470,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         syncCropChrome()
         lightSession?.renderer.abandon()
         lightSession = nil
+        savedEdits = nil
         lightAnalysisTicket &+= 1
         model.light = model.light.valuesReset
         model.showingOriginal = false
@@ -602,16 +621,16 @@ extension ViewerWindowController: NSMenuItemValidation {
         var size = shown?.pixelSize ?? .zero
         if let o = orientationChange, o.quarterTurns % 2 == 1 { size = CGSize(width: size.height, height: size.width) }
         let settings = ExportSettings(options: prefs.exportOptions, isHDR: shown?.isHDR ?? false,
-                                      hasAlpha: shown?.hasAlpha ?? false, pixelSize: size, edited: hasUnsavedEdits,
+                                      hasAlpha: shown?.hasAlpha ?? false, pixelSize: size, edited: hasEdits,
                                       sample: shown?.preview ?? shown?.full)
         let panel = NSSavePanel()
-        panel.title = hasUnsavedEdits ? L("Save As") : L("Convert")
-        panel.prompt = hasUnsavedEdits ? L("Save") : L("Convert")
+        panel.title = hasEdits ? L("Save As") : L("Convert")
+        panel.prompt = hasEdits ? L("Save") : L("Convert")
         panel.directoryURL = item.url.deletingLastPathComponent()
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         let base = item.url.deletingPathExtension().lastPathComponent
-        panel.nameFieldStringValue = base + (hasUnsavedEdits ? L(" edited") : "") + "." + settings.options.format.fileExtension
+        panel.nameFieldStringValue = base + (hasEdits ? L(" edited") : "") + "." + settings.options.format.fileExtension
         panel.allowedContentTypes = [settings.options.format.type]
         let accessory = NSHostingView(rootView: ExportSettingsView(settings: settings))
         accessory.frame.size = accessory.fittingSize
@@ -635,7 +654,7 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     /// Writes the picture with its edits, off the main thread, as gently as the edits allow:
     /// a turn or mirror alone saved over the file changes its orientation tag and nothing else.
-    private func export(_ url: URL, to dest: URL, options: ExportOptions, then proceed: (() -> Void)?,
+    func export(_ url: URL, to dest: URL, options: ExportOptions, then proceed: (() -> Void)?,
                         cancelled: (() -> Void)?) {
         let edits = editSnapshot(for: url)
         let inPlace = dest.standardizedFileURL == url.standardizedFileURL
@@ -720,27 +739,22 @@ extension ViewerWindowController: NSMenuItemValidation {
             analyses.removeValue(forKey: changed.path)
             ThumbStore.shared.forget(changed)
         }
-        let intoFolder = dest.deletingLastPathComponent().standardizedFileURL == model.folderURL?.standardizedFileURL
         if sameFile {
             // What is on disk now is the picture: shown from the file, upright as it says.
             lightSession?.renderer.cancelAll()
-            lightSession = nil
-            model.light = model.light.valuesReset
+            endLight()
             canvas.clear(pane: 0)
         } else {
-            let ownRAW = ownsRAW(url)
-            setLight(model.light.valuesReset)
-            endLight()
-            resetOrientation()
-            // The engine's develop starts again from the file, as when it was opened.
-            if ownRAW { canvas.clear(pane: 0) }
+            // Saved as another file: the picture stays on screen exactly as it is, edits and all,
+            // to go on working on. They count as unsaved again once they change.
+            savedEdits = editState
         }
         updateDocumentEdited()
         if let proceed {
             proceed()
             rescanFolder()
         } else if let folder = model.folderURL {
-            loadFolder(folder, selecting: sameFile || !intoFolder ? url : dest)
+            loadFolder(folder, selecting: url)
         }
     }
 }

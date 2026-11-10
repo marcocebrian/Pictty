@@ -48,6 +48,8 @@ final class ViewerModel: ObservableObject {
     @Published var loadingText: String?
     @Published var toast: ToastMessage?
     @Published var chromeVisible = true
+    /// The Compare strip is open under the toolbar's Compare button.
+    @Published var comparePickerOpen = false
     /// False until the window's first frame is up: the picture comes first, the controls a frame later.
     @Published var chromeReady = false
     @Published var showInspector = false

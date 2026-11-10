@@ -31,7 +31,7 @@ extension ViewerWindowController {
             .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "  ·  ")
 
         let session = PrintSession(picture: .init(preview: preview, pixels: size, name: item.fileName, details: details,
-                                                  edited: hasUnsavedEdits), prefs: prefs)
+                                                  edited: hasEdits), prefs: prefs)
         let host = NSHostingController(rootView: PrintSheetView(session: session))
         let sheet = NSWindow(contentViewController: host)
         sheet.styleMask = [.titled]

@@ -46,6 +46,8 @@ enum DevScript {
         case "comparewith": if let i = n.first { c.compare(with: Int(i)) }
         case "layoutset": if let l = CompareLayout(rawValue: text) { c.prefs.compareLayout = l }
         case "layout": c.cycleCompareLayout(nil)
+        case "comparepicker": c.model.comparePickerOpen.toggle()
+        case "comparelayout": if let l = CompareLayout(rawValue: text) { c.compare(layout: l) }
         case "blink": c.blink(nil)
         case "background": c.cycleBackground(nil)
         case "rotate": c.rotateRight(nil)
@@ -89,7 +91,7 @@ enum DevScript {
         case "reveal": c.revealChrome()
         case "focus": c.window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         case "state":
-            print("state items=\(c.model.items.count) folder=\(c.model.folderURL?.path ?? "-") sheet=\(c.window?.attachedSheet != nil) sandbox=\(FolderAccess.isSandboxed) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") zoom=\(c.model.zoomLabel)")
+            print("state items=\(c.model.items.count) folder=\(c.model.folderURL?.path ?? "-") sheet=\(c.window?.attachedSheet != nil) sandbox=\(FolderAccess.isSandboxed) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") zoom=\(c.model.zoomLabel) comparing=\(c.model.isComparing) chrome=\(c.model.chromeVisible) strip=\(c.model.comparePickerOpen)")
             fflush(stdout)
         case "snapshot":
             // snapshot <path>: what the canvas shows of the picture, as a PNG, for checking edits.
@@ -98,6 +100,46 @@ enum DevScript {
                                                           "public.png" as CFString, 1, nil) {
                 CGImageDestinationAddImage(dest, image, nil)
                 CGImageDestinationFinalize(dest)
+            }
+        case "exposure":
+            // exposure <ev>: the Exposure slider.
+            if let ev = n.first { var a = c.model.light; a.exposure = ev; c.setLight(a) }
+        case "crop": c.startCrop()
+        case "cropbox":
+            // cropbox <x> <y> <w> <h>: the crop frame being drawn, in 0…1 of the stored picture.
+            if n.count >= 4 { c.model.cropDraft.rect = CGRect(x: n[0], y: n[1], width: n[2], height: n[3]); c.updateCropOverlay() }
+        case "cropdone": c.commitCrop()
+        case "save": c.saveEdits(nil)
+        case "saveto":
+            // saveto <path>: Save As a JPEG there, without the panel.
+            if let url = c.model.current?.url {
+                var o = c.prefs.exportOptions
+                o.format = .jpeg
+                c.export(url, to: URL(fileURLWithPath: text), options: o, then: nil, cancelled: nil)
+            }
+        case "dump":
+            // dump: the edit state and what the canvas shows, on stdout.
+            let s = canvas.shown(pane: 0)
+            print("dump url=\(s?.url.lastPathComponent ?? "-") px=\(s.map { "\($0.pixelSize)" } ?? "-") preview=\(s?.preview.map { "\($0.width)x\($0.height)" } ?? "-") full=\(s?.full.map { "\($0.width)x\($0.height)" } ?? "-") light=\(c.model.light.exposure) crop=\(c.model.crop.map { "\($0.rect)" } ?? "-") edited=\(c.hasUnsavedEdits) session=\(c.lightSession != nil) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") win=\(c.window?.windowNumber ?? 0)")
+            fflush(stdout)
+        case "shot":
+            // shot <path>: every visible window's layers as drawn (path, path-1, …), without a capture permission.
+            for (k, window) in NSApp.windows.filter(\.isVisible).enumerated() {
+                guard let view = window.contentView?.superview ?? window.contentView, let layer = view.layer else { continue }
+                let scale = window.backingScaleFactor
+                let w = Int(view.bounds.width * scale), h = Int(view.bounds.height * scale)
+                guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { continue }
+                ctx.scaleBy(x: scale, y: scale)
+                if view.isFlipped { ctx.translateBy(x: 0, y: view.bounds.height); ctx.scaleBy(x: 1, y: -1) }
+                layer.render(in: ctx)
+                let path = window === c.window ? text : text.replacingOccurrences(of: ".png", with: "-\(k).png")
+                if let image = ctx.makeImage(),
+                   let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, "public.png" as CFString, 1, nil) {
+                    CGImageDestinationAddImage(dest, image, nil)
+                    CGImageDestinationFinalize(dest)
+                }
             }
         case "quit": NSApp.terminate(nil)
         default: break

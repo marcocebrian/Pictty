@@ -47,6 +47,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private var analysing: Set<String> = []
     /// The picture being edited in the Light panel, if any.
     var lightSession: LightSession?
+    /// The edits as they were last saved to another file, still on screen: unsaved only once they change.
+    var savedEdits: ViewerWindowController.EditState?
     var lightAnalysisTicket = 0
     /// Neighbours and thumbnails wait for the picture on screen.
     private var warmUpPending = false
@@ -542,6 +544,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
                     guard let self, generation == self.scanGeneration else { return }
                     timingMark("scan back on main")
                     let sameFolder = self.model.folderURL == folder
+                    let before = self.model.current?.url
                     self.model.replaceItems(items, folder: folder)
                     self.model.setPrimary(found ?? 0)
                     if !sameFolder { self.model.endCompare() }
@@ -551,7 +554,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
                         self.probes.removeAll()
                         ThumbStore.shared.removeAll()
                     }
-                    self.navigated()
+                    // The same picture, rescanned (a file saved beside it, a new sort order), keeps its
+                    // edits and its zoom.
+                    if !sameFolder || self.model.current?.url != before { self.navigated() }
                     self.refreshCurrent(animated: false)
                     self.startMetadataPass()
                     if items.isEmpty {
@@ -1320,6 +1325,27 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// The Compare strip: a layout chosen, starting a comparison first if there is none.
+    func compare(layout: CompareLayout) {
+        if !model.isComparing {
+            guard model.items.count > 1 else {
+                showToast("Need at least two pictures", symbol: "rectangle.split.2x1")
+                return
+            }
+            model.beginCompare(with: model.index + 1 < model.items.count ? model.index + 1 : model.index - 1)
+            setLayout(layout)
+            fitWindowToPicture(animated: true)
+        } else {
+            guard !(layout.requiresExactlyTwo && model.paneCount > 2) else {
+                showToast(L("%@ needs exactly two pictures", L(layout.title)), symbol: layout.symbol, tone: .warning)
+                return
+            }
+            if layout == prefs.compareLayout { return }
+            setLayout(layout)
+        }
+        showToast(Self.layoutToast(layout), symbol: layout.symbol)
+    }
+
     private func setLayout(_ layout: CompareLayout) {
         prefs.compareLayout = layout
         canvas.blinkShowsSecond = false
@@ -1589,8 +1615,10 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         // Editing is no reason to keep the toolbar and pill up: they step aside as when viewing.
+        // The Compare strip goes with the toolbar: a pointer resting on it moves no more than on the picture.
         if idleSeconds > Self.chromeGrace, model.chromeVisible, !model.showInspector, !model.items.isEmpty,
            !(model.filmstripRevealed && !filmstripRested) {
+            if model.comparePickerOpen { model.comparePickerOpen = false }
             setChromeVisible(false)
             if window.styleMask.contains(.fullScreen) { NSCursor.setHiddenUntilMouseMoves(true) }
         }

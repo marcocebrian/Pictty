@@ -68,21 +68,7 @@ struct ToolbarView: View {
 
             separator
 
-            glyph("rectangle.split.2x1",
-                  "Add another picture beside this one (D)",
-                  isOn: model.isComparing) { controller.toggleCompare(nil) }
-            if model.isComparing {
-                glyph(prefs.compareLayout.symbol,
-                      L("Layout (L): %@", L(prefs.compareLayout.title))) {
-                    controller.cycleCompareLayout(nil)
-                }
-                glyph("arrow.left.and.right", "Sync pan (P)", isOn: prefs.syncPan) {
-                    controller.toggleSyncPan(nil)
-                }
-                glyph("magnifyingglass", "Sync zoom (⇧P)", isOn: prefs.syncZoom) {
-                    controller.toggleSyncZoom(nil)
-                }
-            }
+            CompareButton(model: model, prefs: prefs, controller: controller)
 
             separator
 
@@ -256,6 +242,156 @@ struct PressScale: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.88 : 1)
             .animation(.spring(response: 0.22, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+}
+
+/// Every way to compare behind one button: it shows the layout in use (lit while comparing) and opens
+/// a strip of the five layouts, the two syncs and Stop. Choosing a layout starts comparing.
+private struct CompareButton: View {
+    @ObservedObject var model: ViewerModel
+    @ObservedObject var prefs: Preferences
+    let controller: ViewerWindowController
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            model.comparePickerOpen.toggle()
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: model.isComparing ? prefs.compareLayout.symbol : "rectangle.split.2x1")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .contentTransition(.symbolEffect(.replace))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+                    .opacity(0.7)
+            }
+            .frame(width: 34, height: 25)
+            .foregroundStyle(model.isComparing ? Color.accentColor.mix(with: .white, by: 0.25)
+                                               : .white.opacity(hovering || model.comparePickerOpen ? 0.95 : 0.62))
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(model.isComparing ? Color.accentColor.opacity(hovering ? 0.3 : 0.2)
+                                            : .white.opacity(hovering || model.comparePickerOpen ? 0.13 : 0))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScale())
+        .toolbarTooltip(model.comparePickerOpen ? "" : "Compare (D)", hovering: $hovering)
+        .popover(isPresented: $model.comparePickerOpen, arrowEdge: .bottom) {
+            ComparePicker(model: model, prefs: prefs, controller: controller)
+        }
+        .animation(.easeOut(duration: 0.14), value: hovering)
+        .animation(.easeOut(duration: 0.18), value: model.isComparing)
+    }
+}
+
+/// The strip under the Compare button: one row of tiles, each an icon with its name.
+private struct ComparePicker: View {
+    @ObservedObject var model: ViewerModel
+    @ObservedObject var prefs: Preferences
+    let controller: ViewerWindowController
+
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(CompareLayout.allCases) { layout in
+                let unavailable = model.items.count < 2 || (layout.requiresExactlyTwo && model.paneCount > 2)
+                CompareTile(symbol: layout.symbol, title: shortTitle(layout),
+                            help: L(shortTitle(layout)) + " · " + help(layout, unavailable: unavailable),
+                            isOn: model.isComparing && prefs.compareLayout == layout) {
+                    // A layout chosen is the end of the visit: the strip closes, the pictures show.
+                    model.comparePickerOpen = false
+                    controller.compare(layout: layout)
+                }
+                .disabled(unavailable)
+                .opacity(unavailable ? 0.35 : 1)
+            }
+
+            divider
+
+            CompareTile(symbol: "arrow.up.and.down.and.arrow.left.and.right", title: "Pan together", help: "Sync pan (P)",
+                        isOn: prefs.syncPan) { controller.toggleSyncPan(nil) }
+            CompareTile(symbol: "plus.magnifyingglass", title: "Zoom together", help: "Sync zoom (⇧P)",
+                        isOn: prefs.syncZoom) { controller.toggleSyncZoom(nil) }
+
+            divider
+
+            // Always there, so the strip keeps its size; only lit up while comparing.
+            CompareTile(symbol: "xmark", title: "Stop", help: "Stop comparing (Esc)") {
+                model.comparePickerOpen = false
+                controller.toggleCompare(nil)
+            }
+            .disabled(!model.isComparing)
+            .opacity(model.isComparing ? 1 : 0.35)
+        }
+        .padding(4)
+        .fixedSize()
+        .animation(.easeOut(duration: 0.18), value: model.isComparing)
+    }
+
+    private func shortTitle(_ layout: CompareLayout) -> String {
+        switch layout {
+        case .sideBySide: "Side by Side"
+        case .stacked: "Top & Bottom"
+        case .grid: "Grid"
+        case .wipe: "Wipe"
+        case .blink: "Blink"
+        }
+    }
+
+    private func help(_ layout: CompareLayout, unavailable: Bool) -> String {
+        if model.items.count < 2 { return L("Need at least two pictures") }
+        if unavailable { return L("%@ needs exactly two pictures", L(layout.title)) }
+        switch layout {
+        case .sideBySide: return L("Left and right")
+        case .stacked: return L("One above the other")
+        case .grid: return L("Two across, for three or four pictures")
+        case .wipe: return L("One over the other: drag the line")
+        case .blink: return L("One over the other: B flips between them")
+        }
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(.primary.opacity(0.12))
+            .frame(width: 0.5, height: 13)
+            .padding(.horizontal, 4)
+    }
+}
+
+/// One icon of the strip, as small as the toolbar's own, lit when it is the one in use; its name
+/// is the tooltip.
+private struct CompareTile: View {
+    let symbol: String
+    let title: String
+    let help: String
+    var isOn = false
+    let action: () -> Void
+    @State private var hovering = false
+    @State private var taps = 0
+
+    var body: some View {
+        Button {
+            taps += 1
+            action()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 12.5, weight: .medium))
+                .symbolEffect(.bounce.down, value: taps)
+                .frame(width: 27, height: 25)
+                .foregroundStyle(isOn ? Color.accentColor : .primary.opacity(hovering ? 0.95 : 0.7))
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(isOn ? Color.accentColor.opacity(hovering ? 0.24 : 0.16)
+                                   : .primary.opacity(hovering ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScale())
+        .help(L(help))
+        .accessibilityLabel(L(title))
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.14), value: hovering)
+        .animation(.easeOut(duration: 0.18), value: isOn)
     }
 }
 
