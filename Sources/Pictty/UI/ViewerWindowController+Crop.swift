@@ -28,10 +28,12 @@ extension ViewerWindowController {
     /// Done: the crop stays (none, if it is the whole picture with square corners).
     func commitCrop() {
         guard model.cropping else { return }
+        let draftBefore = model.crop
         let draft = model.cropDraft
         model.crop = draft.isWhole ? nil : draft
         model.cropping = false
         enlargeCropChanged()
+        if model.crop != draftBefore { resizeNoLongerFits() }
         stopStaleEnlarging()
         refreshEdit()
         applyZoom(animated: true)

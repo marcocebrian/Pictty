@@ -174,6 +174,10 @@ enum DevScript {
             // enlarge <0|2|4>: Enlarge off, 2× or 4×.
             if let f = n.first { c.setEnlarge(f == 0 ? nil : Int(f)) }
         case "original": c.toggleOriginal(nil)
+        case "resize":
+            // resize <w> <h>: Image Size without the sheet; resize 0 0 takes it off.
+            if n.count >= 2 { c.setResize(n[0] > 0 ? CGSize(width: n[0], height: n[1]) : nil) }
+        case "imagesize": c.showImageSize(nil)
         case "enlargepicker": c.model.enlargePickerOpen.toggle()
         case "badgeshot":
             // badgeshot <path>: the Enlarge badge mid-run, drawn on its own over a grey.

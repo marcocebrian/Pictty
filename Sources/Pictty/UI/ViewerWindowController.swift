@@ -870,7 +870,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     /// The picture's size as edited (cropped, enlarged), when it is not the file's: what 100 % shows.
     private var editedSize: CGSize? {
-        guard !model.isComparing, !model.cropping, model.crop != nil || model.enlarge != nil, let item = model.current,
+        guard !model.isComparing, !model.cropping, model.crop != nil || model.enlarge != nil || model.resize != nil, let item = model.current,
               lightSession?.renderer.url == item.url, let s = canvas.shown(pane: 0), s.url == item.url else { return nil }
         return s.pixelSize
     }

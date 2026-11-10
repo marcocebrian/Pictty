@@ -52,18 +52,20 @@ extension ViewerWindowController: NSMenuItemValidation {
         let quarterTurns: Int
         let mirror: Bool
         let enlarge: Int?
+        let resize: CGSize?
     }
 
     var editState: EditState {
         let turn = orientationChange
         return EditState(url: model.current?.url, light: model.light, crop: model.crop,
-                         quarterTurns: turn?.quarterTurns ?? 0, mirror: turn?.mirror ?? false, enlarge: model.enlarge)
+                         quarterTurns: turn?.quarterTurns ?? 0, mirror: turn?.mirror ?? false, enlarge: model.enlarge,
+                         resize: model.resize)
     }
 
     var hasUnsavedAdjustments: Bool { lightSession != nil && hasPixelEdits }
 
     /// Edits that change pixels: the panel's adjustments, a crop, or an enlargement.
-    var hasPixelEdits: Bool { !model.light.isNeutral || model.crop != nil || model.enlarge != nil }
+    var hasPixelEdits: Bool { !model.light.isNeutral || model.crop != nil || model.enlarge != nil || model.resize != nil }
 
     /// The turn and mirror of the picture on screen, if it has any and it can be saved.
     var orientationChange: (quarterTurns: Int, mirror: Bool)? {
@@ -111,6 +113,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         case #selector(toggleOriginal(_:)): return hasUnsavedAdjustments && !model.cropping
         case #selector(toggleCrop(_:)): return model.current != nil && model.lightUnavailable == nil
         case #selector(showEnlarge(_:)): return offersEnlarge
+        case #selector(showImageSize(_:)): return model.current != nil && !model.isComparing && model.lightUnavailable == nil && !model.isSaving
         case #selector(copy(_:)): return model.current != nil
         case #selector(printPicture(_:)): return canPrint
         default: return true
@@ -265,8 +268,9 @@ extension ViewerWindowController: NSMenuItemValidation {
         if !full { session.editedFullRequested = false }
         let crop = model.cropping ? nil : model.crop
         let out = crop?.apply(to: image) ?? image
-        let size = EnlargeRule.outputSize(crop?.croppedSize(session.pixelSize) ?? session.pixelSize,
-                                          factor: model.cropping ? 1 : model.enlarge ?? 1)
+        let size = (model.cropping ? nil : model.resize)
+            ?? EnlargeRule.outputSize(crop?.croppedSize(session.pixelSize) ?? session.pixelSize,
+                                      factor: model.cropping ? 1 : model.enlarge ?? 1)
         let resized = canvas.shown(pane: 0)?.pixelSize != size
         let first = !session.ownShown && ownsRAW(session.renderer.url)
         if first { session.ownShown = true }
@@ -458,6 +462,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         if model.cropping { cancelCrop() }
         model.crop = nil
         model.enlarge = nil
+        model.resize = nil
         stopEnlarging()
         setLight(model.light.valuesReset)
         resetOrientation()
@@ -478,6 +483,7 @@ extension ViewerWindowController: NSMenuItemValidation {
     func endLight() {
         stopEnlarging()
         model.enlarge = nil
+        model.resize = nil
         model.enlargePickerOpen = false
         model.denoising = false
         model.denoiseProgress = nil
@@ -727,12 +733,14 @@ extension ViewerWindowController: NSMenuItemValidation {
         let engine: LightRenderer.Engine
         let renderer: LightRenderer?
         let enlarge: Int?
+        let resize: CGSize?
     }
 
     func editSnapshot(for url: URL) -> EditSnapshot {
         EditSnapshot(light: model.light, adjusted: hasUnsavedAdjustments, crop: model.crop, turn: orientationChange,
                      engine: lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .raw : .pictty),
-                     renderer: lightSession?.renderer, enlarge: model.enlarge)
+                     renderer: lightSession?.renderer, enlarge: model.enlarge,
+                     resize: model.resize)
     }
 
     /// Every pixel of `url` with `edits`, upright: what Save writes and Print prints. Nil when the
@@ -750,6 +758,11 @@ extension ViewerWindowController: NSMenuItemValidation {
         // Enlarged after the crop and before the turn: the network sees the picture upright as stored.
         if let factor = edits.enlarge, let p = picture {
             picture = NeuralUpscaler.shared.enlarge(p, factor: factor, progress: enlargeProgress)
+        }
+        // Image Size, last: Lanczos, shrinking in linear light.
+        if let size = edits.resize, let p = picture, CGSize(width: p.width, height: p.height) != size {
+            picture = Resampler.render(p, from: CGRect(x: 0, y: 0, width: p.width, height: p.height),
+                                       width: Int(size.width), height: Int(size.height), kernel: .lanczos, linearLight: true)
         }
         if let turn = edits.turn, let p = picture { picture = ImageExporter.oriented(p, quarterTurns: turn.quarterTurns, mirror: turn.mirror) }
         return (picture, isHDR)

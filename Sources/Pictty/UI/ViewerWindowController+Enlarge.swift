@@ -58,6 +58,7 @@ extension ViewerWindowController {
         stopEnlarging()
         // A different size, or none: the enlargement kept for the old one is half a gigabyte or more.
         lightSession?.enlarged = nil
+        resizeNoLongerFits()
         model.enlarge = factor
         refreshEdit()
         applyZoom(animated: true)
@@ -148,7 +149,7 @@ extension ViewerWindowController {
     }
 
     private func showEnlarged(_ image: CGImage, session: LightSession) {
-        let size = CGSize(width: image.width, height: image.height)
+        let size = model.resize ?? CGSize(width: image.width, height: image.height)
         canvas.showEdited(Self.screenCopy(image), full: true, pane: 0, pixelSize: size,
                           hasAlpha: session.hasAlpha || model.crop?.isRounded == true)
         updateStatus()

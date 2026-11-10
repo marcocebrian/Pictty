@@ -108,6 +108,8 @@ final class ViewerModel: ObservableObject {
     @Published var enlargeDone = false
     /// The toolbar's strip of sizes is open.
     @Published var enlargePickerOpen = false
+    /// Image Size: the picture resampled to this many pixels, last of all (before a turn); nil for none.
+    @Published var resize: CGSize?
 
     // MARK: Crop
 
