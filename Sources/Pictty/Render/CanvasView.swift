@@ -875,7 +875,10 @@ final class CanvasView: NSView {
         p.sharp.contents = out
         layoutSharp(p)
         CATransaction.commit()
-        if wasHidden, !p.sharp.isHidden {
+        // Fading in over the picture hides the swap. A picture with transparency has its own copy
+        // masked out under the render at once (see `layoutSharp`), so a fade there would show the
+        // black canvas through for a moment: it swaps in as is.
+        if wasHidden, !p.sharp.isHidden, p.shown?.hasAlpha != true {
             let fade = CABasicAnimation(keyPath: "opacity")
             fade.fromValue = 0
             fade.toValue = 1
