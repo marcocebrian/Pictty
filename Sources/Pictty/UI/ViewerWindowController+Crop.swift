@@ -250,7 +250,7 @@ struct CropToolbarView: View {
         .padding(.vertical, 6)
         .fixedSize()
         .liquidGlassCapsule(tint: 0.5, shadow: 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .bottomBarTooltips()
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: model.cropRounded)
     }
 

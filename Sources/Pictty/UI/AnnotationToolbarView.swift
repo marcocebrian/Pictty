@@ -57,7 +57,7 @@ struct AnnotationToolbarView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(L(["Thin", "Regular", "Thick"][w.rawValue]))
+                .quickTip(["Thin", "Regular", "Thick"][w.rawValue])
             }
             GlyphButton(symbol: model.annotationStyle.filled ? "square.fill" : "square", help: "Fill shapes",
                         isOn: model.annotationStyle.filled) { controller.setAnnotationStyle { $0.filled.toggle() } }
@@ -81,14 +81,14 @@ struct AnnotationToolbarView: View {
                     .shadow(color: Color(hex: 0x4285F4).opacity(0.5), radius: 6)
             }
             .buttonStyle(.plain)
-            .help(L("Return"))
+            .quickTip("Done (Return)")
         }
         .foregroundStyle(.white.opacity(0.92))
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .fixedSize()
         .liquidGlassCapsule(tint: 0.5, shadow: 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .bottomBarTooltips()
     }
 
     /// Auto, the six colours, and any other.
@@ -102,7 +102,7 @@ struct AnnotationToolbarView: View {
                     .overlay(Circle().stroke(.white, lineWidth: model.autoColour ? 2 : 0))
             }
             .buttonStyle(.plain)
-            .help(L("Auto: the colour that stands out against the picture"))
+            .quickTip("Auto: the colour that stands out against the picture")
             ForEach(AnnotationStyle.palette.indices, id: \.self) { i in
                 let c = AnnotationStyle.palette[i]
                 Button { controller.setAnnotationColour(c) } label: {
@@ -113,6 +113,7 @@ struct AnnotationToolbarView: View {
                         .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
+                .quickTip(["Red", "Yellow", "Green", "Blue", "Purple", "Orange", "White", "Black"][i])
             }
             ColorPicker("", selection: Binding(get: { Color(cgColor: model.annotationStyle.colour.cgColor) }, set: { color in
                 guard let c = NSColor(color).usingColorSpace(.sRGB) else { return }
@@ -120,7 +121,7 @@ struct AnnotationToolbarView: View {
             }), supportsOpacity: false)
             .labelsHidden()
             .frame(width: 26)
-            .help(L("Another colour"))
+            .quickTip("Another colour")
         }
     }
 

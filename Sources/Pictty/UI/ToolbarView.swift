@@ -243,6 +243,35 @@ extension View {
     }
 }
 
+/// The quick tooltip for anything that keeps no hover state of its own.
+private struct QuickTip: ViewModifier {
+    let help: String
+    @State private var hovering = false
+    func body(content: Content) -> some View { content.toolbarTooltip(help, hovering: $hovering) }
+}
+
+extension View {
+    func quickTip(_ help: String) -> some View { modifier(QuickTip(help: help)) }
+
+    /// A bar at the bottom of the window (crop, annotate): its buttons' tooltips, shown just above it.
+    /// The host is taller than the bar, which sits at its bottom, so there is room for them.
+    func bottomBarTooltips() -> some View {
+        self
+            .padding(.bottom, 9)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .coordinateSpace(name: ToolbarView.coordinateSpace)
+            .overlayPreferenceValue(TooltipKey.self) { request in
+                if let request {
+                    GeometryReader { geo in
+                        TooltipBubble(text: request.text)
+                            .position(x: request.midX, y: geo.size.height - 9 - 40 - 16)
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
 /// Presses sink a little, and spring back.
 struct PressScale: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {

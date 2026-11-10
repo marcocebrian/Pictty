@@ -179,6 +179,29 @@ enum DevScript {
             if n.count >= 2 { c.setResize(n[0] > 0 ? CGSize(width: n[0], height: n[1]) : nil) }
         case "imagesize": c.showImageSize(nil)
         case "annotate": c.toggleAnnotate(nil)
+        case "tipshot":
+            // tipshot <path>: a bottom bar 100 high with a tooltip forced on over its second button.
+            let bar = HStack(spacing: 3) {
+                ForEach(0..<6) { i in
+                    RoundedRectangle(cornerRadius: 7).fill(.white.opacity(0.4)).frame(width: 27, height: 25)
+                        .background(GeometryReader { g in
+                            Color.clear.preference(key: TooltipKey.self, value: i == 1
+                                ? TooltipRequest(text: "Arrow (A) · drag its middle to curve it",
+                                                 midX: g.frame(in: .named(ToolbarView.coordinateSpace)).midX) : nil)
+                        })
+                }
+            }
+            .padding(6)
+            .background(Capsule().fill(.black.opacity(0.5)))
+            .bottomBarTooltips()
+            .frame(width: 600, height: 100)
+            .background(Color(white: 0.75))
+            let r = ImageRenderer(content: bar)
+            r.scale = 2
+            if let image = r.cgImage, let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: text) as CFURL, "public.png" as CFString, 1, nil) {
+                CGImageDestinationAddImage(dest, image, nil)
+                CGImageDestinationFinalize(dest)
+            }
         case "overlayshot":
             // overlayshot <path>: the annotation layer as it draws itself on screen.
             if let o = c.annotationOverlay, let rep = o.bitmapImageRepForCachingDisplay(in: o.bounds) {

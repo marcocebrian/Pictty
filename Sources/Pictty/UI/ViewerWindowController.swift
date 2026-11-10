@@ -333,8 +333,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let canvasFrame = NSRect(x: 0, y: canvasBottomInset, width: max(0, bounds.width - canvasRightInset),
                                  height: max(0, bounds.height - canvasBottomInset))
         if let canvas, canvas.frame != canvasFrame { canvas.frame = canvasFrame }
-        cropToolbarHost?.frame = NSRect(x: 0, y: 22, width: canvasFrame.width, height: 56)
-        annotateToolbarHost?.frame = NSRect(x: 0, y: 22, width: canvasFrame.width, height: 56)
+        // Taller than the bars, which sit at the bottom: their tooltips show above them.
+        cropToolbarHost?.frame = NSRect(x: 0, y: 22, width: canvasFrame.width, height: 100)
+        annotateToolbarHost?.frame = NSRect(x: 0, y: 22, width: canvasFrame.width, height: 100)
         if model.cropping { updateCropOverlay() }
         updateAnnotationOverlay()
 
