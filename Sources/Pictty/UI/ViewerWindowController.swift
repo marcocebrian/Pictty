@@ -64,7 +64,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     var denoisedOnce: URL?
     /// The Print sheet while it is open.
     var printSession: PrintSession?
-    private var toolbarWidths: [Bool: CGFloat] = [:]
+    private var toolbarWidths: [String: CGFloat] = [:]
 
     /// Shows the window now if its picture is in it (or none is coming), else when it arrives,
     /// and after `limit` seconds regardless.
@@ -340,11 +340,25 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         updateAnnotationOverlay()
 
         if let window {
-            let width = max(560, toolbarWidth + 20).rounded(.up)
+            // At least as wide as the bar showing (toolbar, crop or annotation bar), with the
+            // Adjust panel's room: a window narrower than that grows, so no button is cut off.
+            let width = max(560, activeBarWidth + 24 + canvasRightInset).rounded(.up)
             let size = NSSize(width: width, height: 340)
             if window.contentMinSize != size {
                 window.contentMinSize = size
                 window.minSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: size)).size
+                let content = window.contentRect(forFrameRect: window.frame)
+                if content.width < width - 0.5, !window.styleMask.contains(.fullScreen) {
+                    var f = window.frame
+                    let grow = width - content.width
+                    f.size.width += grow
+                    f.origin.x -= grow / 2
+                    if let screen = window.screen?.visibleFrame {
+                        f.size.width = min(f.width, screen.width)
+                        f.origin.x = min(max(f.minX, screen.minX), screen.maxX - f.width)
+                    }
+                    window.setFrame(f.integral, display: true, animate: false)
+                }
             }
         }
         updatePaneCaptions()
@@ -362,15 +376,18 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             && !Preferences.store.bool(forKey: DefaultNudgeView.dismissedKey), duration: 0.4)
     }
 
-    /// The toolbar's own width, for the window's minimum size. Asking SwiftUI for it lays the whole
-    /// toolbar out (20 ms at launch), and `syncChrome` runs on every change of the model, so it is
-    /// measured once for each set of buttons: with and without the comparison's.
-    private var toolbarWidth: CGFloat {
-        let key = model.isComparing
+    /// The width of the bar showing, for the window's minimum size. Asking SwiftUI for it lays the
+    /// bar out (20 ms at launch), and `syncChrome` runs on every change of the model, so it is
+    /// measured once for each bar and set of buttons; a bar not laid out yet is asked again later.
+    private var activeBarWidth: CGFloat {
+        let host = model.annotating ? annotateToolbarHost : model.cropping ? cropToolbarHost : toolbarHost
+        let key = model.annotating ? "annotate:\(model.annotationTool == .censor)"
+            : model.cropping ? "crop:\(model.cropRounded)" : "main:\(model.isComparing):\(model.enlarge ?? 0)"
         if let known = toolbarWidths[key] { return known }
         // Not before the window's first frame: the picture comes first, the minimum size after.
-        guard window?.isVisible == true else { return 0 }
-        let w = toolbarHost?.fittingSize.width ?? 0
+        guard window?.isVisible == true, let host else { return 0 }
+        let w = host.fittingSize.width
+        guard w > 200 else { return 0 }  // its buttons are not in yet
         toolbarWidths[key] = w
         return w
     }

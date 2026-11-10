@@ -58,6 +58,9 @@ final class EnlargeTests: XCTestCase {
         XCTAssertEqual(EnlargeRule.workingSpace(for: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!).name, CGColorSpace.displayP3)
         XCTAssertEqual(EnlargeRule.workingSpace(for: CGColorSpace(name: CGColorSpace.genericGrayGamma2_2)!).name, CGColorSpace.sRGB)
         XCTAssertEqual(EnlargeRule.workingSpace(for: nil).name, CGColorSpace.sRGB)
+        // The network knows sRGB-like values: ProPhoto's or Adobe RGB's encodings would shift its colours.
+        XCTAssertEqual(EnlargeRule.workingSpace(for: CGColorSpace(name: CGColorSpace.rommrgb)!).name, CGColorSpace.displayP3)
+        XCTAssertEqual(EnlargeRule.workingSpace(for: CGColorSpace(name: CGColorSpace.adobeRGB1998)!).name, CGColorSpace.displayP3)
     }
 
     func testBleedFillsTransparentPixelsFromTheirNeighbours() {

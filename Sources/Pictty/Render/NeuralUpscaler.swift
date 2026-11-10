@@ -202,14 +202,18 @@ final class NeuralUpscaler: @unchecked Sendable {
 /// The part of a network output the writer needs (the kept 4× pixels and `pad` around them),
 /// planar RGB, copied out of Core ML's array before the next prediction can reuse it.
 private struct TileRegion: Sendable {
+    /// Filter room around what is written, in 4× pixels.
     static let pad = 8
+    /// Each tile also writes this far (input pixels) over its left and top neighbours, fading in.
+    static let blend = 16
     let width: Int, height: Int
     let values: [Float]
 
+    /// The kept 4× pixels, `blend` more to the left and top, and `pad` around.
     init(_ res: MLMultiArray, keep: CGRect, margin: Int) {
         let st = res.strides.map(\.intValue)  // [1, 3, H, W]
-        let half = res.dataType == .float16, origin = margin * 4 - Self.pad
-        let w = Int(keep.width) * 4 + 2 * Self.pad, h = Int(keep.height) * 4 + 2 * Self.pad
+        let half = res.dataType == .float16, origin = margin * 4 - Self.pad - Self.blend * 4
+        let w = Int(keep.width) * 4 + Self.blend * 4 + 2 * Self.pad, h = Int(keep.height) * 4 + Self.blend * 4 + 2 * Self.pad
         var v = [Float](repeating: 0, count: 3 * w * h)
         if half {
             let p = res.dataPointer.bindMemory(to: Float16.self, capacity: st[0])
@@ -223,12 +227,14 @@ private struct TileRegion: Sendable {
         width = w; height = h; values = v
     }
 
-    /// Channel `c` at (`x`, `y`) of the region, `pad` included.
+    /// Channel `c` at (`x`, `y`) of the region, `blend` and `pad` included.
     @inline(__always) func value(_ c: Int, _ y: Int, _ x: Int) -> Float { values[(c * height + y) * width + x] }
 }
 
-/// Writes each tile's kept part into the output bitmap: the network's pixels, faded to a Lanczos
-/// enlargement inside faces, alpha from the Lanczos enlargement. Tiles write disjoint pixels.
+/// Writes each tile into the output bitmap: the network's pixels, faded to a Lanczos enlargement
+/// inside faces, alpha from the Lanczos enlargement. Each tile reaches `TileRegion.blend` over its
+/// left and top neighbours (written before it) and fades into them: the network normalises within
+/// a tile, so neighbours can differ a little, and a hard edge between them would show.
 private final class TileWriter: @unchecked Sendable {
     let image: CGImage, space: CGColorSpace, opaque: Bool, deep: Bool
     let data: UnsafeMutableRawPointer, rowBytes: Int
@@ -245,65 +251,77 @@ private final class TileWriter: @unchecked Sendable {
     }
 
     func write(_ t: EnlargeRule.Tile, _ region: TileRegion) {
-        let S = scale
-        let kx = Int(t.keep.minX), ky = Int(t.keep.minY), kw = Int(t.keep.width) * S, kh = Int(t.keep.height) * S
-        guard let plain = Resampler.render(image, from: t.keep, width: kw, height: kh, kernel: .lanczos, linearLight: false),
-              let lz = NeuralUpscaler.floatPixels(plain, width: kw, height: kh, space: space),
-              let net = network(t, region, width: kw, height: kh) else { failed = true; return }
-        // The network's pixels; a tile that came back broken or far from the plain one is written again, plain.
-        // Weighted by opacity: under a transparent pixel the plain colour is nothing, and no one sees it.
+        let S = scale, B = TileRegion.blend
+        let kx = Int(t.keep.minX), ky = Int(t.keep.minY)
+        let ex = kx > 0 ? B : 0, ey = ky > 0 ? B : 0
+        let ext = CGRect(x: CGFloat(kx - ex), y: CGFloat(ky - ey), width: t.keep.width + CGFloat(ex), height: t.keep.height + CGFloat(ey))
+        let ew = Int(ext.width) * S, eh = Int(ext.height) * S, ox = (kx - ex) * S, oy = (ky - ey) * S
+        guard let plain = Resampler.render(image, from: ext, width: ew, height: eh, kernel: .lanczos, linearLight: false),
+              let lz = NeuralUpscaler.floatPixels(plain, width: ew, height: eh, space: space),
+              let net = network(region, ex: ex, ey: ey, width: ew, height: eh) else { failed = true; return }
+        // A tile that came back broken or far from the plain one is written plain. Weighted by
+        // opacity: under a transparent pixel the plain colour is nothing, and no one sees it.
         var moved: Float = 0, seen: Float = 0, broken = false
-        for pass in 0..<2 {
-            let useNetwork = pass == 0
-            for y in 0..<kh {
-                let Y = ky * S + y
-                let row = data.advanced(by: Y * rowBytes)
-                let fy = (Float(Y) + 0.5) / Float(S) - 0.5
-                for x in 0..<kw {
-                    let X = kx * S + x, l = (y * kw + x) * 4
-                    let a = max(lz[l + 3], 1e-4), alpha = opaque ? 1 : min(max(lz[l + 3], 0), 1)
-                    var k: Float = useNetwork ? 1 : 0
-                    if useNetwork, let fw = faceWeights {
-                        k = NeuralUpscaler.sample(fw, width, height, (Float(X) + 0.5) / Float(S) - 0.5, fy)
-                    }
-                    for c in 0..<3 {
+        for i in 0..<(ew * eh) {
+            let a = max(lz[i * 4 + 3], 1e-4), alpha = opaque ? 1 : min(max(lz[i * 4 + 3], 0), 1)
+            for c in 0..<3 {
+                let n = net[c * ew * eh + i]
+                if !n.isFinite { broken = true; continue }
+                moved += abs(n - min(max(lz[i * 4 + c] / a, 0), 1)) * alpha
+                seen += alpha
+            }
+        }
+        let useNetwork = !broken && moved / max(seen, 1) <= 0.08
+        if !useNetwork { timingMark("enlarge: tile at \(kx),\(ky) kept plain") }
+        let fadeX = Float(ex * S), fadeY = Float(ey * S)
+        for y in 0..<eh {
+            let Y = oy + y
+            let row = data.advanced(by: Y * rowBytes)
+            let fy = (Float(Y) + 0.5) / Float(S) - 0.5
+            let wy = y < ey * S ? Self.smooth((Float(y) + 0.5) / fadeY) : 1
+            for x in 0..<ew {
+                let X = ox + x, i = y * ew + x, l = i * 4
+                let wx = x < ex * S ? Self.smooth((Float(x) + 0.5) / fadeX) : 1
+                let w = wx * wy
+                let a = max(lz[l + 3], 1e-4), alpha = opaque ? 1 : min(max(lz[l + 3], 0), 1)
+                var k: Float = useNetwork ? 1 : 0
+                if useNetwork, let fw = faceWeights {
+                    k = NeuralUpscaler.sample(fw, width, height, (Float(X) + 0.5) / Float(S) - 0.5, fy)
+                }
+                for c in 0..<4 {
+                    var v: Float
+                    if c == 3 { v = alpha } else {
                         let plainV = min(max(lz[l + c] / a, 0), 1)
-                        var v = plainV
-                        if useNetwork {
-                            let n = net[c * kw * kh + y * kw + x]
-                            if !n.isFinite { broken = true; continue }
-                            moved += abs(n - plainV) * alpha
-                            seen += alpha
-                            v = plainV + k * (min(max(n, 0), 1) - plainV)
-                        }
-                        store(row, X * 4 + c, v * alpha)
+                        let n = net[c * ew * eh + i]
+                        v = (k == 0 || !n.isFinite ? plainV : plainV + k * (min(max(n, 0), 1) - plainV)) * alpha
                     }
-                    store(row, X * 4 + 3, alpha)
+                    if w < 1 { v = load(row, X * 4 + c) * (1 - w) + v * w }
+                    store(row, X * 4 + c, v)
                 }
             }
-            if !useNetwork || (!broken && moved / max(seen, 1) <= 0.08) { break }
-            timingMark("enlarge: tile at \(kx),\(ky) kept plain")
         }
     }
 
-    /// The kept part of the network's 4× tile at the output's scale, planar RGB.
-    private func network(_ t: EnlargeRule.Tile, _ region: TileRegion, width kw: Int, height kh: Int) -> [Float]? {
-        let pad = TileRegion.pad
-        func value(_ c: Int, _ y: Int, _ x: Int) -> Float { region.value(c, y, x) }
-        let w4 = Int(t.keep.width) * 4, h4 = Int(t.keep.height) * 4
+    private static func smooth(_ t: Float) -> Float { let u = min(max(t, 0), 1); return u * u * (3 - 2 * u) }
+
+    /// The network's pixels for the tile (`ex`, `ey` input pixels more to the left and top), at the
+    /// output's scale, planar RGB.
+    private func network(_ region: TileRegion, ex: Int, ey: Int, width ew: Int, height eh: Int) -> [Float]? {
+        let pad = TileRegion.pad, B = TileRegion.blend
+        let x0 = pad + (B - ex) * 4, y0 = pad + (B - ey) * 4
         if scale == 4 {
-            var out = [Float](repeating: 0, count: 3 * kw * kh)
-            for c in 0..<3 { for y in 0..<kh { for x in 0..<kw { out[(c * kh + y) * kw + x] = value(c, pad + y, pad + x) } } }
+            var out = [Float](repeating: 0, count: 3 * ew * eh)
+            for c in 0..<3 { for y in 0..<eh { for x in 0..<ew { out[(c * eh + y) * ew + x] = region.value(c, y0 + y, x0 + x) } } }
             return out
         }
-        // 2×: the 4× pixels with a few of the margin's around them (the filter reaches past the
+        // 2×: the 4× pixels with the region's room around them (the filter reaches past the
         // edge), as a picture, halved in linear light.
-        let pw = w4 + 2 * pad, ph = h4 + 2 * pad
+        let pw = region.width, ph = region.height
         var rgba = [Float](repeating: 1, count: pw * ph * 4)
         for y in 0..<ph {
             for x in 0..<pw {
                 let o = (y * pw + x) * 4
-                for c in 0..<3 { rgba[o + c] = min(max(value(c, y, x), 0), 1) }
+                for c in 0..<3 { rgba[o + c] = min(max(region.value(c, y, x), 0), 1) }
             }
         }
         let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
@@ -311,12 +329,16 @@ private final class TileWriter: @unchecked Sendable {
         guard let provider = CGDataProvider(data: rgba.withUnsafeBytes { Data($0) } as CFData),
               let big = CGImage(width: pw, height: ph, bitsPerComponent: 32, bitsPerPixel: 128, bytesPerRow: pw * 16, space: space,
                                 bitmapInfo: info, provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
-              let small = Resampler.render(big, from: CGRect(x: pad, y: pad, width: w4, height: h4), width: kw, height: kh,
+              let small = Resampler.render(big, from: CGRect(x: x0, y: y0, width: ew * 2, height: eh * 2), width: ew, height: eh,
                                            kernel: .lanczos, linearLight: true),
-              let px = NeuralUpscaler.floatPixels(small, width: kw, height: kh, space: space) else { return nil }
-        var out = [Float](repeating: 0, count: 3 * kw * kh)
-        for i in 0..<(kw * kh) { for c in 0..<3 { out[c * kw * kh + i] = px[i * 4 + c] } }
+              let px = NeuralUpscaler.floatPixels(small, width: ew, height: eh, space: space) else { return nil }
+        var out = [Float](repeating: 0, count: 3 * ew * eh)
+        for i in 0..<(ew * eh) { for c in 0..<3 { out[c * ew * eh + i] = px[i * 4 + c] } }
         return out
+    }
+
+    @inline(__always) private func load(_ row: UnsafeMutableRawPointer, _ i: Int) -> Float {
+        deep ? Float(row.load(fromByteOffset: i * 2, as: UInt16.self)) / 65535 : Float(row.load(fromByteOffset: i, as: UInt8.self)) / 255
     }
 
     @inline(__always) private func store(_ row: UnsafeMutableRawPointer, _ i: Int, _ v: Float) {

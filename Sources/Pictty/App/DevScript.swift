@@ -93,7 +93,7 @@ enum DevScript {
         case "reveal": c.revealChrome()
         case "focus": c.window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         case "state":
-            print("state items=\(c.model.items.count) folder=\(c.model.folderURL?.path ?? "-") sheet=\(c.window?.attachedSheet != nil) sandbox=\(FolderAccess.isSandboxed) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") zoom=\(c.model.zoomLabel) comparing=\(c.model.isComparing) chrome=\(c.model.chromeVisible) strip=\(c.model.comparePickerOpen) enlargestrip=\(c.model.enlargePickerOpen)")
+            print("state items=\(c.model.items.count) folder=\(c.model.folderURL?.path ?? "-") sheet=\(c.window?.attachedSheet != nil) sandbox=\(FolderAccess.isSandboxed) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") zoom=\(c.model.zoomLabel) comparing=\(c.model.isComparing) chrome=\(c.model.chromeVisible) min=\(Int(c.window?.contentMinSize.width ?? 0)) strip=\(c.model.comparePickerOpen) enlargestrip=\(c.model.enlargePickerOpen)")
             fflush(stdout)
         case "snapshot":
             // snapshot <path>: what the canvas shows of the picture, as a PNG, for checking edits.

@@ -70,14 +70,16 @@ public enum EnlargeRule {
         return w
     }
 
-    /// The space the network works in: the picture's own RGB space, encoded, 0…1. An extended
-    /// space (the save render's linear extended sRGB, whose P3 colours lie past 0…1) becomes Display
-    /// P3, so those colours are not clipped to sRGB; anything not RGB becomes sRGB.
+    /// The space the network works in, encoded, 0…1: sRGB or Display P3 (anything not RGB: sRGB).
     public static func workingSpace(for space: CGColorSpace?) -> CGColorSpace {
         let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
         guard let space, space.model == .rgb else { return srgb }
-        if CGColorSpaceUsesExtendedRange(space) { return CGColorSpace(name: CGColorSpace.displayP3) ?? srgb }
-        return space
+        // sRGB and Display P3 share the sRGB tone curve the network was trained on: as they are.
+        // Every other RGB space (ProPhoto, Adobe RGB, linear or extended ones) would hand it values
+        // it has never seen, and its colours shift: they go through Display P3, wide but familiar.
+        if !CGColorSpaceUsesExtendedRange(space), let name = space.name,
+           name == CGColorSpace.sRGB || name == CGColorSpace.displayP3 { return space }
+        return CGColorSpace(name: CGColorSpace.displayP3) ?? srgb
     }
 
     /// Fully transparent pixels given the colour around them (pull-push: colours averaged down a
