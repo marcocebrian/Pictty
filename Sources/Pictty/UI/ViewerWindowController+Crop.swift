@@ -144,6 +144,7 @@ extension ViewerWindowController {
         overlay.box = model.cropDraft
         overlay.needsDisplay = true
         // Diagnostics: `PICTTY_CROPDUMP=<path>` saves the frame as drawn, which window snapshots miss.
+        #if PICTTY_DEV
         if let path = ProcessInfo.processInfo.environment["PICTTY_CROPDUMP"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 guard let rep = overlay.bitmapImageRepForCachingDisplay(in: overlay.bounds) else { return }
@@ -151,6 +152,7 @@ extension ViewerWindowController {
                 try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
             }
         }
+        #endif
     }
 
     func syncCropChrome() {

@@ -1594,10 +1594,19 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Keyboard
 
+    /// A text field or view in the window is being typed in.
+    var isTypingText: Bool {
+        guard let text = window?.firstResponder as? NSTextView else { return false }
+        return text.isEditable
+    }
+
     private func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function, .capsLock])
         let chars = event.charactersIgnoringModifiers ?? ""
 
+        // Text being typed (an annotation's text, a field in a panel) takes every key: none of
+        // them is a shortcut while it does.
+        if isTypingText { return false }
         if handleAnnotateKey(event, chars: chars, flags: flags) { return true }
         if handleCropKey(event, chars: chars, flags: flags) { return true }
 

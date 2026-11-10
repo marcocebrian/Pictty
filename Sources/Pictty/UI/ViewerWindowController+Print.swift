@@ -9,7 +9,11 @@ import SwiftUI
 extension ViewerWindowController {
     /// Developer hook: print straight into this PDF, with no panel (PICTTY_PRINT_PDF).
     static var printToPDF: URL? {
+        #if PICTTY_DEV
         ProcessInfo.processInfo.environment["PICTTY_PRINT_PDF"].map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+        #else
+        nil
+        #endif
     }
 
     var canPrint: Bool {

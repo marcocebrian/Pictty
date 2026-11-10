@@ -747,8 +747,13 @@ final class CanvasView: NSView {
     }
 
     /// Diagnostics only: `PICTTY_GPU_ONLY=1` shows the GPU picture alone, for A/B comparisons.
+    #if PICTTY_DEV
     private static let gpuOnly = ProcessInfo.processInfo.environment["PICTTY_GPU_ONLY"] == "1"
     private static let verbose = ProcessInfo.processInfo.environment["PICTTY_VERBOSE"] == "1"
+    #else
+    private static let gpuOnly = false
+    private static let verbose = false
+    #endif
 
     private func refine(_ i: Int) {
         guard panes.indices.contains(i), window != nil, !Self.gpuOnly else { return }

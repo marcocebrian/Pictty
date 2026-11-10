@@ -16,6 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingOpen: [URL] = []
     private let launchPath: String?
     private let recentMenu = NSMenu(title: "Open Recent")
+    /// The Edit menu and the items Pictty put in it: macOS adds its own on the way (Writing Tools,
+    /// AutoFill, Dictation, Emoji & Symbols), which a picture viewer has no use for.
+    private var editMenu: NSMenu?
+    private var ownEditItems: Set<NSMenuItem> = []
 
     init(launchPath: String?) {
         self.launchPath = launchPath
@@ -25,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         timingMark("will finish launching")
         NSWindow.allowsAutomaticWindowTabbing = false
+        // Emoji & Symbols and Dictation stay out of the Edit menu (the rest is taken out as it opens).
+        UserDefaults.standard.register(defaults: ["NSDisabledCharacterPaletteMenuItem": true,
+                                                  "NSDisabledDictationMenuItem": true])
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -60,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { ThumbStore.shared.release() }
         // The updater (the download only): not even loaded until Pictty has been up a while and is idle.
         Updates.shared.startWhenCalm()
+        #if PICTTY_DEV
         // Developer hooks for screenshots: launch without taking focus, with panels open.
         let env = ProcessInfo.processInfo.environment
         if env["PICTTY_BACKGROUND"] != "1" { NSApp.activate(ignoringOtherApps: true) }
@@ -271,6 +279,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+        #else
+        NSApp.activate(ignoringOtherApps: true)
+        #endif
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -403,7 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Edit: the standard text commands (fields such as Save As's name need them), Copy for the
         // picture itself when no text is being edited, and the editing tools.
-        _ = submenu("Edit") { m in
+        editMenu = submenu("Edit") { m in
             add(m, "Undo", Selector(("undo:")), "z")
             add(m, "Redo", Selector(("redo:")), "z", [.command, .shift])
             m.addItem(.separator())
@@ -423,6 +434,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(m, "Rotate Right", #selector(C.rotateRight(_:)), "]", [])
             add(m, "Rotate Left", #selector(C.rotateLeft(_:)), "[", [])
             add(m, "Mirror", #selector(C.toggleMirror(_:)), "m", [])
+        }
+        if let editMenu {
+            ownEditItems = Set(editMenu.items)
+            editMenu.delegate = self
         }
 
         _ = submenu("View") { m in
@@ -516,6 +531,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ]
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === editMenu {
+            for item in menu.items where !ownEditItems.contains(item) { menu.removeItem(item) }
+            return
+        }
         guard menu === recentMenu else { return }
         menu.removeAllItems()
         let recents = Preferences.shared.recentFolders

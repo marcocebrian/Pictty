@@ -105,9 +105,9 @@ final class LightRenderer: @unchecked Sendable {
         denoisedCache[image.width] = image
     }
 
-    /// Whether this picture can have the network: the network is here, and the picture is SDR or a
-    /// RAW (whose light past white the denoiser leaves alone, see `denoiseClipsToUnit`).
-    var offersNeuralDenoise: Bool { NeuralDenoiser.shared.isAvailable && (engine == .raw || !isHDR) }
+    /// Whether this picture can have the network: the network is here. An HDR picture (a RAW, an
+    /// iPhone HEIC with its gain map) keeps its light past white as it is, see `denoiseClipsToUnit`.
+    var offersNeuralDenoise: Bool { NeuralDenoiser.shared.isAvailable }
 
     /// `preview` is the screen-sized decode on screen now.
     init(url: URL, preview: CGImage, isHDR: Bool, maxPixel: Int) {
@@ -134,7 +134,10 @@ final class LightRenderer: @unchecked Sendable {
                     self.developSensor(reference: develop.image, size: (src.width, src.height), hdr: isHDR)
                 }
             } else {
-                self.source = LightEngine.shared?.source(preview, headroom: headroom)
+                let src = LightEngine.shared?.source(preview, headroom: headroom)
+                // HDR: the network works within 0…1; the light past white stays as it is.
+                if isHDR { src?.denoiseClipsToUnit = true }
+                self.source = src
             }
         }
     }
@@ -334,13 +337,14 @@ final class LightRenderer: @unchecked Sendable {
             e = effective(a, engine: engine, base: base)
         } else {
             guard let s = engineRef.source(original, headroom: isHDR ? max(original.contentHeadroom, 1) : 1) else { return nil }
+            s.denoiseClipsToUnit = isHDR
             src = s
             denoiseInput = original
         }
         // Every pixel through the network too, when noise reduction is asked for.
         // Done once per resolution: the screen-sized pass is reused when the picture is that size,
         // and a full-size pass is kept for the next change of a slider.
-        if e.denoise > 0, engine == .raw || !isHDR {
+        if e.denoise > 0 {
             if let known = renderer?.cachedDenoised(width: denoiseInput.width) {
                 engineRef.setDenoised(known, on: src)
             } else if let denoised = NeuralDenoiser.shared.denoise(denoiseInput, progress: progress, cancelled: cancelled) {

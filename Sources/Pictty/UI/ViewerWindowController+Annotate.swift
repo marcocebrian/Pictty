@@ -99,7 +99,15 @@ extension ViewerWindowController {
     func annotationsWillChange() { registerAnnotationUndo(model.annotations) }
 
     /// A mark just made (dragged out, or its text typed): Undo takes it away again.
-    func commitAnnotation(_ id: UUID) { registerAnnotationUndo(model.annotations.filter { $0.id != id }) }
+    /// After it, the tool goes back to Select, to move or adjust what was just made; numbered steps
+    /// stay, being placed one after another.
+    func commitAnnotation(_ id: UUID) {
+        registerAnnotationUndo(model.annotations.filter { $0.id != id })
+        if model.annotationTool != .step {
+            model.annotationTool = nil
+            updateAnnotationOverlay()
+        }
+    }
 
     private func registerAnnotationUndo(_ state: [Annotation]) {
         guard let undo = window?.undoManager else { return }

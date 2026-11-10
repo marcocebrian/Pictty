@@ -2,6 +2,7 @@
 //   PICTTY_SCRIPT="1 next; 2.5 zoom 150; 4 reset; 5 loupe 0.4 0.5 0.6 0.4 2; …"
 // Each step is "<seconds from launch> <action> [arguments]". Fractions are of the canvas.
 
+#if PICTTY_DEV
 import AppKit
 import ImageIO
 import PicttyCore
@@ -106,6 +107,20 @@ enum DevScript {
         case "exposure":
             // exposure <ev>: the Exposure slider.
             if let ev = n.first { var a = c.model.light; a.exposure = ev; c.setLight(a) }
+        case "denoise":
+            // denoise <0…100>: the Noise Reduction slider; prints whether it is offered.
+            if let v = n.first { var a = c.model.light; a.denoise = v; c.setLight(a) }
+            print("denoise offered=\(c.model.offersDenoise) value=\(c.model.light.denoise) hdr=\(canvas.shown(pane: 0)?.isHDR ?? false)")
+            fflush(stdout)
+        case "annotext":
+            // annotext: a text mark in the middle, being typed in, as a click with the Text tool makes.
+            if !c.model.annotating { c.toggleAnnotate(nil) }
+            c.setAnnotationTool(.text)
+            let made = c.addAnnotation(Annotation(kind: .text, a: CGPoint(x: 0.5, y: 0.5)), pending: true)
+            c.annotationOverlay?.beginEditing(made.id)
+        case "annostate":
+            print("anno tool=\(c.model.annotationTool.map { "\($0)" } ?? "select") texts=\(c.model.annotations.map(\.text)) typing=\(c.isTypingText) light=\(c.model.showLight) cropping=\(c.model.cropping) panels=\(NSApp.windows.filter { $0.isVisible && $0 is NSPanel }.count)")
+            fflush(stdout)
         case "crop": c.startCrop()
         case "cropbox":
             // cropbox <x> <y> <w> <h>: the crop frame being drawn, in 0…1 of the stored picture.
@@ -333,3 +348,4 @@ enum DevScript {
         RunLoop.main.add(timer, forMode: .common)
     }
 }
+#endif

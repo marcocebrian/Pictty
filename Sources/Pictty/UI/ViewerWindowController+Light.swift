@@ -114,6 +114,10 @@ extension ViewerWindowController: NSMenuItemValidation {
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        // A shortcut of a bare key (E for Adjust, C for Crop…) would take that letter from the text
+        // being typed: while it is, those items rest and the key goes to the text.
+        if isTypingText, !item.keyEquivalent.isEmpty,
+           item.keyEquivalentModifierMask.isDisjoint(with: [.command, .control, .option]) { return false }
         switch item.action {
         case #selector(saveEdits(_:)), #selector(revertEdits(_:)): return hasUnsavedEdits && !model.isSaving
         case #selector(saveEditsAs(_:)): return model.current != nil && model.lightUnavailable == nil && !model.isSaving
@@ -146,7 +150,7 @@ extension ViewerWindowController: NSMenuItemValidation {
     /// Why the picture on screen cannot be edited, or nil when it can.
     func updateLightAvailability() {
         let offers = model.current.map { item in
-            ImageFormats.isRaw(item.url) || (NeuralDenoiser.shared.isAvailable && canvas.shown(pane: 0)?.isHDR != true)
+            ImageFormats.isRaw(item.url) || NeuralDenoiser.shared.isAvailable
         } ?? false
         if model.offersDenoise != offers { model.offersDenoise = offers }
         var reason: String?

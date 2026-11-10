@@ -1,14 +1,20 @@
 import AppKit
 
+#if PICTTY_DEV
 /// When the process started, for `PICTTY_TIMING=1`: how long until the first picture is on screen.
 let launchStart = CFAbsoluteTimeGetCurrent()
 let timingEnabled = ProcessInfo.processInfo.environment["PICTTY_TIMING"] == "1"
 
 /// `PICTTY_TIMING=1`: a line on stderr for each step of a launch, in ms since the process began.
-func timingMark(_ what: String) {
+func timingMark(_ what: @autoclosure () -> String) {
     guard timingEnabled else { return }
-    FileHandle.standardError.write(Data(String(format: "TIMING %6.1f ms  %@\n", (CFAbsoluteTimeGetCurrent() - launchStart) * 1000, what).utf8))
+    FileHandle.standardError.write(Data(String(format: "TIMING %6.1f ms  %@\n", (CFAbsoluteTimeGetCurrent() - launchStart) * 1000, what()).utf8))
 }
+#else
+/// Developer builds only: in the released app the marks, and the text they would have made, are gone.
+let timingEnabled = false
+@inline(__always) func timingMark(_ what: @autoclosure () -> String) {}
+#endif
 
 // `Pictty ~/Pictures` opens a folder or file from the command line. Options such as
 // `-AppleLanguages (en)` take the word after them, which is not a path.

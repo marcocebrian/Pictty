@@ -17,6 +17,11 @@ let optimised: [SwiftSetting] = [
 // after launch. Plain `swift build`, `swift test` and the Mac App Store build have no updater.
 let sparkle: [SwiftSetting] = (Context.environment["PICTTY_SPARKLE"] ?? "").isEmpty ? [] : [.define("PICTTY_SPARKLE")]
 
+// Developer hooks (scripted tours, screenshots, timing and diagnostics): in debug builds, and in
+// `PICTTY_DEV=1 ./build.sh`. The released app (release.sh, appstore.sh) has none of them.
+let dev: [SwiftSetting] = [.define("PICTTY_DEV", .when(configuration: .debug))]
+    + ((Context.environment["PICTTY_DEV"] ?? "").isEmpty ? [] : [.define("PICTTY_DEV")])
+
 let package = Package(
     name: "Pictty",
     platforms: [.macOS(.v15)],
@@ -114,11 +119,11 @@ let package = Package(
         ),
         // Pictty's few calls into LibRaw.
         .target(name: "CLibRaw", dependencies: ["LibRaw"]),
-        .target(name: "PicttyCore", dependencies: ["CLibRaw"], swiftSettings: optimised),
+        .target(name: "PicttyCore", dependencies: ["CLibRaw"], swiftSettings: optimised + dev),
         .executableTarget(
             name: "Pictty",
             dependencies: ["PicttyCore"],
-            swiftSettings: optimised + sparkle,
+            swiftSettings: optimised + sparkle + dev,
             linkerSettings: [.unsafeFlags(["-Xlinker", "-dead_strip"], .when(configuration: .release))]
         ),
         .testTarget(name: "PicttyCoreTests", dependencies: ["PicttyCore"]),

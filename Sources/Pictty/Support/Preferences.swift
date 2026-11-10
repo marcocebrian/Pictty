@@ -72,7 +72,11 @@ final class Preferences: ObservableObject {
 
     /// `PICTTY_DEFAULTS_SUITE` keeps a developer's test runs out of the real preferences.
     nonisolated static var store: UserDefaults {
+        #if PICTTY_DEV
         ProcessInfo.processInfo.environment["PICTTY_DEFAULTS_SUITE"].flatMap(UserDefaults.init(suiteName:)) ?? .standard
+        #else
+        .standard
+        #endif
     }
 
     /// One set of settings for every window, so a change shows in all of them at once.
