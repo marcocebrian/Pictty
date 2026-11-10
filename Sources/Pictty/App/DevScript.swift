@@ -179,6 +179,28 @@ enum DevScript {
             if n.count >= 2 { c.setResize(n[0] > 0 ? CGSize(width: n[0], height: n[1]) : nil) }
         case "imagesize": c.showImageSize(nil)
         case "annotate": c.toggleAnnotate(nil)
+        case "winsize":
+            // winsize <w> <h>: the window's content size in points, centred where it is.
+            if let w = c.window, n.count >= 2 {
+                var f = w.frameRect(forContentRect: NSRect(x: 0, y: 0, width: n[0], height: n[1]))
+                f.origin = CGPoint(x: w.frame.midX - f.width / 2, y: w.frame.midY - f.height / 2)
+                w.setFrame(f.integral, display: true, animate: false)
+            }
+        case "center":
+            // center <x> <y>: every pane looks at this point of its picture (0…1).
+            if n.count >= 2 {
+                for pane in 0..<c.model.paneCount {
+                    var vp = canvas.viewport(pane: pane)
+                    vp.center = CGPoint(x: n[0], y: n[1])
+                    canvas.setViewport(vp, pane: pane, animated: false)
+                }
+            }
+        case "windows":
+            // windows <tag>: each visible window's number and frame (screen points, bottom-left origin).
+            for w in NSApp.windows where w.isVisible {
+                print("window \(text) \(w.windowNumber) \(Int(w.frame.minX)) \(Int(w.frame.minY)) \(Int(w.frame.width)) \(Int(w.frame.height)) main=\(w === c.window)")
+            }
+            fflush(stdout)
         case "tipshot":
             // tipshot <path>: a bottom bar 100 high with a tooltip forced on over its second button.
             let bar = HStack(spacing: 3) {

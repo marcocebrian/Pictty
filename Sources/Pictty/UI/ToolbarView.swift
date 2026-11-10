@@ -450,7 +450,7 @@ private struct BackgroundButton: View {
     private var isColour: Bool { if case .colour = model.background { true } else { false } }
 
     private func tile(_ symbol: String, _ title: String, _ fill: BackgroundFill, tint: Color? = nil) -> some View {
-        CompareTile(symbol: symbol, title: title, help: title, isOn: model.background == fill) {
+        CompareTile(symbol: symbol, tint: tint, title: title, help: title, isOn: model.background == fill) {
             model.backgroundPickerOpen = false
             controller.setBackground(fill)
         }
@@ -536,6 +536,8 @@ private struct CompareTile: View {
     let symbol: String
     /// Words in place of the symbol ("2×").
     var text: String?
+    /// The symbol's own colour (a swatch), instead of the strip's.
+    var tint: Color?
     let title: String
     let help: String
     var isOn = false
@@ -555,6 +557,9 @@ private struct CompareTile: View {
                     Image(systemName: symbol)
                         .font(.system(size: 12.5, weight: .medium))
                         .symbolEffect(.bounce.down, value: taps)
+                        .foregroundStyle(tint ?? (isOn ? Color.accentColor : .primary.opacity(hovering ? 0.95 : 0.7)))
+                        .overlay(tint == nil ? nil : Image(systemName: "square").font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary.opacity(0.35)))
                 }
             }
                 .frame(width: 27, height: 25)
