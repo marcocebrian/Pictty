@@ -49,6 +49,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     var lightSession: LightSession?
     /// The edits as they were last saved to another file, still on screen: unsaved only once they change.
     var savedEdits: ViewerWindowController.EditState?
+    /// The network enlarging the picture now, to stop when the edit changes.
+    var enlargeRun: EnlargeRun?
     var lightAnalysisTicket = 0
     /// Neighbours and thumbnails wait for the picture on screen.
     private var warmUpPending = false

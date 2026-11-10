@@ -121,7 +121,7 @@ enum DevScript {
         case "dump":
             // dump: the edit state and what the canvas shows, on stdout.
             let s = canvas.shown(pane: 0)
-            print("dump url=\(s?.url.lastPathComponent ?? "-") px=\(s.map { "\($0.pixelSize)" } ?? "-") preview=\(s?.preview.map { "\($0.width)x\($0.height)" } ?? "-") full=\(s?.full.map { "\($0.width)x\($0.height)" } ?? "-") light=\(c.model.light.exposure) crop=\(c.model.crop.map { "\($0.rect)" } ?? "-") edited=\(c.hasUnsavedEdits) session=\(c.lightSession != nil) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") win=\(c.window?.windowNumber ?? 0)")
+            print("dump url=\(s?.url.lastPathComponent ?? "-") px=\(s.map { "\($0.pixelSize)" } ?? "-") preview=\(s?.preview.map { "\($0.width)x\($0.height)" } ?? "-") full=\(s?.full.map { "\($0.width)x\($0.height)" } ?? "-") light=\(c.model.light.exposure) crop=\(c.model.crop.map { "\($0.rect)" } ?? "-") edited=\(c.hasUnsavedEdits) enlarge=\(c.model.enlarge.map(String.init) ?? "-") enlarging=\(c.model.enlargeProgress.map { String(format: "%.2f", $0) } ?? "-") refusal=\(c.enlargeRefusal.map { "\($0)" } ?? "-") session=\(c.lightSession != nil) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") win=\(c.window?.windowNumber ?? 0)")
             fflush(stdout)
         case "shot":
             // shot <path>: every visible window's layers as drawn (path, path-1, …), without a capture permission.
@@ -162,6 +162,10 @@ enum DevScript {
                              out.map { "\($0.width)×\($0.height)" } ?? "nil", dt, Double(peak - before) / 1e9))
                 fflush(stdout)
             }
+        case "enlarge":
+            // enlarge <0|2|4>: Enlarge off, 2× or 4×.
+            if let f = n.first { c.setEnlarge(f == 0 ? nil : Int(f)) }
+        case "enlargepicker": c.model.enlargePickerOpen.toggle()
         case "quit": NSApp.terminate(nil)
         default: break
         }

@@ -26,6 +26,8 @@ final class LightSession {
     /// rendering again. The edit's is good while its adjustments and crop are what they were.
     var editedFrame: (frame: CanvasView.Frame, light: Adjustments, crop: CropBox?, analysis: ImageAnalysis?)?
     var originalFrame: CanvasView.Frame?
+    /// The network's enlargement of the edit at every pixel, while the edit is what it was.
+    var enlarged: (key: EnlargeKey, image: CGImage)?
 
     init(renderer: LightRenderer, preview: CGImage, pixelSize: CGSize, hasAlpha: Bool) {
         self.renderer = renderer
@@ -49,18 +51,19 @@ extension ViewerWindowController: NSMenuItemValidation {
         let crop: CropBox?
         let quarterTurns: Int
         let mirror: Bool
+        let enlarge: Int?
     }
 
     var editState: EditState {
         let turn = orientationChange
         return EditState(url: model.current?.url, light: model.light, crop: model.crop,
-                         quarterTurns: turn?.quarterTurns ?? 0, mirror: turn?.mirror ?? false)
+                         quarterTurns: turn?.quarterTurns ?? 0, mirror: turn?.mirror ?? false, enlarge: model.enlarge)
     }
 
     var hasUnsavedAdjustments: Bool { lightSession != nil && hasPixelEdits }
 
-    /// Edits that change pixels: the panel's adjustments, or a crop.
-    var hasPixelEdits: Bool { !model.light.isNeutral || model.crop != nil }
+    /// Edits that change pixels: the panel's adjustments, a crop, or an enlargement.
+    var hasPixelEdits: Bool { !model.light.isNeutral || model.crop != nil || model.enlarge != nil }
 
     /// The turn and mirror of the picture on screen, if it has any and it can be saved.
     var orientationChange: (quarterTurns: Int, mirror: Bool)? {
@@ -230,7 +233,8 @@ extension ViewerWindowController: NSMenuItemValidation {
             session.renderer.cancelAll()
             model.lightTiming = ""
             present(session.preview, full: false, session: session)
-            if let full = store.cached(url, full: true) { present(full.image, full: true, session: session) }
+            // Enlarged, every pixel waits for the zoom to ask (`requestEditedFull`), and the network follows.
+            if model.enlarge == nil, let full = store.cached(url, full: true) { present(full.image, full: true, session: session) }
             if model.crop == nil || model.cropping, let known = analyses[url.path] { publish(known.analysis, for: url) }
             return
         }
@@ -253,10 +257,11 @@ extension ViewerWindowController: NSMenuItemValidation {
     }
 
     /// The crop applied, if there is one and it is not being made, and the picture's size to match.
-    private func present(_ image: CGImage, full: Bool, session: LightSession) {
+    func present(_ image: CGImage, full: Bool, session: LightSession) {
         let crop = model.cropping ? nil : model.crop
         let out = crop?.apply(to: image) ?? image
-        let size = crop?.croppedSize(session.pixelSize) ?? session.pixelSize
+        let size = EnlargeRule.outputSize(crop?.croppedSize(session.pixelSize) ?? session.pixelSize,
+                                          factor: model.cropping ? 1 : model.enlarge ?? 1)
         let resized = canvas.shown(pane: 0)?.pixelSize != size
         let first = !session.ownShown && ownsRAW(session.renderer.url)
         if first { session.ownShown = true }
@@ -343,13 +348,13 @@ extension ViewerWindowController: NSMenuItemValidation {
                 return
             }
             let render: (CGImage) -> Void = { original in
-                guard !a.isNeutral || self.ownsRAW(url) else { return self.present(original, full: true, session: session) }
+                guard !a.isNeutral || self.ownsRAW(url) else { return self.presentFull(original, session: session) }
                 session.renderer.renderFull(original, a) { [weak self] r in
                     guard let self else { return }
                     if self.model.denoiseFull { self.denoiseFinished() }
                     guard self.lightSession === session, self.model.light == r.adjustments,
                           !self.model.showingOriginal else { return }
-                    self.present(r.image, full: true, session: session)
+                    self.presentFull(r.image, session: session)
                     self.updateStatus()
                 }
             }
@@ -445,6 +450,8 @@ extension ViewerWindowController: NSMenuItemValidation {
     @objc func revertEdits(_ sender: Any?) {
         if model.cropping { cancelCrop() }
         model.crop = nil
+        model.enlarge = nil
+        stopEnlarging()
         setLight(model.light.valuesReset)
         resetOrientation()
     }
@@ -462,6 +469,9 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     /// The picture changed: the edits go (settled before, if they had to be).
     func endLight() {
+        stopEnlarging()
+        model.enlarge = nil
+        model.enlargePickerOpen = false
         model.denoising = false
         model.denoiseProgress = nil
         model.denoiseDone = false
@@ -667,6 +677,8 @@ extension ViewerWindowController: NSMenuItemValidation {
                 lossless = true
             } else if let (picture, isHDR) = Self.renderEdited(url, edits, progress: { fraction in
                 DispatchQueue.main.async { MainActor.assumeIsolated { self?.denoiseProgressed(fraction, full: true) } }
+            }, enlargeProgress: { fraction in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.enlargeProgressed(fraction) } }
             }) {
                 var o = options
                 if o.matchQuality, o.format == .jpeg, let q = JPEGQuality.setting(for: url) { o.quality = q }
@@ -684,6 +696,7 @@ extension ViewerWindowController: NSMenuItemValidation {
                     guard let self else { return }
                     self.model.isSaving = false
                     if self.model.denoiseFull { self.denoiseFinished() }
+                    if self.model.enlargeProgress != nil { self.enlargeFinished() }
                     if let failure {
                         self.showToast(L("Not saved: %@", failure), symbol: "exclamationmark.triangle", tone: .error)
                         cancelled?()
@@ -704,18 +717,19 @@ extension ViewerWindowController: NSMenuItemValidation {
         let turn: (quarterTurns: Int, mirror: Bool)?
         let engine: LightRenderer.Engine
         let renderer: LightRenderer?
+        let enlarge: Int?
     }
 
     func editSnapshot(for url: URL) -> EditSnapshot {
         EditSnapshot(light: model.light, adjusted: hasUnsavedAdjustments, crop: model.crop, turn: orientationChange,
                      engine: lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .raw : .pictty),
-                     renderer: lightSession?.renderer)
+                     renderer: lightSession?.renderer, enlarge: model.enlarge)
     }
 
     /// Every pixel of `url` with `edits`, upright: what Save writes and Print prints. Nil when the
     /// file cannot be read; a nil picture when the edit cannot be rendered.
-    nonisolated static func renderEdited(_ url: URL, _ edits: EditSnapshot,
-                                         progress: ((Double) -> Void)?) -> (picture: CGImage?, isHDR: Bool)? {
+    nonisolated static func renderEdited(_ url: URL, _ edits: EditSnapshot, progress: ((Double) -> Void)?,
+                                         enlargeProgress: ((Double) -> Void)? = nil) -> (picture: CGImage?, isHDR: Bool)? {
         guard let original = ImageDecoder.full(url) else { return nil }
         let isHDR = original.isHDR
         let a = edits.light
@@ -724,6 +738,10 @@ extension ViewerWindowController: NSMenuItemValidation {
             : LightRenderer.renderWhole(original.image, url: url, engine: edits.engine, isHDR: isHDR, a, output: .linear,
                                         progress: progress, renderer: edits.renderer)
         if let crop = edits.crop, let p = picture { picture = crop.apply(to: p) }
+        // Enlarged after the crop and before the turn: the network sees the picture upright as stored.
+        if let factor = edits.enlarge, let p = picture {
+            picture = NeuralUpscaler.shared.enlarge(p, factor: factor, progress: enlargeProgress)
+        }
         if let turn = edits.turn, let p = picture { picture = ImageExporter.oriented(p, quarterTurns: turn.quarterTurns, mirror: turn.mirror) }
         return (picture, isHDR)
     }

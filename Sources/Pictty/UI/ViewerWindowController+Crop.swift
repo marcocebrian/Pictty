@@ -30,6 +30,7 @@ extension ViewerWindowController {
         let draft = model.cropDraft
         model.crop = draft.isWhole ? nil : draft
         model.cropping = false
+        enlargeCropChanged()
         refreshEdit()
         applyZoom(animated: true)
         fitWindowToPicture(animated: true)

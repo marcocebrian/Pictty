@@ -99,6 +99,16 @@ final class ViewerModel: ObservableObject {
     /// This picture can have Pictty's noise reduction (or, for a RAW, Apple's).
     @Published var offersDenoise = false
 
+    // MARK: Enlarge
+
+    /// The learned enlargement on the picture (2 or 4), after the crop; nil for none.
+    @Published var enlarge: Int?
+    /// How far the network is, 0…1, while it runs; and a moment of "done" after, for the canvas.
+    @Published var enlargeProgress: Double?
+    @Published var enlargeDone = false
+    /// The toolbar's strip of sizes is open.
+    @Published var enlargePickerOpen = false
+
     // MARK: Crop
 
     /// The crop on the picture, once Done; nil for none.
