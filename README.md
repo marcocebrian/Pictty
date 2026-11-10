@@ -20,7 +20,7 @@ Prefer not to buy? <a href="https://www.noxdrop.com/pictty.html#download">Downlo
 
 <p align="center">macOS 15+ · Liquid Glass · <a href="https://www.noxdrop.com/pictty.html">noxdrop.com/pictty</a></p>
 
-<p align="center"><b>New in 1.5.1:</b> an in-house hybrid neural RAW engine. Also: sharper Sharpening, lens correction for RAWs, HDR highlights that stay smooth while you edit, 10- and 12-bit HEIF kept on save, and double-click for 100 % in full screen.</p>
+<p align="center"><b>New in 1.6:</b> AI Enlarge for real texture at 2× and 4×, Remove Background, Annotate (arrows, shapes, text, numbered steps, blur, censor, magnifier, spotlight, smart redact), Resize, and an Edit menu with Undo.</p>
 
 ---
 
@@ -88,6 +88,10 @@ Crop with ratios and rounded corners, flip to the original with Y, and save over
 - **Adjust**: light, colour and detail on Pictty's own GPU engine, live on the picture at any zoom.
 - **Noise reduction** by a neural network on this Mac's GPU, at the scale the picture's grain needs.
 - **Crop** with ratios for social, screens and print, and rounded corners.
+- **AI Enlarge** 2× or 4× by a neural network on this Mac's GPU: real texture in fabric, fur, foliage and print; faces kept natural.
+- **Remove Background** with macOS's own subject lifting: transparent, white, black, a colour, or the background blurred.
+- **Annotate**: arrows you can curve, rectangles, circles, text, numbered steps, highlighter, blur, censor, a magnifier and a spotlight, with smart colour and smart redact.
+- **Resize** in pixels, percent, centimetres or inches, with Lanczos in linear light.
 - **Save and Save As**: over the file in its own format and quality, turns without re-encoding, or as JPEG, HEIC, AVIF, PNG, TIFF, OpenEXR and more, with the file's size shown before you save.
 - **Print**: the picture on your printer's own papers, dragged into place, at photo-lab sizes or your own, with its quality in ppi and an offer to upscale when the picture is short of pixels.
 - **Five zoom modes**: Actual Size, Best Fit, Fit to Window, Remember Zoom, and Lock Zoom & Window, behind one toolbar button (or the keys 1 to 5).
@@ -181,6 +185,13 @@ Several sliders work **by regions**. An edge-aware map of the picture's brightne
 
 **Saving.** ⌘S writes over the file in its own format, colour profile, bit depth and metadata; a JPEG is re-encoded at the quality it was made with, matched to its own quantisation table, so it does not grow or soften for nothing. A turn or a mirror on its own rewrites the orientation tag and no pixel. ⇧⌘S saves a copy or converts: each format is a card that says what it can hold (lossless, HDR, transparency, bit depth), every setting is there, and the foot shows how large the file will be. The file is written beside the destination and moved over it, so a failure never leaves half a picture behind. Moving away from unsaved edits asks first.
 
+### Enlarge, background, annotate, resize
+
+- **AI Enlarge** is **BHI RealPLKSR 4× real** (Philip Hofmann, CC-BY-4.0), a 7.4 M parameter network trained on photos with realistic noise, blur and compression, run by Core ML on the GPU: convolutions in half precision, everything else in 32-bit, matching PyTorch to 69 dB. It works in 512-pixel tiles that fade into each other, in sRGB or Display P3 whatever the picture's own colour space. 2× is the 4× result halved in linear light, tile by tile. Faces found by Vision keep a plain enlargement; a tile the network gets wrong is replaced by Lanczos. For pictures up to 8 MP as cropped: past that it can only invent. About 1.7 s per input megapixel on an M5 Pro. It is the last pixel edit (after adjustments and crop), and the window and 100 % follow the new size.
+- **Remove Background** uses macOS's own subject lifting (Vision), all subjects at once; the fill goes behind them with the mask's soft edge. It sits before the crop, so a cut-out can be cropped and enlarged with its transparency.
+- **Annotate** draws its marks with the same code on screen and into the file, at the finished picture's resolution, so they stay sharp at any zoom and through Enlarge and Resize. They are kept in the picture's own coordinates, so a later crop keeps them on the same spot. **Smart redact** reads the picture's text with Vision and covers e-mail addresses, phone and card numbers, and blurs faces. **Smart colour** picks the palette colour farthest from what is under the mark.
+- **Resize** is the standard dialog with one method, said rather than chosen: Lanczos, shrinking in linear light. It says when a picture gets bigger but not more detailed, and points to AI Enlarge.
+
 ### Printing
 
 **Print** (⌘P) shows the sheet of paper as it will come out, the printer's own papers and margins included, borderless ones too. The picture is dragged into place and clicks onto the centre and the margins; its corners resize it, ⌥-drag chooses what a crop keeps, and the arrow keys nudge it a millimetre (⇧ for ten). One button makes it as large as the printer reaches on that paper, the paper turned whichever way gives more. Sizes are the page fitted or filled, the sizes photo labs print (10 × 15 to 60 × 90 cm, 4 × 6 to 24 × 36 in) or any width and height, in centimetres, inches or millimetres; a frame of another shape is filled and cropped, or holds the whole picture.
@@ -227,7 +238,7 @@ swift test               # the engine's tests (resampling, zoom maths, analysis,
 | `Sources/PicttyCore` | The engine: decoding, Lanczos and linear-light resampling, zoom maths, histogram and clipping analysis, SVG, the editing engine (Metal), saving |
 | `Sources/Pictty` | The app: canvas and Core Animation layers, windows, toolbar, filmstrip, inspector, settings |
 | `Tests/PicttyCoreTests` | Tests for the engine |
-| `Models` | The neural networks (noise reduction, RAW develop, Enlarge), the scripts that convert them, and their licences |
+| `Models` | The neural networks (noise reduction, RAW develop, AI Enlarge), the scripts that convert them, and their licences |
 
 ## Licence
 
@@ -235,7 +246,7 @@ Pictty is free and open source: © 2026 Marco Cebrián Muiño, released under th
 
 The noise reduction network is SCUNet by Kai Zhang and colleagues, from [cszn/SCUNet](https://github.com/cszn/SCUNet), under the Apache License 2.0 (`Models/SCUNet-LICENSE`).
 
-Enlarge uses the network weights 4xBHI_realplksr_dysample_real by Philip Hofmann, from [Phhofm/models](https://github.com/Phhofm/models), under the Creative Commons Attribution 4.0 licence (`Models/Upscale-LICENSE`).
+AI Enlarge uses the network weights 4xBHI_realplksr_dysample_real by Philip Hofmann, from [Phhofm/models](https://github.com/Phhofm/models), under the Creative Commons Attribution 4.0 licence (`Models/Upscale-LICENSE`).
 
 ---
 
