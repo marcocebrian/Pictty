@@ -1447,6 +1447,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     /// The file itself (Finder pastes a copy) and its encoded bytes (editors paste the picture).
     @objc func copyCurrentImage(_ sender: Any?) {
         guard let item = targetItem else { return }
+        // Edited on screen: the picture as it is now, not the file.
+        if !model.isComparing, item.url == model.current?.url, hasEdits { return copyEdited(item) }
         let entry = NSPasteboardItem()
         entry.setString(item.url.absoluteString, forType: .fileURL)
         if let type = UTType(filenameExtension: item.url.pathExtension), let data = try? Data(contentsOf: item.url, options: .mappedIfSafe) {
@@ -1455,6 +1457,41 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([entry])
         showToast(L("Copied %@", item.fileName), symbol: "doc.on.doc", tone: .success)
+    }
+
+    /// Every pixel with the edits on screen, rendered off the main thread, on the pasteboard as PNG and TIFF.
+    private func copyEdited(_ item: ImageItem) {
+        let edits = editSnapshot(for: item.url)
+        if edits.enlarge != nil { stopEnlarging() }
+        showToast(L("Copying %@ as edited…", item.fileName), symbol: "doc.on.doc")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let picture = Self.renderEdited(item.url, edits, progress: nil, enlargeProgress: { fraction in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.enlargeProgressed(fraction) } }
+            })?.picture
+            func encoded(_ type: UTType) -> Data? {
+                guard let picture else { return nil }
+                let data = NSMutableData()
+                guard let dest = CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil) else { return nil }
+                CGImageDestinationAddImage(dest, picture, nil)
+                return CGImageDestinationFinalize(dest) ? data as Data : nil
+            }
+            let png = encoded(.png), tiff = encoded(.tiff)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if self.model.enlargeProgress != nil { self.enlargeFinished() }
+                    guard let png else {
+                        return self.showToast(L("Not copied: the edit could not be rendered."), symbol: "exclamationmark.triangle", tone: .error)
+                    }
+                    let entry = NSPasteboardItem()
+                    entry.setData(png, forType: .png)
+                    if let tiff { entry.setData(tiff, forType: .tiff) }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.writeObjects([entry])
+                    self.showToast(L("Copied %@ as edited", item.fileName), symbol: "doc.on.doc", tone: .success)
+                }
+            }
+        }
     }
 
     @objc func revealInFinder(_ sender: Any?) {
@@ -1534,6 +1571,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             case "+", "=": zoomIn(nil); return true
             case "-", "_": zoomOut(nil); return true
             case "0" where flags == .command: resetZoom(nil); return true
+            case "c" where flags == .command:
+                // ⌘C: text being typed or selected copies the text; anything else, the picture. A
+                // selectable label holding focus with nothing selected would otherwise take ⌘C and do nothing.
+                if let text = window?.firstResponder as? NSTextView, text.isEditable || text.selectedRange().length > 0 { return false }
+                guard model.current != nil else { return false }
+                copyCurrentImage(nil)
+                return true
             default: return false
             }
         }

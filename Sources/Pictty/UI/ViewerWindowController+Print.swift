@@ -55,9 +55,13 @@ extension ViewerWindowController {
         let edits = editSnapshot(for: url)
         let layout = session.layout
         let settings = session.settings
+        // One network at a time: the screen's enlargement waits; the print's shows its progress.
+        if edits.enlarge != nil { stopEnlarging() }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var ready: CGImage?
-            if let (whole, isHDR) = Self.renderEdited(url, edits, progress: nil), let whole {
+            if let (whole, isHDR) = Self.renderEdited(url, edits, progress: nil, enlargeProgress: { fraction in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.enlargeProgressed(fraction) } }
+            }), let whole {
                 // The layout was made on the picture's nominal size; the render may differ by a pixel or a RAW's develop.
                 let kx = CGFloat(whole.width) / max(layout.picture.width, 1)
                 let ky = CGFloat(whole.height) / max(layout.picture.height, 1)
@@ -73,6 +77,7 @@ extension ViewerWindowController {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    if self.model.enlargeProgress != nil { self.enlargeFinished() }
                     session.preparing = false
                     guard let ready else {
                         self.showToast(L("Not printed: the picture could not be rendered."), symbol: "exclamationmark.triangle", tone: .error)

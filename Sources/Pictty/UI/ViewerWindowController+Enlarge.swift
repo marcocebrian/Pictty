@@ -56,6 +56,8 @@ extension ViewerWindowController {
         }
         if model.showingOriginal { setShowingOriginal(false) }
         stopEnlarging()
+        // A different size, or none: the enlargement kept for the old one is half a gigabyte or more.
+        lightSession?.enlarged = nil
         model.enlarge = factor
         refreshEdit()
         applyZoom(animated: true)
@@ -81,8 +83,10 @@ extension ViewerWindowController {
 
     /// A run whose edit is no longer the one on screen stops at once, not when it would have finished.
     func stopStaleEnlarging() {
+        let key = EnlargeKey(light: model.light, crop: model.crop, factor: model.enlarge ?? 0)
+        if let kept = lightSession?.enlarged, kept.key != key { lightSession?.enlarged = nil }
         guard let run = enlargeRun else { return }
-        if model.cropping || run.key != EnlargeKey(light: model.light, crop: model.crop, factor: model.enlarge ?? 0) {
+        if model.cropping || run.key != key {
             stopEnlarging()
         }
     }

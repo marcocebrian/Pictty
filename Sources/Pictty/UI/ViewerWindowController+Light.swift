@@ -676,6 +676,8 @@ extension ViewerWindowController: NSMenuItemValidation {
         let edits = editSnapshot(for: url)
         let inPlace = dest.standardizedFileURL == url.standardizedFileURL
         model.isSaving = true
+        // One network at a time: the screen's enlargement waits (the zoom asks again); Save's shows its progress.
+        if edits.enlarge != nil { stopEnlarging() }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var failure: String?
             var lossless = false
