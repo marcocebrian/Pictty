@@ -87,6 +87,7 @@ struct ToolbarView: View {
             if NeuralUpscaler.shared.isAvailable {
                 EnlargeButton(model: model, controller: controller)
             }
+            BackgroundButton(model: model, controller: controller)
             glyph(model.slideshowRunning ? "pause.rectangle" : "play.rectangle",
                   model.slideshowRunning ? "Stop slideshow (S)" : "Slideshow (S)",
                   isOn: model.slideshowRunning) {
@@ -349,6 +350,72 @@ private struct EnlargeButton: View {
         }
         .animation(.easeOut(duration: 0.14), value: hovering)
         .animation(.easeOut(duration: 0.18), value: on)
+    }
+}
+
+/// Remove background: one button; its strip holds the fills and Off.
+private struct BackgroundButton: View {
+    @ObservedObject var model: ViewerModel
+    let controller: ViewerWindowController
+    @State private var hovering = false
+
+    var body: some View {
+        let usable = controller.offersBackground
+        let on = model.background != nil
+        Button {
+            guard usable else { return }
+            model.backgroundPickerOpen.toggle()
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "person.and.background.dotted")
+                    .font(.system(size: 12.5, weight: .medium))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+                    .opacity(0.7)
+            }
+            .frame(width: 34, height: 25)
+            .foregroundStyle(on ? Color.accentColor.mix(with: .white, by: 0.25)
+                                : .white.opacity(!usable ? 0.3 : hovering || model.backgroundPickerOpen ? 0.95 : 0.62))
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(on ? Color.accentColor.opacity(hovering ? 0.3 : 0.2)
+                             : .white.opacity(usable && (hovering || model.backgroundPickerOpen) ? 0.13 : 0))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScale())
+        .toolbarTooltip(model.backgroundPickerOpen ? "" : "Remove Background", hovering: $hovering)
+        .popover(isPresented: $model.backgroundPickerOpen, arrowEdge: .bottom) {
+            HStack(spacing: 1) {
+                tile("checkerboard.rectangle", "Transparent", .transparent)
+                tile("square.fill", "White", .white, tint: .white)
+                tile("square.fill", "Black", .black, tint: .black)
+                CompareTile(symbol: "paintpalette", title: "Colour…", help: "Colour…", isOn: isColour) {
+                    model.backgroundPickerOpen = false
+                    controller.pickBackgroundColour()
+                }
+                tile("camera.aperture", "Blurred", .blurred)
+                Rectangle().fill(.primary.opacity(0.12)).frame(width: 0.5, height: 13).padding(.horizontal, 4)
+                CompareTile(symbol: "xmark", title: "Keep the background", help: "Keep the background", isOn: false) {
+                    model.backgroundPickerOpen = false
+                    controller.setBackground(nil)
+                }
+                .disabled(model.background == nil)
+                .opacity(model.background == nil ? 0.35 : 1)
+            }
+            .padding(4)
+        }
+        .animation(.easeOut(duration: 0.14), value: hovering)
+        .animation(.easeOut(duration: 0.18), value: on)
+    }
+
+    private var isColour: Bool { if case .colour = model.background { true } else { false } }
+
+    private func tile(_ symbol: String, _ title: String, _ fill: BackgroundFill, tint: Color? = nil) -> some View {
+        CompareTile(symbol: symbol, title: title, help: title, isOn: model.background == fill) {
+            model.backgroundPickerOpen = false
+            controller.setBackground(fill)
+        }
     }
 }
 

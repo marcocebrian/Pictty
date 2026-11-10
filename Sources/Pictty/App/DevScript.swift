@@ -116,13 +116,13 @@ enum DevScript {
             // saveto <path>: Save As a JPEG there, without the panel.
             if let url = c.model.current?.url {
                 var o = c.prefs.exportOptions
-                o.format = .jpeg
+                o.format = text.hasSuffix(".png") ? .png : .jpeg
                 c.export(url, to: URL(fileURLWithPath: text), options: o, then: nil, cancelled: nil)
             }
         case "dump":
             // dump: the edit state and what the canvas shows, on stdout.
             let s = canvas.shown(pane: 0)
-            print("dump url=\(s?.url.lastPathComponent ?? "-") px=\(s.map { "\($0.pixelSize)" } ?? "-") preview=\(s?.preview.map { "\($0.width)x\($0.height)" } ?? "-") full=\(s?.full.map { "\($0.width)x\($0.height)" } ?? "-") light=\(c.model.light.exposure) crop=\(c.model.crop.map { "\($0.rect)" } ?? "-") edited=\(c.hasUnsavedEdits) enlarge=\(c.model.enlarge.map(String.init) ?? "-") enlarging=\(c.model.enlargeProgress.map { String(format: "%.2f", $0) } ?? "-") refusal=\(c.enlargeRefusal.map { "\($0)" } ?? "-") size=[\(c.model.report.headline)] mp=[\(c.model.report.subheadline)] session=\(c.lightSession != nil) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") win=\(c.window?.windowNumber ?? 0)")
+            print("dump url=\(s?.url.lastPathComponent ?? "-") px=\(s.map { "\($0.pixelSize)" } ?? "-") preview=\(s?.preview.map { "\($0.width)x\($0.height)" } ?? "-") full=\(s?.full.map { "\($0.width)x\($0.height)" } ?? "-") light=\(c.model.light.exposure) crop=\(c.model.crop.map { "\($0.rect)" } ?? "-") edited=\(c.hasUnsavedEdits) enlarge=\(c.model.enlarge.map(String.init) ?? "-") enlarging=\(c.model.enlargeProgress.map { String(format: "%.2f", $0) } ?? "-") refusal=\(c.enlargeRefusal.map { "\($0)" } ?? "-") size=[\(c.model.report.headline)] bg=\(c.model.background.map { "\($0)" } ?? "-") masking=\(c.model.maskWorking) mp=[\(c.model.report.subheadline)] session=\(c.lightSession != nil) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") win=\(c.window?.windowNumber ?? 0)")
             fflush(stdout)
         case "shot":
             // shot <path>: every visible window's layers as drawn (path, path-1, …), without a capture permission.
@@ -178,6 +178,18 @@ enum DevScript {
             // resize <w> <h>: Image Size without the sheet; resize 0 0 takes it off.
             if n.count >= 2 { c.setResize(n[0] > 0 ? CGSize(width: n[0], height: n[1]) : nil) }
         case "imagesize": c.showImageSize(nil)
+        case "bg":
+            // bg <transparent|white|black|blurred|colour r g b|off>
+            let w = text.split(separator: " ").map(String.init)
+            switch w.first {
+            case "transparent": c.setBackground(.transparent)
+            case "white": c.setBackground(.white)
+            case "black": c.setBackground(.black)
+            case "blurred": c.setBackground(.blurred)
+            case "colour" where w.count >= 4: c.setBackground(.colour(Double(w[1]) ?? 0, Double(w[2]) ?? 0, Double(w[3]) ?? 0))
+            default: c.setBackground(nil)
+            }
+        case "bgpicker": c.model.backgroundPickerOpen.toggle()
         case "enlargepicker": c.model.enlargePickerOpen.toggle()
         case "badgeshot":
             // badgeshot <path>: the Enlarge badge mid-run, drawn on its own over a grey.

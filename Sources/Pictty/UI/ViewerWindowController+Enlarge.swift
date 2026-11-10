@@ -12,6 +12,7 @@ struct EnlargeKey: Equatable {
     let light: Adjustments
     let crop: CropBox?
     let factor: Int
+    var background: BackgroundFill? = nil
 }
 
 /// One run of the network, stopped by `cancel()` from the main thread.
@@ -84,7 +85,7 @@ extension ViewerWindowController {
 
     /// A run whose edit is no longer the one on screen stops at once, not when it would have finished.
     func stopStaleEnlarging() {
-        let key = EnlargeKey(light: model.light, crop: model.crop, factor: model.enlarge ?? 0)
+        let key = EnlargeKey(light: model.light, crop: model.crop, factor: model.enlarge ?? 0, background: model.background)
         if let kept = lightSession?.enlarged, kept.key != key { lightSession?.enlarged = nil }
         guard let run = enlargeRun else { return }
         if model.cropping || run.key != key {
@@ -102,14 +103,17 @@ extension ViewerWindowController {
     func presentFull(_ image: CGImage, session: LightSession) {
         present(image, full: true, session: session)
         guard let factor = model.enlarge, !model.cropping, !model.showingOriginal else { return }
-        let key = EnlargeKey(light: model.light, crop: model.crop, factor: factor)
+        let key = EnlargeKey(light: model.light, crop: model.crop, factor: factor, background: model.background)
+        // With Remove background, the subject's mask for every pixel comes first (it shows the edit again).
+        let base = withBackground(image, session: session)
+        if model.background != nil, session.masks["\(image.width)x\(image.height)"] == nil { return }
         if let done = session.enlarged, done.key == key { return showEnlarged(done.image, session: session) }
         if let run = enlargeRun, run.key == key, !run.isCancelled { return }
         stopEnlarging()
         let run = EnlargeRun(key: key)
         enlargeRun = run
         let url = session.renderer.url
-        let source = key.crop?.apply(to: image) ?? image
+        let source = key.crop?.apply(to: base) ?? base
         // A moment's wait: a slider still moving would only start it over.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             guard let self, self.enlargeRun === run, !run.isCancelled else { return }
@@ -131,6 +135,7 @@ extension ViewerWindowController {
                         self.enlargeRun = nil
                         guard let big, !run.isCancelled, self.lightSession === session, self.model.current?.url == url,
                               self.model.enlarge == factor, self.model.light == key.light, self.model.crop == key.crop,
+                              self.model.background == key.background,
                               !self.model.cropping else {
                             self.model.enlargeProgress = nil
                             return
@@ -151,7 +156,7 @@ extension ViewerWindowController {
     private func showEnlarged(_ image: CGImage, session: LightSession) {
         let size = model.resize ?? CGSize(width: image.width, height: image.height)
         canvas.showEdited(Self.screenCopy(image), full: true, pane: 0, pixelSize: size,
-                          hasAlpha: session.hasAlpha || model.crop?.isRounded == true)
+                          hasAlpha: session.hasAlpha || model.crop?.isRounded == true || model.background == .transparent)
         updateStatus()
     }
 

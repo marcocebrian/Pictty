@@ -73,10 +73,15 @@ struct HUDOverlay: View {
             // Work going on in the picture, top left: the RAW develop, the noise reduction, Enlarge.
             let denoiseShown = model.denoiseProgress != nil || model.denoiseDone
             let enlargeShown = model.enlargeProgress != nil || model.enlargeDone
-            if denoiseShown || enlargeShown, model.current != nil, !model.isComparing {
+            if denoiseShown || enlargeShown || model.maskWorking, model.current != nil, !model.isComparing {
                 VStack(alignment: .leading, spacing: 6) {
                     if denoiseShown {
                         DenoiseBadge(progress: model.denoiseProgress, everyPixel: model.denoiseFull)
+                    }
+                    if model.maskWorking {
+                        WorkBadge(label: "BACKGROUND", symbol: "person.and.background.dotted", progress: 0.5,
+                                  working: "finding the subject", done: "subject found",
+                                  colors: [Color(hex: 0x34A853), Color(hex: 0x00ACC1)], measured: false)
                     }
                     if enlargeShown {
                         WorkBadge(label: "ENLARGE", symbol: "arrow.up.left.and.arrow.down.right", progress: model.enlargeProgress,
@@ -481,6 +486,8 @@ struct WorkBadge: View {
     let done: LocalizedStringKey
     /// The line's colours, the network's own.
     let colors: [Color]
+    /// Work with no measure of how far it is: no figure, no line.
+    var measured = true
     @State private var floating = false
 
     var body: some View {
@@ -512,10 +519,12 @@ struct WorkBadge: View {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 5) {
                             Text(working)
-                            Text("\(Int((progress * 100).rounded())) %")
-                                .monospacedDigit()
-                                .foregroundStyle(.white.opacity(0.6))
-                                .contentTransition(.numericText(value: progress))
+                            if measured {
+                                Text("\(Int((progress * 100).rounded())) %")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.white.opacity(0.6))
+                                    .contentTransition(.numericText(value: progress))
+                            }
                         }
                         .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white.opacity(0.85))
@@ -529,6 +538,7 @@ struct WorkBadge: View {
                             }
                         }
                         .frame(width: 120, height: 3)
+                        .opacity(measured ? 1 : 0)
                     }
                     .shadow(color: .black.opacity(0.6), radius: 3)
                     .animation(.easeOut(duration: 0.2), value: progress)

@@ -28,6 +28,10 @@ final class LightSession {
     var originalFrame: CanvasView.Frame?
     /// The network's enlargement of the edit at every pixel, while the edit is what it was.
     var enlarged: (key: EnlargeKey, image: CGImage)?
+    /// Remove background: the subjects' masks, per picture size; sizes being made; none found.
+    var masks: [String: CGImage] = [:]
+    var masking: Set<String> = []
+    var noSubject = false
 
     init(renderer: LightRenderer, preview: CGImage, pixelSize: CGSize, hasAlpha: Bool) {
         self.renderer = renderer
@@ -53,19 +57,21 @@ extension ViewerWindowController: NSMenuItemValidation {
         let mirror: Bool
         let enlarge: Int?
         let resize: CGSize?
+        let background: BackgroundFill?
     }
 
     var editState: EditState {
         let turn = orientationChange
         return EditState(url: model.current?.url, light: model.light, crop: model.crop,
                          quarterTurns: turn?.quarterTurns ?? 0, mirror: turn?.mirror ?? false, enlarge: model.enlarge,
-                         resize: model.resize)
+                         resize: model.resize, background: model.background)
     }
 
     var hasUnsavedAdjustments: Bool { lightSession != nil && hasPixelEdits }
 
     /// Edits that change pixels: the panel's adjustments, a crop, or an enlargement.
-    var hasPixelEdits: Bool { !model.light.isNeutral || model.crop != nil || model.enlarge != nil || model.resize != nil }
+    var hasPixelEdits: Bool { !model.light.isNeutral || model.crop != nil || model.enlarge != nil || model.resize != nil
+        || model.background != nil }
 
     /// The turn and mirror of the picture on screen, if it has any and it can be saved.
     var orientationChange: (quarterTurns: Int, mirror: Bool)? {
@@ -113,6 +119,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         case #selector(toggleOriginal(_:)): return hasUnsavedAdjustments && !model.cropping
         case #selector(toggleCrop(_:)): return model.current != nil && model.lightUnavailable == nil
         case #selector(showEnlarge(_:)): return offersEnlarge
+        case #selector(showBackground(_:)): return offersBackground
         case #selector(showImageSize(_:)): return model.current != nil && !model.isComparing && model.lightUnavailable == nil && !model.isSaving
         case #selector(copy(_:)): return model.current != nil
         case #selector(printPicture(_:)): return canPrint
@@ -267,6 +274,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         // A screen-sized picture drops every pixel from the canvas: the zoom may ask for them again.
         if !full { session.editedFullRequested = false }
         let crop = model.cropping ? nil : model.crop
+        let image = withBackground(image, session: session)
         let out = crop?.apply(to: image) ?? image
         let size = (model.cropping ? nil : model.resize)
             ?? EnlargeRule.outputSize(crop?.croppedSize(session.pixelSize) ?? session.pixelSize,
@@ -274,7 +282,8 @@ extension ViewerWindowController: NSMenuItemValidation {
         let resized = canvas.shown(pane: 0)?.pixelSize != size
         let first = !session.ownShown && ownsRAW(session.renderer.url)
         if first { session.ownShown = true }
-        canvas.showEdited(Self.screenCopy(out), full: full, pane: 0, pixelSize: size, hasAlpha: session.hasAlpha || crop?.isRounded == true,
+        canvas.showEdited(Self.screenCopy(out), full: full, pane: 0, pixelSize: size,
+                          hasAlpha: session.hasAlpha || crop?.isRounded == true || model.background == .transparent,
                           fade: first)
         if resized {
             // A crop is a different picture to fit: the zoom mode and the window follow it, and the
@@ -463,6 +472,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         model.crop = nil
         model.enlarge = nil
         model.resize = nil
+        model.background = nil
         stopEnlarging()
         setLight(model.light.valuesReset)
         resetOrientation()
@@ -484,6 +494,9 @@ extension ViewerWindowController: NSMenuItemValidation {
         stopEnlarging()
         model.enlarge = nil
         model.resize = nil
+        model.background = nil
+        model.backgroundPickerOpen = false
+        model.maskWorking = false
         model.enlargePickerOpen = false
         model.denoising = false
         model.denoiseProgress = nil
@@ -616,7 +629,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         o.depth = ImageExporter.depthKeeping(item.url, format: format)
         o.matchQuality = true
         var dest = item.url
-        if model.crop?.isRounded == true, !format.keepsAlpha {
+        if model.crop?.isRounded == true || model.background == .transparent, !format.keepsAlpha {
             // Rounded corners are transparency, which a JPEG cannot hold: a PNG beside it, the
             // JPEG untouched. No question asked; nothing is lost either way.
             o.format = .png
@@ -734,13 +747,14 @@ extension ViewerWindowController: NSMenuItemValidation {
         let renderer: LightRenderer?
         let enlarge: Int?
         let resize: CGSize?
+        let background: BackgroundFill?
     }
 
     func editSnapshot(for url: URL) -> EditSnapshot {
         EditSnapshot(light: model.light, adjusted: hasUnsavedAdjustments, crop: model.crop, turn: orientationChange,
                      engine: lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .raw : .pictty),
                      renderer: lightSession?.renderer, enlarge: model.enlarge,
-                     resize: model.resize)
+                     resize: model.resize, background: model.background)
     }
 
     /// Every pixel of `url` with `edits`, upright: what Save writes and Print prints. Nil when the
@@ -754,6 +768,7 @@ extension ViewerWindowController: NSMenuItemValidation {
             ? original.image
             : LightRenderer.renderWhole(original.image, url: url, engine: edits.engine, isHDR: isHDR, a, output: .linear,
                                         progress: progress, renderer: edits.renderer)
+        if let fill = edits.background, let p = picture { picture = withBackground(p, fill: fill) }
         if let crop = edits.crop, let p = picture { picture = crop.apply(to: p) }
         // Enlarged after the crop and before the turn: the network sees the picture upright as stored.
         if let factor = edits.enlarge, let p = picture {

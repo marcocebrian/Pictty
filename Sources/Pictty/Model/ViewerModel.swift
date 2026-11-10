@@ -108,6 +108,11 @@ final class ViewerModel: ObservableObject {
     @Published var enlargeDone = false
     /// The toolbar's strip of sizes is open.
     @Published var enlargePickerOpen = false
+    /// Remove background: what goes behind the subjects; nil for none.
+    @Published var background: BackgroundFill?
+    @Published var backgroundPickerOpen = false
+    /// macOS is finding the subjects.
+    @Published var maskWorking = false
     /// Image Size: the picture resampled to this many pixels, last of all (before a turn); nil for none.
     @Published var resize: CGSize?
 

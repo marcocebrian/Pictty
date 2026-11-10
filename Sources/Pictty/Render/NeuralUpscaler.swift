@@ -251,7 +251,8 @@ private final class TileWriter: @unchecked Sendable {
               let lz = NeuralUpscaler.floatPixels(plain, width: kw, height: kh, space: space),
               let net = network(t, region, width: kw, height: kh) else { failed = true; return }
         // The network's pixels; a tile that came back broken or far from the plain one is written again, plain.
-        var moved: Float = 0, broken = false
+        // Weighted by opacity: under a transparent pixel the plain colour is nothing, and no one sees it.
+        var moved: Float = 0, seen: Float = 0, broken = false
         for pass in 0..<2 {
             let useNetwork = pass == 0
             for y in 0..<kh {
@@ -271,7 +272,8 @@ private final class TileWriter: @unchecked Sendable {
                         if useNetwork {
                             let n = net[c * kw * kh + y * kw + x]
                             if !n.isFinite { broken = true; continue }
-                            moved += abs(n - plainV)
+                            moved += abs(n - plainV) * alpha
+                            seen += alpha
                             v = plainV + k * (min(max(n, 0), 1) - plainV)
                         }
                         store(row, X * 4 + c, v * alpha)
@@ -279,7 +281,7 @@ private final class TileWriter: @unchecked Sendable {
                     store(row, X * 4 + 3, alpha)
                 }
             }
-            if !useNetwork || (!broken && moved / Float(kw * kh * 3) <= 0.08) { break }
+            if !useNetwork || (!broken && moved / max(seen, 1) <= 0.08) { break }
             timingMark("enlarge: tile at \(kx),\(ky) kept plain")
         }
     }

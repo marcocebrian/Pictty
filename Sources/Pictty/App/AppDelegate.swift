@@ -415,6 +415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(m, "Adjust", #selector(C.toggleLight(_:)), "e", [])
             add(m, "Crop", #selector(C.toggleCrop(_:)), "c", [])
             if NeuralUpscaler.shared.isAvailable { add(m, "Enlarge", #selector(C.showEnlarge(_:)), "", []) }
+            add(m, "Remove Background", #selector(C.showBackground(_:)), "")
             add(m, "Image Size…", #selector(C.showImageSize(_:)), "i", [.command, .option])
             add(m, "Show Original", #selector(C.toggleOriginal(_:)), "y", [])
             m.addItem(.separator())
@@ -508,7 +509,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "First Image": "backward.end", "Last Image": "forward.end",
         "Minimize": "minus.rectangle", "Zoom": "plus.rectangle", "Keyboard Shortcuts": "keyboard", "Make Pictty the Default Viewer…": "checkmark.seal", "Inside Pictty": "sparkles", "Pictty Website": "safari", "More Apps at noxdrop.com": "square.grid.2x2", "Clipping Warnings": "exclamationmark.triangle",
         "Save": "square.and.arrow.down", "Save As…": "square.and.arrow.down.on.square", "Adjust": "slider.horizontal.3",
-        "Show Original": "rectangle.lefthalf.inset.filled", "Revert to Original": "arrow.uturn.backward", "Crop": "crop", "Image Size…": "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left", "Undo": "arrow.uturn.backward", "Redo": "arrow.uturn.forward", "Cut": "scissors",
+        "Show Original": "rectangle.lefthalf.inset.filled", "Revert to Original": "arrow.uturn.backward", "Crop": "crop", "Remove Background": "person.and.background.dotted", "Image Size…": "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left", "Undo": "arrow.uturn.backward", "Redo": "arrow.uturn.forward", "Cut": "scissors",
         "Copy": "doc.on.doc", "Paste": "doc.on.clipboard", "Select All": "checkmark.rectangle", "Enlarge": "arrow.up.backward.and.arrow.down.forward.square",
         "Print…": "printer",
     ]
