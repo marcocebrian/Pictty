@@ -178,14 +178,15 @@ public enum AnnotationRenderer {
         return base.cropping(to: r)
     }
 
-    /// The region blurred, or pixelated in blocks about a fourteenth of its longer side.
+    /// The region blurred, or pixelated in blocks a quarter of its shorter side (a line of text
+    /// becomes a row of blocks about four high, never one block lighter than the letters).
     private static func processed(_ base: CGImage, region: CGRect, space: AnnotationSpace, pixelate: Bool) -> CGImage? {
         guard let patch = crop(base, region: region, space: space) else { return nil }
         let image = CIImage(cgImage: patch)
         let extent = image.extent
         let out: CIImage
         if pixelate {
-            let scale = max(4, max(extent.width, extent.height) / 14)
+            let scale = max(4, min(extent.width, extent.height) / 4)
             out = image.clampedToExtent().applyingFilter("CIPixellate", parameters: [
                 kCIInputScaleKey: scale, kCIInputCenterKey: CIVector(x: extent.minX, y: extent.minY),
             ]).cropped(to: extent)

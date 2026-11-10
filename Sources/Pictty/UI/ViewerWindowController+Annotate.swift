@@ -19,13 +19,42 @@ extension ViewerWindowController {
         model.annotating = true
         if model.annotationTool == nil { model.annotationTool = .arrow }
         syncChrome()
+        // Measured once SwiftUI has put the bar in.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.model.annotating else { return }
+            self.growToFitAnnotationBar()
+        }
         updateAnnotationOverlay()
+    }
+
+    /// A window narrower than the annotation bar grows to show all of it (centred, kept on screen);
+    /// Done gives it back its size, unless it was resized meanwhile.
+    private func growToFitAnnotationBar() {
+        guard let window, let bar = annotateToolbarHost, !window.styleMask.contains(.fullScreen) else { return }
+        bar.layoutSubtreeIfNeeded()
+        let need = bar.fittingSize.width + 40
+        guard bar.fittingSize.width > 100, window.frame.width < need else { return }
+        var f = window.frame
+        f.origin.x -= (need - f.width) / 2
+        f.size.width = need
+        if let screen = window.screen?.visibleFrame {
+            f.size.width = min(f.width, screen.width)
+            f.origin.x = min(max(f.minX, screen.minX), screen.maxX - f.width)
+        }
+        framesBeforeAnnotating = (window.frame, f)
+        window.setFrame(f, display: true, animate: true)
     }
 
     func finishAnnotating() {
         annotationOverlay?.finishEditing()
         model.annotating = false
         model.selectedAnnotation = nil
+        // Not resized meanwhile (a point or two of rounding aside): it goes back.
+        if let frames = framesBeforeAnnotating, let window, abs(window.frame.width - frames.grown.width) < 3,
+           abs(window.frame.height - frames.grown.height) < 3 {
+            window.setFrame(frames.before, display: true, animate: true)
+        }
+        framesBeforeAnnotating = nil
         syncChrome()
         updateAnnotationOverlay()
         window?.makeFirstResponder(canvas)
@@ -200,6 +229,7 @@ extension ViewerWindowController {
         model.maskWorking = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let found = Self.sensitiveRegions(in: base)
+            timingMark("redact: \(found.count) region(s) in \(base.width)×\(base.height)")
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }

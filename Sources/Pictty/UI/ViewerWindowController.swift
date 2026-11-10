@@ -51,9 +51,10 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     var savedEdits: ViewerWindowController.EditState?
     /// The network enlarging the picture now, to stop when the edit changes.
     var enlargeRun: EnlargeRun?
-    /// Annotate: the marks' view.
+    /// Annotate: the marks' view; the window's frame before it grew to fit the annotation bar.
     var annotationOverlay: AnnotationOverlayView?
-    private var annotateToolbarHost: FadeHostingView?
+    var framesBeforeAnnotating: (before: NSRect, grown: NSRect)?
+    private(set) var annotateToolbarHost: FadeHostingView?
     var lightAnalysisTicket = 0
     /// Neighbours and thumbnails wait for the picture on screen.
     private var warmUpPending = false

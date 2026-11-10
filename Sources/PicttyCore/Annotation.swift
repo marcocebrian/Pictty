@@ -166,9 +166,11 @@ public struct AnnotationStyle: Equatable, Sendable {
         public var isLight: Bool { 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6 }
     }
 
-    /// Red, yellow, green, blue, white, black.
-    public static let palette: [RGBA] = [RGBA(0.96, 0.26, 0.21), RGBA(1, 0.8, 0), RGBA(0.2, 0.78, 0.35), RGBA(0, 0.48, 1),
-                                         RGBA(1, 1, 1), RGBA(0.08, 0.08, 0.08)]
+    /// The vivid colours of today's macOS: red, yellow, green, blue, purple, orange, then white and
+    /// a soft black. Smart colour chooses among the first four, which stand out most.
+    public static let palette: [RGBA] = [RGBA(1, 0.271, 0.227), RGBA(1, 0.839, 0.039), RGBA(0.188, 0.82, 0.345),
+                                         RGBA(0.039, 0.518, 1), RGBA(0.749, 0.353, 0.949), RGBA(1, 0.624, 0.039),
+                                         RGBA(1, 1, 1), RGBA(0.11, 0.11, 0.118)]
 
     public enum Width: Int, CaseIterable, Sendable { case thin, regular, thick }
 
