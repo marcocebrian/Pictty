@@ -24,6 +24,8 @@ protocol CanvasDelegate: AnyObject {
     func canvasPicked(_ point: CGPoint)
     /// A trackpad rotation went past 45°: quarter turns, clockwise positive.
     func canvasRotateGesture(_ quarterTurns: Int)
+    /// The pane was placed again (zoom, pan, turn, a new picture): what lies over it follows.
+    func canvasLaidOut(pane: Int)
 }
 
 /// GPU-composited picture surface, one clipped pane per picture.
@@ -661,6 +663,7 @@ final class CanvasView: NSView {
         scheduleRefine(i, delay: animated ? 0.32 : 0.12)
         // The second picture arriving is what makes the wipe line appear.
         if i == 1 { layoutWipeLine() }
+        delegate?.canvasLaidOut(pane: i)
     }
 
     private func setEDR(_ p: Pane, _ on: Bool) {

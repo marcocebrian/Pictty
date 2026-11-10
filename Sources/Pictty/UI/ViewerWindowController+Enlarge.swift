@@ -42,8 +42,8 @@ extension ViewerWindowController {
 
     static func refusalText(_ r: EnlargeRule.Refusal) -> String {
         switch r {
-        case .tooLarge: L("Enlarge works on pictures up to 8 MP: crop this one first")
-        case .hdr: L("Enlarge is not available for RAW or HDR pictures")
+        case .tooLarge: L("AI Enlarge works on pictures up to 8 MP: crop this one first")
+        case .hdr: L("AI Enlarge is not available for RAW or HDR pictures")
         }
     }
 
@@ -80,7 +80,7 @@ extension ViewerWindowController {
         guard model.enlarge != nil, enlargeRefusal == .tooLarge else { return }
         stopEnlarging()
         model.enlarge = nil
-        showToast(L("Enlarge turned off: the crop is over 8 MP"), symbol: "arrow.down.right.and.arrow.up.left")
+        showToast(L("AI Enlarge turned off: the crop is over 8 MP"), symbol: "arrow.down.right.and.arrow.up.left")
     }
 
     /// A run whose edit is no longer the one on screen stops at once, not when it would have finished.
@@ -145,7 +145,7 @@ extension ViewerWindowController {
                         session.editedFrame = nil
                         self.enlargeFinished()
                         if !self.model.showingOriginal { self.showEnlarged(big, session: session) }
-                        self.showToast(L("Enlarged %ld× · %@ → %@ · %.1f s", factor, "\(source.width)×\(source.height)",
+                        self.showToast(L("Enlarged with AI %ld× · %@ → %@ · %.1f s", factor, "\(source.width)×\(source.height)",
                                          "\(big.width)×\(big.height)", seconds), symbol: "arrow.up.left.and.arrow.down.right")
                     }
                 }

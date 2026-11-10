@@ -51,6 +51,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     var savedEdits: ViewerWindowController.EditState?
     /// The network enlarging the picture now, to stop when the edit changes.
     var enlargeRun: EnlargeRun?
+    /// Annotate: the marks' view.
+    var annotationOverlay: AnnotationOverlayView?
+    private var annotateToolbarHost: FadeHostingView?
     var lightAnalysisTicket = 0
     /// Neighbours and thumbnails wait for the picture on screen.
     private var warmUpPending = false
@@ -161,6 +164,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         overlay.onCommit = { [weak self] in self?.commitCrop() }
         container.addSubview(overlay)
         cropOverlay = overlay
+        installAnnotationOverlay(in: container)
 
         let hud = PassthroughHostingView(rootView: AnyView(HUDOverlay(model: model, prefs: prefs)))
         hud.frame = container.bounds
@@ -202,6 +206,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         cropBar.isInteractive = false
         container.addSubview(cropBar)
         cropToolbarHost = cropBar
+
+        let annotateBar = FadeHostingView(rootView: AnyView(AnnotationToolbarView(model: model, controller: self)))
+        annotateBar.autoresizingMask = [.width, .maxYMargin]
+        annotateBar.alphaValue = 0
+        annotateBar.isInteractive = false
+        container.addSubview(annotateBar)
+        annotateToolbarHost = annotateBar
 
         let light = FadeHostingView(rootView: AnyView(AdjustPanelView(model: model, prefs: prefs, controller: self)))
         light.autoresizingMask = [.minXMargin, .height]
@@ -322,7 +333,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
                                  height: max(0, bounds.height - canvasBottomInset))
         if let canvas, canvas.frame != canvasFrame { canvas.frame = canvasFrame }
         cropToolbarHost?.frame = NSRect(x: 0, y: 22, width: canvasFrame.width, height: 56)
+        annotateToolbarHost?.frame = NSRect(x: 0, y: 22, width: canvasFrame.width, height: 56)
         if model.cropping { updateCropOverlay() }
+        updateAnnotationOverlay()
 
         if let window {
             let width = max(560, toolbarWidth + 20).rounded(.up)
@@ -335,7 +348,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         updatePaneCaptions()
 
         // Cropping is a moment of its own: only the picture, its frame and the crop toolbar.
-        set(toolbarHost, visible: !model.items.isEmpty && !model.cropping && (model.chromeVisible || prefs.toolbarBehavior == .always))
+        set(toolbarHost, visible: !model.items.isEmpty && !model.cropping && !model.annotating
+            && (model.chromeVisible || prefs.toolbarBehavior == .always))
+        set(annotateToolbarHost, visible: model.annotating)
         set(filmstripHost, visible: model.filmstripVisible && !model.cropping)
         set(cropToolbarHost, visible: model.cropping)
         hudHost?.isHidden = model.cropping
@@ -1564,6 +1579,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function, .capsLock])
         let chars = event.charactersIgnoringModifiers ?? ""
 
+        if handleAnnotateKey(event, chars: chars, flags: flags) { return true }
         if handleCropKey(event, chars: chars, flags: flags) { return true }
 
         if flags.contains(.command) {
@@ -1821,6 +1837,10 @@ extension ViewerWindowController: CanvasDelegate {
     func canvasToggleFullScreen() { window?.toggleFullScreen(nil) }
 
     func canvasSmartZoom(pane: Int, at point: CGPoint) { smartZoom(pane: pane, at: point) }
+
+    func canvasLaidOut(pane: Int) {
+        if pane == 0 { updateAnnotationOverlay() }
+    }
 
     func canvasDidResize() {
         if model.cropping { return updateCropOverlay() }

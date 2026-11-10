@@ -28,7 +28,7 @@ extension ViewerWindowController {
         let host = NSHostingController(rootView: view)
         let s = NSWindow(contentViewController: host)
         s.styleMask = [.titled]
-        s.title = L("Image Size")
+        s.title = L("Resize")
         sheet = s
         window.beginSheet(s)
     }
@@ -48,7 +48,7 @@ extension ViewerWindowController {
     func resizeNoLongerFits() {
         guard model.resize != nil else { return }
         model.resize = nil
-        showToast(L("Image Size reset: the picture's shape or size changed"), symbol: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left")
+        showToast(L("Resize undone: the picture's shape or size changed"), symbol: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left")
     }
 
     /// The file's own pixels per inch, or 72.
@@ -185,8 +185,8 @@ struct ImageSizeView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 if method == .enlarge {
-                    Label(enlargeOffered ? "Image Size makes the picture bigger, not more detailed. For new detail, use Enlarge 2× or 4× (Edit menu)."
-                                         : "Image Size makes the picture bigger, not more detailed.",
+                    Label(enlargeOffered ? "Resize makes the picture bigger, not more detailed. For new detail, use AI Enlarge 2× or 4× (Edit menu)."
+                                         : "Resize makes the picture bigger, not more detailed.",
                           systemImage: "info.circle")
                         .font(.callout)
                         .foregroundStyle(.secondary)

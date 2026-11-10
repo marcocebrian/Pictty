@@ -122,7 +122,7 @@ enum DevScript {
         case "dump":
             // dump: the edit state and what the canvas shows, on stdout.
             let s = canvas.shown(pane: 0)
-            print("dump url=\(s?.url.lastPathComponent ?? "-") px=\(s.map { "\($0.pixelSize)" } ?? "-") preview=\(s?.preview.map { "\($0.width)x\($0.height)" } ?? "-") full=\(s?.full.map { "\($0.width)x\($0.height)" } ?? "-") light=\(c.model.light.exposure) crop=\(c.model.crop.map { "\($0.rect)" } ?? "-") edited=\(c.hasUnsavedEdits) enlarge=\(c.model.enlarge.map(String.init) ?? "-") enlarging=\(c.model.enlargeProgress.map { String(format: "%.2f", $0) } ?? "-") refusal=\(c.enlargeRefusal.map { "\($0)" } ?? "-") size=[\(c.model.report.headline)] bg=\(c.model.background.map { "\($0)" } ?? "-") masking=\(c.model.maskWorking) mp=[\(c.model.report.subheadline)] session=\(c.lightSession != nil) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") win=\(c.window?.windowNumber ?? 0)")
+            print("dump url=\(s?.url.lastPathComponent ?? "-") px=\(s.map { "\($0.pixelSize)" } ?? "-") preview=\(s?.preview.map { "\($0.width)x\($0.height)" } ?? "-") full=\(s?.full.map { "\($0.width)x\($0.height)" } ?? "-") light=\(c.model.light.exposure) crop=\(c.model.crop.map { "\($0.rect)" } ?? "-") edited=\(c.hasUnsavedEdits) enlarge=\(c.model.enlarge.map(String.init) ?? "-") enlarging=\(c.model.enlargeProgress.map { String(format: "%.2f", $0) } ?? "-") refusal=\(c.enlargeRefusal.map { "\($0)" } ?? "-") size=[\(c.model.report.headline)] anns=\(c.model.annotations.count) um=\(c.window?.undoManager != nil) canUndo=\(c.canUndoAnnotation) cur=\(c.model.current?.url.lastPathComponent ?? "-") annotating=\(c.model.annotating) bg=\(c.model.background.map { "\($0)" } ?? "-") masking=\(c.model.maskWorking) mp=[\(c.model.report.subheadline)] session=\(c.lightSession != nil) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") win=\(c.window?.windowNumber ?? 0)")
             fflush(stdout)
         case "shot":
             // shot <path>: every visible window's layers as drawn (path, path-1, …), without a capture permission.
@@ -178,6 +178,46 @@ enum DevScript {
             // resize <w> <h>: Image Size without the sheet; resize 0 0 takes it off.
             if n.count >= 2 { c.setResize(n[0] > 0 ? CGSize(width: n[0], height: n[1]) : nil) }
         case "imagesize": c.showImageSize(nil)
+        case "annotate": c.toggleAnnotate(nil)
+        case "overlayshot":
+            // overlayshot <path>: the annotation layer as it draws itself on screen.
+            if let o = c.annotationOverlay, let rep = o.bitmapImageRepForCachingDisplay(in: o.bounds) {
+                o.cacheDisplay(in: o.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: text))
+            }
+        case "barshot":
+            // barshot <path>: the annotation bar, and the toolbar, drawn on their own over a grey.
+            let view = VStack(spacing: 12) {
+                AnnotationToolbarView(model: c.model, controller: c).frame(height: 56)
+                ToolbarView(model: c.model, prefs: c.prefs, controller: c).frame(height: 70)
+            }
+            .frame(width: 1200, height: 160)
+            .background(Color(white: 0.3))
+            let r = ImageRenderer(content: view)
+            r.scale = 2
+            if let image = r.cgImage, let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: text) as CFURL, "public.png" as CFString, 1, nil) {
+                CGImageDestinationAddImage(dest, image, nil)
+                CGImageDestinationFinalize(dest)
+            }
+        case "ann":
+            // ann <kind> <x1> <y1> [<x2> <y2>] [text…]: a mark, in 0…1 of the picture before the crop.
+            let w = text.split(separator: " ").map(String.init)
+            guard let kind = w.first.flatMap(Annotation.Kind.init(rawValue:)), w.count >= 3,
+                  let x1 = Double(w[1]), let y1 = Double(w[2]) else { return }
+            let x2 = w.count >= 5 ? Double(w[3]) : nil, y2 = w.count >= 5 ? Double(w[4]) : nil
+            var item = Annotation(kind: kind, a: CGPoint(x: x1, y: y1), b: x2.map { CGPoint(x: $0, y: y2 ?? y1) })
+            if kind == .text { item.text = w.dropFirst(3).joined(separator: " ") }
+            if kind == .arrow, w.count >= 6, let bend = Double(w[5]) { item.bend = bend }
+            if kind == .highlighter, let x2, let y2 {
+                item.points = (0...20).map { i in CGPoint(x: x1 + (x2 - x1) * Double(i) / 20, y: y1 + (y2 - y1) * Double(i) / 20 + 0.01 * sin(Double(i))) }
+            }
+            if kind == .magnifier { item.radius = 0.05 }
+            c.addAnnotation(item)
+        case "redact": c.smartRedact()
+        case "undoann": c.undoAnnotation()
+        case "redoann": c.redoAnnotation()
+        case "undomenu": NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+        case "redomenu": NSApp.sendAction(Selector(("redo:")), to: nil, from: nil)
         case "bg":
             // bg <transparent|white|black|blurred|colour r g b|off>
             let w = text.split(separator: " ").map(String.init)

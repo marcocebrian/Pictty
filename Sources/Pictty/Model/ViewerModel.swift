@@ -113,6 +113,16 @@ final class ViewerModel: ObservableObject {
     @Published var backgroundPickerOpen = false
     /// macOS is finding the subjects.
     @Published var maskWorking = false
+    /// Annotate: the marks on the picture, in order (later ones on top).
+    @Published var annotations: [Annotation] = []
+    @Published var annotating = false
+    /// nil: select and move.
+    @Published var annotationTool: Annotation.Kind?
+    @Published var annotationStyle = AnnotationStyle()
+    /// Each new mark takes the colour that stands out against the picture under it.
+    @Published var autoColour = true
+    @Published var censorSolid = false
+    @Published var selectedAnnotation: UUID?
     /// Image Size: the picture resampled to this many pixels, last of all (before a turn); nil for none.
     @Published var resize: CGSize?
 

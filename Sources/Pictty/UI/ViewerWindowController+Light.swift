@@ -58,20 +58,21 @@ extension ViewerWindowController: NSMenuItemValidation {
         let enlarge: Int?
         let resize: CGSize?
         let background: BackgroundFill?
+        let annotations: [Annotation]
     }
 
     var editState: EditState {
         let turn = orientationChange
         return EditState(url: model.current?.url, light: model.light, crop: model.crop,
                          quarterTurns: turn?.quarterTurns ?? 0, mirror: turn?.mirror ?? false, enlarge: model.enlarge,
-                         resize: model.resize, background: model.background)
+                         resize: model.resize, background: model.background, annotations: model.annotations)
     }
 
     var hasUnsavedAdjustments: Bool { lightSession != nil && hasPixelEdits }
 
     /// Edits that change pixels: the panel's adjustments, a crop, or an enlargement.
     var hasPixelEdits: Bool { !model.light.isNeutral || model.crop != nil || model.enlarge != nil || model.resize != nil
-        || model.background != nil }
+        || model.background != nil || !model.annotations.isEmpty }
 
     /// The turn and mirror of the picture on screen, if it has any and it can be saved.
     var orientationChange: (quarterTurns: Int, mirror: Bool)? {
@@ -120,6 +121,7 @@ extension ViewerWindowController: NSMenuItemValidation {
         case #selector(toggleCrop(_:)): return model.current != nil && model.lightUnavailable == nil
         case #selector(showEnlarge(_:)): return offersEnlarge
         case #selector(showBackground(_:)): return offersBackground
+        case #selector(toggleAnnotate(_:)): item.state = model.annotating ? .on : .off; return offersAnnotate || model.annotating
         case #selector(showImageSize(_:)): return model.current != nil && !model.isComparing && model.lightUnavailable == nil && !model.isSaving
         case #selector(copy(_:)): return model.current != nil
         case #selector(printPicture(_:)): return canPrint
@@ -473,6 +475,9 @@ extension ViewerWindowController: NSMenuItemValidation {
         model.enlarge = nil
         model.resize = nil
         model.background = nil
+        if !model.annotations.isEmpty { annotationsWillChange(); model.annotations = [] }
+        model.selectedAnnotation = nil
+        updateAnnotationOverlay()
         stopEnlarging()
         setLight(model.light.valuesReset)
         resetOrientation()
@@ -495,6 +500,10 @@ extension ViewerWindowController: NSMenuItemValidation {
         model.enlarge = nil
         model.resize = nil
         model.background = nil
+        model.annotations = []
+        model.annotating = false
+        model.selectedAnnotation = nil
+        window?.undoManager?.removeAllActions(withTarget: self)
         model.backgroundPickerOpen = false
         model.maskWorking = false
         model.enlargePickerOpen = false
@@ -748,13 +757,14 @@ extension ViewerWindowController: NSMenuItemValidation {
         let enlarge: Int?
         let resize: CGSize?
         let background: BackgroundFill?
+        let annotations: [Annotation]
     }
 
     func editSnapshot(for url: URL) -> EditSnapshot {
         EditSnapshot(light: model.light, adjusted: hasUnsavedAdjustments, crop: model.crop, turn: orientationChange,
                      engine: lightSession?.renderer.engine ?? (ImageFormats.isRaw(url) ? .raw : .pictty),
                      renderer: lightSession?.renderer, enlarge: model.enlarge,
-                     resize: model.resize, background: model.background)
+                     resize: model.resize, background: model.background, annotations: model.annotations)
     }
 
     /// Every pixel of `url` with `edits`, upright: what Save writes and Print prints. Nil when the
@@ -778,6 +788,10 @@ extension ViewerWindowController: NSMenuItemValidation {
         if let size = edits.resize, let p = picture, CGSize(width: p.width, height: p.height) != size {
             picture = Resampler.render(p, from: CGRect(x: 0, y: 0, width: p.width, height: p.height),
                                        width: Int(size.width), height: Int(size.height), kernel: .lanczos, linearLight: true)
+        }
+        // The marks, last, at the finished size: drawn crisp, never enlarged.
+        if !edits.annotations.isEmpty, let p = picture {
+            picture = AnnotationRenderer.render(edits.annotations, over: p, crop: edits.crop?.rect ?? CGRect(x: 0, y: 0, width: 1, height: 1)) ?? p
         }
         if let turn = edits.turn, let p = picture { picture = ImageExporter.oriented(p, quarterTurns: turn.quarterTurns, mirror: turn.mirror) }
         return (picture, isHDR)

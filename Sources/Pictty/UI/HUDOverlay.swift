@@ -84,7 +84,7 @@ struct HUDOverlay: View {
                                   colors: [Color(hex: 0x34A853), Color(hex: 0x00ACC1)], measured: false)
                     }
                     if enlargeShown {
-                        WorkBadge(label: "ENLARGE", symbol: "arrow.up.left.and.arrow.down.right", progress: model.enlargeProgress,
+                        WorkBadge(label: "AI ENLARGE", symbol: "arrow.up.left.and.arrow.down.right", progress: model.enlargeProgress,
                                   working: model.enlarge == 2 ? "enlarging 2×" : "enlarging 4×", done: "enlarged",
                                   colors: [Color(hex: 0x34A8F0), Color(hex: 0x4285F4)])
                     }

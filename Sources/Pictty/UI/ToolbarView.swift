@@ -88,6 +88,9 @@ struct ToolbarView: View {
                 EnlargeButton(model: model, controller: controller)
             }
             BackgroundButton(model: model, controller: controller)
+            glyph("pencil.tip.crop.circle", "Annotate (⇧⌘A)", isOn: model.annotating) {
+                controller.toggleAnnotate(nil)
+            }
             glyph(model.slideshowRunning ? "pause.rectangle" : "play.rectangle",
                   model.slideshowRunning ? "Stop slideshow (S)" : "Slideshow (S)",
                   isOn: model.slideshowRunning) {
@@ -310,8 +313,14 @@ private struct EnlargeButton: View {
                 if let f = model.enlarge {
                     Text("\(f)×").font(.system(size: 11.5, weight: .bold, design: .rounded))
                 } else {
-                    Image(systemName: "arrow.up.backward.and.arrow.down.forward.square")
-                        .font(.system(size: 12.5, weight: .medium))
+                    // The enlarge arrows with a sparkle: the AI one, not Resize.
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .overlay(alignment: .topTrailing) {
+                            Image(systemName: "sparkle")
+                                .font(.system(size: 7.5, weight: .bold))
+                                .offset(x: 5, y: -5)
+                        }
                 }
                 Image(systemName: "chevron.down")
                     .font(.system(size: 7, weight: .bold))
@@ -328,18 +337,18 @@ private struct EnlargeButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PressScale())
-        .toolbarTooltip(model.enlargePickerOpen ? "" : refusal.map { ViewerWindowController.refusalText($0) } ?? "Enlarge",
+        .toolbarTooltip(model.enlargePickerOpen ? "" : refusal.map { ViewerWindowController.refusalText($0) } ?? "AI Enlarge",
                         hovering: $hovering)
         .popover(isPresented: $model.enlargePickerOpen, arrowEdge: .bottom) {
             HStack(spacing: 1) {
                 ForEach(EnlargeRule.factors, id: \.self) { f in
-                    CompareTile(symbol: "", text: "\(f)×", title: "Enlarge \(f)×", help: "Enlarge \(f)×", isOn: model.enlarge == f) {
+                    CompareTile(symbol: "", text: "\(f)×", title: "AI Enlarge \(f)×", help: "AI Enlarge \(f)×", isOn: model.enlarge == f) {
                         model.enlargePickerOpen = false
                         controller.setEnlarge(f)
                     }
                 }
                 Rectangle().fill(.primary.opacity(0.12)).frame(width: 0.5, height: 13).padding(.horizontal, 4)
-                CompareTile(symbol: "xmark", title: "Turn Enlarge off", help: "Turn Enlarge off", isOn: false) {
+                CompareTile(symbol: "xmark", title: "Turn AI Enlarge off", help: "Turn AI Enlarge off", isOn: false) {
                     model.enlargePickerOpen = false
                     controller.setEnlarge(nil)
                 }
