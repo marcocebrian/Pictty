@@ -227,13 +227,15 @@ swift test               # the engine's tests (resampling, zoom maths, analysis,
 | `Sources/PicttyCore` | The engine: decoding, Lanczos and linear-light resampling, zoom maths, histogram and clipping analysis, SVG, the editing engine (Metal), saving |
 | `Sources/Pictty` | The app: canvas and Core Animation layers, windows, toolbar, filmstrip, inspector, settings |
 | `Tests/PicttyCoreTests` | Tests for the engine |
-| `Models` | The noise reduction network, the script that converts it, and its licence |
+| `Models` | The neural networks (noise reduction, RAW develop, Enlarge), the scripts that convert them, and their licences |
 
 ## Licence
 
 Pictty is free and open source: © 2026 Marco Cebrián Muiño, released under the [GNU General Public License v3.0](LICENSE). You may use, study, change and share it; anything you distribute that is built from it must be released under the same licence, with its source.
 
 The noise reduction network is SCUNet by Kai Zhang and colleagues, from [cszn/SCUNet](https://github.com/cszn/SCUNet), under the Apache License 2.0 (`Models/SCUNet-LICENSE`).
+
+Enlarge uses the network weights 4xBHI_realplksr_dysample_real by Philip Hofmann, from [Phhofm/models](https://github.com/Phhofm/models), under the Creative Commons Attribution 4.0 licence (`Models/Upscale-LICENSE`).
 
 ---
 
