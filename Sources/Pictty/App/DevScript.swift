@@ -4,6 +4,7 @@
 
 import AppKit
 import ImageIO
+import PicttyCore
 
 @MainActor
 enum DevScript {
@@ -141,9 +142,39 @@ enum DevScript {
                     CGImageDestinationFinalize(dest)
                 }
             }
+        case "upscalefile":
+            // upscalefile <in> <out.png> <factor>: Enlarge on a file, timed, with the memory it took.
+            let parts = text.split(separator: " ").map(String.init)
+            guard parts.count >= 3, let factor = Int(parts[2]), let decoded = ImageDecoder.full(URL(fileURLWithPath: parts[0])) else {
+                print("upscale: needs <in> <out> <factor>"); fflush(stdout); return
+            }
+            let before = footprint()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let t = CFAbsoluteTimeGetCurrent()
+                var peak = before
+                let out = NeuralUpscaler.shared.enlarge(decoded.image, factor: factor, progress: { _ in peak = max(peak, footprint()) })
+                let dt = CFAbsoluteTimeGetCurrent() - t
+                if let out, let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: parts[1]) as CFURL, "public.png" as CFString, 1, nil) {
+                    CGImageDestinationAddImage(dest, out, nil)
+                    CGImageDestinationFinalize(dest)
+                }
+                print(String(format: "upscale %d×%d → %@ in %.2f s, %.2f GB above the start", decoded.image.width, decoded.image.height,
+                             out.map { "\($0.width)×\($0.height)" } ?? "nil", dt, Double(peak - before) / 1e9))
+                fflush(stdout)
+            }
         case "quit": NSApp.terminate(nil)
         default: break
         }
+    }
+
+    /// The app's memory, as Activity Monitor counts it.
+    nonisolated static func footprint() -> UInt64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        return kr == KERN_SUCCESS ? info.phys_footprint : 0
     }
 
     private static func ease(_ t: Double) -> Double { t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2 }
