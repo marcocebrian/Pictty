@@ -122,7 +122,7 @@ enum DevScript {
         case "dump":
             // dump: the edit state and what the canvas shows, on stdout.
             let s = canvas.shown(pane: 0)
-            print("dump url=\(s?.url.lastPathComponent ?? "-") px=\(s.map { "\($0.pixelSize)" } ?? "-") preview=\(s?.preview.map { "\($0.width)x\($0.height)" } ?? "-") full=\(s?.full.map { "\($0.width)x\($0.height)" } ?? "-") light=\(c.model.light.exposure) crop=\(c.model.crop.map { "\($0.rect)" } ?? "-") edited=\(c.hasUnsavedEdits) enlarge=\(c.model.enlarge.map(String.init) ?? "-") enlarging=\(c.model.enlargeProgress.map { String(format: "%.2f", $0) } ?? "-") refusal=\(c.enlargeRefusal.map { "\($0)" } ?? "-") session=\(c.lightSession != nil) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") win=\(c.window?.windowNumber ?? 0)")
+            print("dump url=\(s?.url.lastPathComponent ?? "-") px=\(s.map { "\($0.pixelSize)" } ?? "-") preview=\(s?.preview.map { "\($0.width)x\($0.height)" } ?? "-") full=\(s?.full.map { "\($0.width)x\($0.height)" } ?? "-") light=\(c.model.light.exposure) crop=\(c.model.crop.map { "\($0.rect)" } ?? "-") edited=\(c.hasUnsavedEdits) enlarge=\(c.model.enlarge.map(String.init) ?? "-") enlarging=\(c.model.enlargeProgress.map { String(format: "%.2f", $0) } ?? "-") refusal=\(c.enlargeRefusal.map { "\($0)" } ?? "-") size=[\(c.model.report.headline)] mp=[\(c.model.report.subheadline)] session=\(c.lightSession != nil) frame=\(c.window.map { NSStringFromRect($0.frame) } ?? "-") win=\(c.window?.windowNumber ?? 0)")
             fflush(stdout)
         case "shot":
             // shot <path>: every visible window's layers as drawn (path, path-1, …), without a capture permission.
@@ -152,20 +152,28 @@ enum DevScript {
             let before = footprint()
             DispatchQueue.global(qos: .userInitiated).async {
                 let t = CFAbsoluteTimeGetCurrent()
-                var peak = before
-                let out = NeuralUpscaler.shared.enlarge(decoded.image, factor: factor, progress: { _ in peak = max(peak, footprint()) })
+                // Sampled every 50 ms on its own thread, so no stage between progress reports is missed.
+                final class Peak: @unchecked Sendable { var value: UInt64 = 0; var running = true }
+                let peak = Peak()
+                peak.value = before
+                Thread.detachNewThread {
+                    while peak.running { peak.value = max(peak.value, footprint()); Thread.sleep(forTimeInterval: 0.05) }
+                }
+                let out = NeuralUpscaler.shared.enlarge(decoded.image, factor: factor)
+                peak.running = false
                 let dt = CFAbsoluteTimeGetCurrent() - t
                 if let out, let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: parts[1]) as CFURL, "public.png" as CFString, 1, nil) {
                     CGImageDestinationAddImage(dest, out, nil)
                     CGImageDestinationFinalize(dest)
                 }
                 print(String(format: "upscale %d×%d → %@ in %.2f s, %.2f GB above the start", decoded.image.width, decoded.image.height,
-                             out.map { "\($0.width)×\($0.height)" } ?? "nil", dt, Double(peak - before) / 1e9))
+                             out.map { "\($0.width)×\($0.height)" } ?? "nil", dt, Double(peak.value - before) / 1e9))
                 fflush(stdout)
             }
         case "enlarge":
             // enlarge <0|2|4>: Enlarge off, 2× or 4×.
             if let f = n.first { c.setEnlarge(f == 0 ? nil : Int(f)) }
+        case "original": c.toggleOriginal(nil)
         case "enlargepicker": c.model.enlargePickerOpen.toggle()
         case "badgeshot":
             // badgeshot <path>: the Enlarge badge mid-run, drawn on its own over a grey.

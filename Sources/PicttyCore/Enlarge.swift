@@ -69,4 +69,60 @@ public enum EnlargeRule {
         }
         return w
     }
+
+    /// The space the network works in: the picture's own RGB space, encoded, 0…1. An extended
+    /// space (the save render's linear extended sRGB, whose P3 colours lie past 0…1) becomes Display
+    /// P3, so those colours are not clipped to sRGB; anything not RGB becomes sRGB.
+    public static func workingSpace(for space: CGColorSpace?) -> CGColorSpace {
+        let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
+        guard let space, space.model == .rgb else { return srgb }
+        if CGColorSpaceUsesExtendedRange(space) { return CGColorSpace(name: CGColorSpace.displayP3) ?? srgb }
+        return space
+    }
+
+    /// Fully transparent pixels given the colour around them (pull-push: colours averaged down a
+    /// pyramid, weighted by alpha, and filled back up). Underneath a transparent pixel is black,
+    /// and the network, which looks around each pixel, would pull that black into the edges as a
+    /// dark halo. Pixels with any opacity keep their own colour.
+    public static func bleed(_ r: inout [Float], _ g: inout [Float], _ b: inout [Float], alpha: [Float],
+                             width: Int, height: Int) {
+        guard alpha.contains(where: { $0 < 1 / 255 }), alpha.contains(where: { $0 >= 1 / 255 }) else { return }
+        // Level 0: premultiplied colour and weight.
+        struct Level { var w: Int, h: Int, r: [Float], g: [Float], b: [Float], a: [Float] }
+        var levels = [Level(w: width, h: height, r: zip(r, alpha).map { $0 * $1 }, g: zip(g, alpha).map { $0 * $1 },
+                            b: zip(b, alpha).map { $0 * $1 }, a: alpha)]
+        while let l = levels.last, l.w > 1 || l.h > 1 {
+            let w = (l.w + 1) / 2, h = (l.h + 1) / 2
+            var n = Level(w: w, h: h, r: .init(repeating: 0, count: w * h), g: .init(repeating: 0, count: w * h),
+                          b: .init(repeating: 0, count: w * h), a: .init(repeating: 0, count: w * h))
+            for y in 0..<l.h {
+                for x in 0..<l.w {
+                    let s = y * l.w + x, d = (y / 2) * w + x / 2
+                    n.r[d] += l.r[s]; n.g[d] += l.g[s]; n.b[d] += l.b[s]; n.a[d] += l.a[s]
+                }
+            }
+            levels.append(n)
+        }
+        // Push: each level's colour, normalised; where a level has no weight, the coarser one's.
+        var colour = (r: [Float](), g: [Float](), b: [Float]())
+        for k in stride(from: levels.count - 1, through: 0, by: -1) {
+            let l = levels[k]
+            var cr = [Float](repeating: 0, count: l.w * l.h), cg = cr, cb = cr
+            for y in 0..<l.h {
+                for x in 0..<l.w {
+                    let i = y * l.w + x
+                    if l.a[i] > 1e-6 {
+                        cr[i] = l.r[i] / l.a[i]; cg[i] = l.g[i] / l.a[i]; cb[i] = l.b[i] / l.a[i]
+                    } else if k < levels.count - 1 {
+                        let c = (y / 2) * levels[k + 1].w + x / 2
+                        cr[i] = colour.r[c]; cg[i] = colour.g[c]; cb[i] = colour.b[c]
+                    }
+                }
+            }
+            colour = (cr, cg, cb)
+        }
+        for i in 0..<(width * height) where alpha[i] < 1 / 255 {
+            r[i] = colour.r[i]; g[i] = colour.g[i]; b[i] = colour.b[i]
+        }
+    }
 }

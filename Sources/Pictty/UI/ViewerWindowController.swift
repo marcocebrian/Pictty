@@ -858,12 +858,38 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func updateReports() {
-        model.report = model.current.map(report(for:)) ?? .empty
+    func updateReports() {
+        var report = model.current.map(report(for:)) ?? .empty
+        if let size = editedSize { report = Self.report(report, sized: size) }
+        model.report = report
         let pane = model.activePane > 0 ? model.activePane : (model.isComparing ? 1 : 0)
         model.compareReport = model.item(forPane: pane).map(report(for:)) ?? .empty
         model.mirrored = canvas.viewport(pane: model.activePane).mirror
         updatePaneCaptions()
+    }
+
+    /// The picture's size as edited (cropped, enlarged), when it is not the file's: what 100 % shows.
+    private var editedSize: CGSize? {
+        guard !model.isComparing, !model.cropping, model.crop != nil || model.enlarge != nil, let item = model.current,
+              lightSession?.renderer.url == item.url, let s = canvas.shown(pane: 0), s.url == item.url else { return nil }
+        return s.pixelSize
+    }
+
+    /// `r` with the size and megapixels of the edited picture in place of the file's.
+    private static func report(_ r: MetadataReport, sized size: CGSize) -> MetadataReport {
+        var r = r
+        let text = "\(Int(size.width)) × \(Int(size.height))"
+        r.headline = text
+        r.subheadline = String(format: "%.1f MP", size.width * size.height / 1_000_000)
+        r.sections = r.sections.map { section in
+            guard section.fields.contains(where: { $0.label == "Dimensions" }) else { return section }
+            return MetadataSection(title: section.title, symbol: section.symbol, fields: section.fields.map { f in
+                f.label == "Dimensions"
+                    ? MetadataField(label: f.label, value: text + " · " + L("edited"), symbol: f.symbol, mono: f.mono, tint: .accent)
+                    : f
+            })
+        }
+        return r
     }
 
     private func startMetadataPass() {

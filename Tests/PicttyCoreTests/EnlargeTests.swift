@@ -49,4 +49,27 @@ final class EnlargeTests: XCTestCase {
         XCTAssertEqual(w[95 * 100 + 50], 0, accuracy: 1e-6)
         XCTAssertEqual(w[5 * 100 + 50], 1, accuracy: 1e-6)
     }
+
+    func testWorkingSpaceKeepsTheGamut() {
+        let srgb = CGColorSpace(name: CGColorSpace.sRGB)!, p3 = CGColorSpace(name: CGColorSpace.displayP3)!
+        XCTAssertEqual(EnlargeRule.workingSpace(for: srgb).name, CGColorSpace.sRGB)
+        XCTAssertEqual(EnlargeRule.workingSpace(for: p3).name, CGColorSpace.displayP3)
+        // The save render's linear extended sRGB holds P3 colours past 0…1: P3, encoded, keeps them.
+        XCTAssertEqual(EnlargeRule.workingSpace(for: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!).name, CGColorSpace.displayP3)
+        XCTAssertEqual(EnlargeRule.workingSpace(for: CGColorSpace(name: CGColorSpace.genericGrayGamma2_2)!).name, CGColorSpace.sRGB)
+        XCTAssertEqual(EnlargeRule.workingSpace(for: nil).name, CGColorSpace.sRGB)
+    }
+
+    func testBleedFillsTransparentPixelsFromTheirNeighbours() {
+        // A 9×9 picture: one opaque red pixel in the middle, the rest transparent (black underneath).
+        let w = 9, h = 9
+        var r = [Float](repeating: 0, count: w * h), g = r, b = r, a = r
+        r[4 * w + 4] = 1; a[4 * w + 4] = 1
+        a[4 * w + 5] = 0.5; g[4 * w + 5] = 1  // a half-transparent green edge pixel keeps its colour
+        EnlargeRule.bleed(&r, &g, &b, alpha: a, width: w, height: h)
+        XCTAssertEqual(r[4 * w + 4], 1, "opaque pixels are untouched")
+        XCTAssertEqual(g[4 * w + 5], 1, "partly transparent pixels keep their own colour")
+        XCTAssertGreaterThan(r[0], 0.3, "a far transparent corner takes the colour around it, not black")
+        XCTAssertGreaterThan(r[4 * w + 3], 0.5)
+    }
 }

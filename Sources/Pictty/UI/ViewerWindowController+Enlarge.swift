@@ -42,7 +42,7 @@ extension ViewerWindowController {
     static func refusalText(_ r: EnlargeRule.Refusal) -> String {
         switch r {
         case .tooLarge: L("Enlarge works on pictures up to 8 MP: crop this one first")
-        case .hdr: L("Enlarge is not available for HDR pictures")
+        case .hdr: L("Enlarge is not available for RAW or HDR pictures")
         }
     }
 
@@ -77,6 +77,14 @@ extension ViewerWindowController {
         stopEnlarging()
         model.enlarge = nil
         showToast(L("Enlarge turned off: the crop is over 8 MP"), symbol: "arrow.down.right.and.arrow.up.left")
+    }
+
+    /// A run whose edit is no longer the one on screen stops at once, not when it would have finished.
+    func stopStaleEnlarging() {
+        guard let run = enlargeRun else { return }
+        if model.cropping || run.key != EnlargeKey(light: model.light, crop: model.crop, factor: model.enlarge ?? 0) {
+            stopEnlarging()
+        }
     }
 
     func stopEnlarging() {
@@ -123,6 +131,8 @@ extension ViewerWindowController {
                             return
                         }
                         session.enlarged = (key, big)
+                        // Before and After's remembered edit is the plain stand-in now: After shows this.
+                        session.editedFrame = nil
                         self.enlargeFinished()
                         if !self.model.showingOriginal { self.showEnlarged(big, session: session) }
                         self.showToast(L("Enlarged %ld× · %@ → %@ · %.1f s", factor, "\(source.width)×\(source.height)",

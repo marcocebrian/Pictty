@@ -157,6 +157,7 @@ extension ViewerWindowController: NSMenuItemValidation {
     func setLight(_ a: Adjustments) {
         let wasDenoised = model.light.denoise > 0
         model.light = a
+        stopStaleEnlarging()
         // The network's first pass over a picture takes a second; the panel says so.
         if a.denoise > 0, !wasDenoised, !model.denoising,
            denoisedOnce != model.current?.url {
@@ -260,6 +261,8 @@ extension ViewerWindowController: NSMenuItemValidation {
 
     /// The crop applied, if there is one and it is not being made, and the picture's size to match.
     func present(_ image: CGImage, full: Bool, session: LightSession) {
+        // A screen-sized picture drops every pixel from the canvas: the zoom may ask for them again.
+        if !full { session.editedFullRequested = false }
         let crop = model.cropping ? nil : model.crop
         let out = crop?.apply(to: image) ?? image
         let size = EnlargeRule.outputSize(crop?.croppedSize(session.pixelSize) ?? session.pixelSize,
@@ -270,7 +273,9 @@ extension ViewerWindowController: NSMenuItemValidation {
         canvas.showEdited(Self.screenCopy(out), full: full, pane: 0, pixelSize: size, hasAlpha: session.hasAlpha || crop?.isRounded == true,
                           fade: first)
         if resized {
-            // A crop is a different picture to fit: the zoom mode and the window follow it.
+            // A crop is a different picture to fit: the zoom mode and the window follow it, and the
+            // size shown is the picture's as it is now.
+            updateReports()
             applyZoom(animated: false)
             fitWindowToPicture(animated: true)
         }

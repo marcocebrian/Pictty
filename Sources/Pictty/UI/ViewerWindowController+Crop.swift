@@ -19,6 +19,7 @@ extension ViewerWindowController {
         model.cropDraft = model.crop ?? CropBox()
         model.cropRounded = model.cropDraft.isRounded
         model.cropping = true
+        stopStaleEnlarging()
         refreshEdit()
         frameForCropping()
         syncCropChrome()
@@ -31,6 +32,7 @@ extension ViewerWindowController {
         model.crop = draft.isWhole ? nil : draft
         model.cropping = false
         enlargeCropChanged()
+        stopStaleEnlarging()
         refreshEdit()
         applyZoom(animated: true)
         fitWindowToPicture(animated: true)
@@ -42,6 +44,7 @@ extension ViewerWindowController {
     func cancelCrop() {
         guard model.cropping else { return }
         model.cropping = false
+        stopStaleEnlarging()
         refreshEdit()
         applyZoom(animated: true)
         fitWindowToPicture(animated: true)

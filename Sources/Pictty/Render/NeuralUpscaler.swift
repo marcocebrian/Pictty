@@ -12,8 +12,8 @@ import Vision
 ///
 /// Each tile is read with a margin around it and only its middle is kept, so the kept parts touch
 /// without seams. A tile that comes back far from a Lanczos enlargement of itself, or with values
-/// that are not numbers, is replaced by that enlargement. 2× is the 4× result shrunk by half, in
-/// linear light (`Resampler`). Measured on an M5 Pro: about 2 s per input megapixel.
+/// that are not numbers, is replaced by that enlargement. 2× is each 4× tile shrunk by half, in
+/// linear light (`Resampler`), as it is written. Measured on an M5 Pro: about 2 s per input megapixel.
 final class NeuralUpscaler: @unchecked Sendable {
     static let shared = NeuralUpscaler()
 
@@ -70,28 +70,32 @@ final class NeuralUpscaler: @unchecked Sendable {
                  progress: ((Double) -> Void)? = nil) -> CGImage? {
         guard EnlargeRule.factors.contains(factor), let model, let g = geometry(model) else { return nil }
         let start = CFAbsoluteTimeGetCurrent()
-        guard let big = enlarge4(image, model: model, tile: g.tile, margin: g.margin, cancelled: cancelled, progress: progress)
-        else { return nil }
-        timingMark(String(format: "enlarge: %d×%d ×4 in %.2f s", image.width, image.height, CFAbsoluteTimeGetCurrent() - start))
-        guard factor == 2 else { return big }
-        return Resampler.render(big, from: CGRect(x: 0, y: 0, width: big.width, height: big.height),
-                                width: image.width * 2, height: image.height * 2, kernel: .lanczos, linearLight: true)
+        let out = enlargeTiles(image, scale: factor, model: model, tile: g.tile, margin: g.margin, cancelled: cancelled,
+                               progress: progress)
+        if out != nil {
+            timingMark(String(format: "enlarge: %d×%d ×%d in %.2f s", image.width, image.height, factor, CFAbsoluteTimeGetCurrent() - start))
+        }
+        return out
     }
 
-    private func enlarge4(_ image: CGImage, model: MLModel, tile: Int, margin: Int, cancelled: () -> Bool,
-                          progress: ((Double) -> Void)?) -> CGImage? {
-        let w = image.width, h = image.height, S = 4, W = w * S, H = h * S
-        let own = image.colorSpace.flatMap { $0.model == .rgb && !CGColorSpaceUsesExtendedRange($0) ? $0 : nil }
-        guard let space = own ?? CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+    /// The network runs at 4×; for 2× each tile is shrunk by half as it is written (in linear
+    /// light), so the 4× picture never exists whole.
+    private func enlargeTiles(_ image: CGImage, scale: Int, model: MLModel, tile: Int, margin: Int, cancelled: () -> Bool,
+                              progress: ((Double) -> Void)?) -> CGImage? {
+        let w = image.width, h = image.height, W = w * scale, H = h * scale
+        let space = EnlargeRule.workingSpace(for: image.colorSpace)
         let opaque = [.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo)
 
-        // In: unpremultiplied encoded RGB, 0…1, in the picture's own colour space.
+        // In: unpremultiplied encoded RGB, 0…1, in the working space.
         guard let src = Self.floatPixels(image, width: w, height: h, space: space) else { return nil }
-        var r = [Float](repeating: 0, count: w * h), gr = r, b = r
+        var r = [Float](repeating: 0, count: w * h), gr = r, b = r, alpha = r
         for i in 0..<(w * h) {
             let a = max(src[i * 4 + 3], 1e-4)
+            alpha[i] = src[i * 4 + 3]
             r[i] = min(max(src[i * 4] / a, 0), 1); gr[i] = min(max(src[i * 4 + 1] / a, 0), 1); b[i] = min(max(src[i * 4 + 2] / a, 0), 1)
         }
+        // Transparent pixels take the colour around them: black there would darken every edge.
+        if !opaque { EnlargeRule.bleed(&r, &gr, &b, alpha: alpha, width: w, height: h) }
 
         // Faces, to keep plain: weights at the picture's own size, read bilinearly per output pixel.
         let faces = Self.faces(image)
@@ -107,7 +111,7 @@ final class NeuralUpscaler: @unchecked Sendable {
         let side = tile + 2 * margin, plane = side * side
         guard let input = inputArray(model, side: side) else { return nil }
         let writer = TileWriter(image: image, space: space, opaque: opaque, deep: deep, data: outData, rowBytes: out.bytesPerRow,
-                                faceWeights: faceWeights, width: w, height: h, margin: margin)
+                                faceWeights: faceWeights, width: w, height: h, margin: margin, scale: scale)
         let tiles = EnlargeRule.tiles(width: w, height: h, tile: tile, margin: margin)
         // The GPU runs a tile while the CPU writes the one before it out.
         let queue = DispatchQueue(label: "enlarge.write", qos: .userInitiated)
@@ -115,7 +119,7 @@ final class NeuralUpscaler: @unchecked Sendable {
         var tileIn = [Float](repeating: 0, count: plane * 3)
         progress?(0)
         for (n, t) in tiles.enumerated() {
-            if cancelled() { queue.sync {}; return nil }
+            if cancelled() || writer.failed { queue.sync {}; return nil }
             // The tile and its margin, reflected past the picture's edges.
             let ox = Int(t.source.minX), oy = Int(t.source.minY)
             for ty in 0..<side {
@@ -126,9 +130,11 @@ final class NeuralUpscaler: @unchecked Sendable {
                 }
             }
             guard let result = predict(model, input, tileIn) else { queue.sync {}; return nil }
+            // Copied out now: Core ML may write the next tile's result into the same memory.
+            let region = TileRegion(result, keep: t.keep, margin: margin)
             pending.wait()
             queue.async {
-                writer.write(t, UnsafeResult(array: result))
+                writer.write(t, region)
                 pending.signal()
             }
             progress?(Double(n + 1) / Double(tiles.count + 1))
@@ -193,8 +199,33 @@ final class NeuralUpscaler: @unchecked Sendable {
     }
 }
 
-/// A network output handed to the writer's queue; nothing else touches it.
-private struct UnsafeResult: @unchecked Sendable { let array: MLMultiArray }
+/// The part of a network output the writer needs (the kept 4× pixels and `pad` around them),
+/// planar RGB, copied out of Core ML's array before the next prediction can reuse it.
+private struct TileRegion: Sendable {
+    static let pad = 8
+    let width: Int, height: Int
+    let values: [Float]
+
+    init(_ res: MLMultiArray, keep: CGRect, margin: Int) {
+        let st = res.strides.map(\.intValue)  // [1, 3, H, W]
+        let half = res.dataType == .float16, origin = margin * 4 - Self.pad
+        let w = Int(keep.width) * 4 + 2 * Self.pad, h = Int(keep.height) * 4 + 2 * Self.pad
+        var v = [Float](repeating: 0, count: 3 * w * h)
+        if half {
+            let p = res.dataPointer.bindMemory(to: Float16.self, capacity: st[0])
+            for c in 0..<3 { for y in 0..<h { let r = c * st[1] + (origin + y) * st[2] + origin * st[3], d = (c * h + y) * w
+                for x in 0..<w { v[d + x] = Float(p[r + x * st[3]]) } } }
+        } else {
+            let p = res.dataPointer.bindMemory(to: Float.self, capacity: st[0])
+            for c in 0..<3 { for y in 0..<h { let r = c * st[1] + (origin + y) * st[2] + origin * st[3], d = (c * h + y) * w
+                for x in 0..<w { v[d + x] = p[r + x * st[3]] } } }
+        }
+        width = w; height = h; values = v
+    }
+
+    /// Channel `c` at (`x`, `y`) of the region, `pad` included.
+    @inline(__always) func value(_ c: Int, _ y: Int, _ x: Int) -> Float { values[(c * height + y) * width + x] }
+}
 
 /// Writes each tile's kept part into the output bitmap: the network's pixels, faded to a Lanczos
 /// enlargement inside faces, alpha from the Lanczos enlargement. Tiles write disjoint pixels.
@@ -202,28 +233,27 @@ private final class TileWriter: @unchecked Sendable {
     let image: CGImage, space: CGColorSpace, opaque: Bool, deep: Bool
     let data: UnsafeMutableRawPointer, rowBytes: Int
     let faceWeights: [Float]?, width: Int, height: Int, margin: Int
+    /// The output's scale: 4, the network's own, or 2.
+    let scale: Int
     private(set) var failed = false
 
     init(image: CGImage, space: CGColorSpace, opaque: Bool, deep: Bool, data: UnsafeMutableRawPointer, rowBytes: Int,
-         faceWeights: [Float]?, width: Int, height: Int, margin: Int) {
+         faceWeights: [Float]?, width: Int, height: Int, margin: Int, scale: Int) {
         self.image = image; self.space = space; self.opaque = opaque; self.deep = deep; self.data = data
         self.rowBytes = rowBytes; self.faceWeights = faceWeights; self.width = width; self.height = height; self.margin = margin
+        self.scale = scale
     }
 
-    func write(_ t: EnlargeRule.Tile, _ result: UnsafeResult) {
-        let S = 4
+    func write(_ t: EnlargeRule.Tile, _ region: TileRegion) {
+        let S = scale
         let kx = Int(t.keep.minX), ky = Int(t.keep.minY), kw = Int(t.keep.width) * S, kh = Int(t.keep.height) * S
         guard let plain = Resampler.render(image, from: t.keep, width: kw, height: kh, kernel: .lanczos, linearLight: false),
-              let lz = NeuralUpscaler.floatPixels(plain, width: kw, height: kh, space: space) else { failed = true; return }
-        let res = result.array
-        let st = res.strides.map(\.intValue)  // [1, 3, H, W]
-        let half = res.dataType == .float16, base = margin * S
-        let p16 = res.dataPointer.bindMemory(to: Float16.self, capacity: st[0])
-        let p32 = res.dataPointer.bindMemory(to: Float.self, capacity: st[0])
+              let lz = NeuralUpscaler.floatPixels(plain, width: kw, height: kh, space: space),
+              let net = network(t, region, width: kw, height: kh) else { failed = true; return }
         // The network's pixels; a tile that came back broken or far from the plain one is written again, plain.
         var moved: Float = 0, broken = false
         for pass in 0..<2 {
-            let network = pass == 0
+            let useNetwork = pass == 0
             for y in 0..<kh {
                 let Y = ky * S + y
                 let row = data.advanced(by: Y * rowBytes)
@@ -231,16 +261,15 @@ private final class TileWriter: @unchecked Sendable {
                 for x in 0..<kw {
                     let X = kx * S + x, l = (y * kw + x) * 4
                     let a = max(lz[l + 3], 1e-4), alpha = opaque ? 1 : min(max(lz[l + 3], 0), 1)
-                    var k: Float = network ? 1 : 0
-                    if network, let fw = faceWeights {
+                    var k: Float = useNetwork ? 1 : 0
+                    if useNetwork, let fw = faceWeights {
                         k = NeuralUpscaler.sample(fw, width, height, (Float(X) + 0.5) / Float(S) - 0.5, fy)
                     }
-                    let o = (base + y) * st[2] + (base + x) * st[3]
                     for c in 0..<3 {
                         let plainV = min(max(lz[l + c] / a, 0), 1)
                         var v = plainV
-                        if network {
-                            let n = half ? Float(p16[c * st[1] + o]) : p32[c * st[1] + o]
+                        if useNetwork {
+                            let n = net[c * kw * kh + y * kw + x]
                             if !n.isFinite { broken = true; continue }
                             moved += abs(n - plainV)
                             v = plainV + k * (min(max(n, 0), 1) - plainV)
@@ -250,9 +279,42 @@ private final class TileWriter: @unchecked Sendable {
                     store(row, X * 4 + 3, alpha)
                 }
             }
-            if !network || (!broken && moved / Float(kw * kh * 3) <= 0.08) { break }
+            if !useNetwork || (!broken && moved / Float(kw * kh * 3) <= 0.08) { break }
             timingMark("enlarge: tile at \(kx),\(ky) kept plain")
         }
+    }
+
+    /// The kept part of the network's 4× tile at the output's scale, planar RGB.
+    private func network(_ t: EnlargeRule.Tile, _ region: TileRegion, width kw: Int, height kh: Int) -> [Float]? {
+        let pad = TileRegion.pad
+        func value(_ c: Int, _ y: Int, _ x: Int) -> Float { region.value(c, y, x) }
+        let w4 = Int(t.keep.width) * 4, h4 = Int(t.keep.height) * 4
+        if scale == 4 {
+            var out = [Float](repeating: 0, count: 3 * kw * kh)
+            for c in 0..<3 { for y in 0..<kh { for x in 0..<kw { out[(c * kh + y) * kw + x] = value(c, pad + y, pad + x) } } }
+            return out
+        }
+        // 2×: the 4× pixels with a few of the margin's around them (the filter reaches past the
+        // edge), as a picture, halved in linear light.
+        let pw = w4 + 2 * pad, ph = h4 + 2 * pad
+        var rgba = [Float](repeating: 1, count: pw * ph * 4)
+        for y in 0..<ph {
+            for x in 0..<pw {
+                let o = (y * pw + x) * 4
+                for c in 0..<3 { rgba[o + c] = min(max(value(c, y, x), 0), 1) }
+            }
+        }
+        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue)
+        guard let provider = CGDataProvider(data: rgba.withUnsafeBytes { Data($0) } as CFData),
+              let big = CGImage(width: pw, height: ph, bitsPerComponent: 32, bitsPerPixel: 128, bytesPerRow: pw * 16, space: space,
+                                bitmapInfo: info, provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+              let small = Resampler.render(big, from: CGRect(x: pad, y: pad, width: w4, height: h4), width: kw, height: kh,
+                                           kernel: .lanczos, linearLight: true),
+              let px = NeuralUpscaler.floatPixels(small, width: kw, height: kh, space: space) else { return nil }
+        var out = [Float](repeating: 0, count: 3 * kw * kh)
+        for i in 0..<(kw * kh) { for c in 0..<3 { out[c * kw * kh + i] = px[i * 4 + c] } }
+        return out
     }
 
     @inline(__always) private func store(_ row: UnsafeMutableRawPointer, _ i: Int, _ v: Float) {
