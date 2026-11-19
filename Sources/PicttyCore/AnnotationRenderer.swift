@@ -27,14 +27,74 @@ public enum AnnotationRenderer {
     /// (y down). `base` is the picture under them at any resolution, for blur, censor and magnifier.
     public static func draw(_ items: [Annotation], in ctx: CGContext, space: AnnotationSpace, base: CGImage?) {
         let numbers = Annotation.stepNumbers(items)
-        // Regions that change the picture go under the marks drawn on it.
-        let order = items.filter { [.blur, .censor].contains($0.kind) } + items.filter { $0.kind == .spotlight }
-            + items.filter { ![.blur, .censor, .spotlight].contains($0.kind) }
-        for item in order {
+        // Regions that change the picture go under the marks drawn on it: blur and censor, then the
+        // spotlights (all at once, so one never darkens another's light), then the marks.
+        let regions = items.filter { [.blur, .censor].contains($0.kind) }
+        for item in regions {
             ctx.saveGState()
-            draw(item, number: numbers[item.id] ?? 0, in: ctx, space: space, base: base)
+            draw(item, number: 0, in: ctx, space: space, base: base)
             ctx.restoreGState()
         }
+        let spots = items.filter { $0.kind == .spotlight }
+        if !spots.isEmpty {
+            ctx.saveGState()
+            drawSpotlights(spots, in: ctx, space: space)
+            ctx.restoreGState()
+        }
+        // A magnifier shows the picture as hidden: never the pixels under a blur or censor.
+        var loupeBase = base
+        if let base, !regions.isEmpty, items.contains(where: { $0.kind == .magnifier }) {
+            loupeBase = redacted(base, regions, crop: space.crop) ?? base
+        }
+        for item in items where ![.blur, .censor, .spotlight].contains(item.kind) {
+            ctx.saveGState()
+            draw(item, number: numbers[item.id] ?? 0, in: ctx, space: space, base: item.kind == .magnifier ? loupeBase : base)
+            ctx.restoreGState()
+        }
+    }
+
+    /// Everything dimmed but the spotlights' boxes, in one layer.
+    private static func drawSpotlights(_ spots: [Annotation], in ctx: CGContext, space: AnnotationSpace) {
+        ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+        ctx.setFillColor(CGColor(gray: 0, alpha: 0.55))
+        ctx.fill(CGRect(origin: .zero, size: space.size).insetBy(dx: -space.size.width, dy: -space.size.height))
+        ctx.setBlendMode(.clear)
+        for item in spots {
+            let r = item.box(in: space), k = min(r.width, r.height) * 0.12
+            ctx.addPath(CGPath(roundedRect: r, cornerWidth: k, cornerHeight: k, transform: nil))
+            ctx.fillPath()
+        }
+        ctx.endTransparencyLayer()
+    }
+
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedRedaction: (base: CGImage, regions: [Annotation], crop: CGRect, image: CGImage)?
+
+    /// `base` with the blur and censor regions applied, at its own resolution (the last one is kept:
+    /// the screen redraws the same marks over the same picture many times).
+    private static func redacted(_ base: CGImage, _ regions: [Annotation], crop: CGRect) -> CGImage? {
+        cacheLock.lock()
+        if let c = cachedRedaction, c.base === base, c.regions == regions, c.crop == crop { cacheLock.unlock(); return c.image }
+        cacheLock.unlock()
+        let w = base.width, h = base.height
+        let space = base.colorSpace.flatMap { $0.model == .rgb && !CGColorSpaceUsesExtendedRange($0) ? $0 : nil }
+            ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(base, in: CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.translateBy(x: 0, y: CGFloat(h))
+        ctx.scaleBy(x: 1, y: -1)
+        let own = AnnotationSpace(crop: crop, size: CGSize(width: w, height: h))
+        for item in regions {
+            ctx.saveGState()
+            draw(item, number: 0, in: ctx, space: own, base: base)
+            ctx.restoreGState()
+        }
+        guard let image = ctx.makeImage() else { return nil }
+        cacheLock.lock()
+        cachedRedaction = (base, regions, crop, image)
+        cacheLock.unlock()
+        return image
     }
 
     private static func draw(_ item: Annotation, number: Int, in ctx: CGContext, space: AnnotationSpace, base: CGImage?) {
@@ -125,16 +185,11 @@ public enum AnnotationRenderer {
                 ctx.fill(r)
                 return
             }
-            guard let base, let patch = processed(base, region: r, space: space, pixelate: item.kind == .censor) else { return }
-            drawImage(patch, in: r, ctx: ctx)
+            // Only the part on the picture: a box running past its edge is not stretched to fill it.
+            guard let base, let (patch, covered) = processed(base, region: r, space: space, pixelate: item.kind == .censor) else { return }
+            drawImage(patch, in: covered, ctx: ctx)
         case .spotlight:
-            let r = item.box(in: space), k = min(r.width, r.height) * 0.12
-            let path = CGMutablePath()
-            path.addRect(CGRect(origin: .zero, size: space.size).insetBy(dx: -space.size.width, dy: -space.size.height))
-            path.addPath(CGPath(roundedRect: r, cornerWidth: k, cornerHeight: k, transform: nil))
-            ctx.setFillColor(CGColor(gray: 0, alpha: 0.55))
-            ctx.addPath(path)
-            ctx.fillPath(using: .evenOdd)
+            drawSpotlights([item], in: ctx, space: space)
         case .magnifier:
             let m = item.magnifier(in: space)
             // The line from spot to loupe, edge to edge.
@@ -154,11 +209,15 @@ public enum AnnotationRenderer {
             ctx.restoreGState()
             if let base {
                 let source = CGRect(x: m.spot.x - m.r, y: m.spot.y - m.r, width: 2 * m.r, height: 2 * m.r)
-                if let patch = crop(base, region: source, space: space) {
+                if let (patch, got) = crop(base, region: source, space: space) {
+                    // A spot past the picture's edge shows the part that is there, in its place.
+                    let k = loupe.width / source.width
+                    let into = CGRect(x: loupe.minX + (got.minX - source.minX) * k, y: loupe.minY + (got.minY - source.minY) * k,
+                                      width: got.width * k, height: got.height * k)
                     ctx.saveGState()
                     ctx.addEllipse(in: loupe); ctx.clip()
                     ctx.interpolationQuality = .high
-                    drawImage(patch, in: loupe, ctx: ctx)
+                    drawImage(patch, in: into, ctx: ctx)
                     ctx.restoreGState()
                 }
             }
@@ -169,19 +228,21 @@ public enum AnnotationRenderer {
 
     // MARK: Pixels under a mark
 
-    /// `region` (finished-picture pixels) of `base`, at base's own resolution.
-    private static func crop(_ base: CGImage, region: CGRect, space: AnnotationSpace) -> CGImage? {
+    /// `region` (finished-picture pixels) of `base`, at base's own resolution, and the part of the
+    /// region it covers (all of it, unless the region runs past the picture's edge).
+    private static func crop(_ base: CGImage, region: CGRect, space: AnnotationSpace) -> (CGImage, CGRect)? {
         let kx = CGFloat(base.width) / space.size.width, ky = CGFloat(base.height) / space.size.height
         let r = CGRect(x: region.minX * kx, y: region.minY * ky, width: region.width * kx, height: region.height * ky)
             .integral.intersection(CGRect(x: 0, y: 0, width: base.width, height: base.height))
-        guard r.width >= 1, r.height >= 1 else { return nil }
-        return base.cropping(to: r)
+        guard r.width >= 1, r.height >= 1, let image = base.cropping(to: r) else { return nil }
+        return (image, CGRect(x: r.minX / kx, y: r.minY / ky, width: r.width / kx, height: r.height / ky))
     }
 
     /// The region blurred, or pixelated in blocks a quarter of its shorter side (a line of text
-    /// becomes a row of blocks about four high, never one block lighter than the letters).
-    private static func processed(_ base: CGImage, region: CGRect, space: AnnotationSpace, pixelate: Bool) -> CGImage? {
-        guard let patch = crop(base, region: region, space: space) else { return nil }
+    /// becomes a row of blocks about four high, never one block lighter than the letters), and the
+    /// part of the region it covers.
+    private static func processed(_ base: CGImage, region: CGRect, space: AnnotationSpace, pixelate: Bool) -> (CGImage, CGRect)? {
+        guard let (patch, covered) = crop(base, region: region, space: space) else { return nil }
         let image = CIImage(cgImage: patch)
         let extent = image.extent
         let out: CIImage
@@ -193,7 +254,10 @@ public enum AnnotationRenderer {
         } else {
             out = image.clampedToExtent().applyingGaussianBlur(sigma: max(3, min(extent.width, extent.height) * 0.09)).cropped(to: extent)
         }
-        return context.createCGImage(out, from: extent, format: .RGBA8, colorSpace: patch.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!)
+        // Deep pictures keep their depth: an 8-bit patch would band in a 16-bit file.
+        guard let image = context.createCGImage(out, from: extent, format: patch.bitsPerComponent > 8 ? .RGBAh : .RGBA8,
+                                                colorSpace: patch.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!) else { return nil }
+        return (image, covered)
     }
 
     /// An image upright in a y-down context.

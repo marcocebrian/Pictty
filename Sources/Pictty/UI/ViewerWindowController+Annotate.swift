@@ -234,33 +234,48 @@ extension ViewerWindowController {
     func smartRedact() {
         guard let overlay = annotationOverlay, let base = overlay.base, let url = model.current?.url else { return }
         let space = overlay.space
+        // The whole picture when it is in: small print is often lost in the screen's preview.
+        let source = canvas.shown(pane: 0)?.full ?? base
+        let existing = model.annotations.filter { [.blur, .censor].contains($0.kind) }.map { $0.box(in: space) }
         model.maskWorking = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let found = Self.sensitiveRegions(in: base)
-            timingMark("redact: \(found.count) region(s) in \(base.width)×\(base.height)")
+            let found = Self.sensitiveRegions(in: source)
+            timingMark("redact: \(found.count) region(s) in \(source.width)×\(source.height)")
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.model.maskWorking = false
                     guard self.model.current?.url == url, self.model.annotating else { return }
-                    guard !found.isEmpty else {
+                    // Vision's 0…1, origin bottom-left, of the finished picture → pixels; what is already
+                    // hidden (an earlier run, or by hand) is not hidden twice.
+                    let boxes = found.map { rect, isFace in
+                        (CGRect(x: rect.minX * space.size.width, y: (1 - rect.maxY) * space.size.height,
+                                width: rect.width * space.size.width, height: rect.height * space.size.height), isFace)
+                    }.filter { box, _ in !existing.contains { Self.overlap($0, box) > 0.7 } }
+                    guard !boxes.isEmpty else {
                         return self.showToast(L("Nothing to hide found: no e-mail, phone or card numbers, no faces"),
                                               symbol: "checkmark.shield")
                     }
                     self.annotationsWillChange()
-                    for (rect, isFace) in found {
-                        // Vision's 0…1, origin bottom-left, of the finished picture → the picture before the crop.
-                        let p = CGPoint(x: rect.minX * space.size.width, y: (1 - rect.maxY) * space.size.height)
-                        let q = CGPoint(x: rect.maxX * space.size.width, y: (1 - rect.minY) * space.size.height)
-                        var item = Annotation(kind: isFace ? .blur : .censor, a: space.unit(p), b: space.unit(q))
+                    for (box, isFace) in boxes {
+                        var item = Annotation(kind: isFace ? .blur : .censor, a: space.unit(CGPoint(x: box.minX, y: box.minY)),
+                                              b: space.unit(CGPoint(x: box.maxX, y: box.maxY)))
                         item.style = self.model.annotationStyle
+                        if !isFace { item.solid = self.model.censorSolid }
                         self.model.annotations.append(item)
                     }
                     self.annotationsChanged()
-                    self.showToast(L("Hid %ld things: e-mails, numbers and faces", found.count), symbol: "eye.slash")
+                    self.showToast(L("Hid %ld things: e-mails, numbers and faces", boxes.count), symbol: "eye.slash")
                 }
             }
         }
+    }
+
+    /// How much of the smaller box the two share (0…1).
+    nonisolated private static func overlap(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let i = a.intersection(b)
+        guard !i.isNull, a.width * a.height > 0, b.width * b.height > 0 else { return 0 }
+        return i.width * i.height / min(a.width * a.height, b.width * b.height)
     }
 
     nonisolated private static func sensitiveRegions(in image: CGImage) -> [(CGRect, Bool)] {
@@ -275,9 +290,12 @@ extension ViewerWindowController {
         for observation in text.results ?? [] {
             guard let candidate = observation.topCandidates(1).first else { continue }
             let s = candidate.string
-            for regex in patterns {
+            for (n, regex) in patterns.enumerated() {
                 for match in regex.matches(in: s, range: NSRange(s.startIndex..., in: s)) {
-                    guard let range = Range(match.range, in: s), let box = try? candidate.boundingBox(for: range) else { continue }
+                    guard let range = Range(match.range, in: s) else { continue }
+                    // A phone number has nine digits or more: a date (27/04/2023) or a time is not one.
+                    if n == 1, s[range].filter(\.isNumber).count < 9 { continue }
+                    guard let box = try? candidate.boundingBox(for: range) else { continue }
                     out.append((box.boundingBox.insetBy(dx: -0.004, dy: -0.004), false))
                 }
             }
@@ -303,6 +321,13 @@ extension ViewerWindowController {
             if model.selectedAnnotation != nil { model.selectedAnnotation = nil; updateAnnotationOverlay() } else { finishAnnotating() }
             return true
         case 36, 76: finishAnnotating(); return true
+        // Arrows nudge the selected mark a point (⇧: ten); with nothing selected they go on as usual.
+        case 123, 124, 125, 126:
+            guard model.selectedAnnotation != nil else { return false }
+            let step: CGFloat = flags.contains(.shift) ? 10 : 1
+            let d: (CGFloat, CGFloat) = [123: (-step, 0), 124: (step, 0), 125: (0, step), 126: (0, -step)][event.keyCode]!
+            annotationOverlay?.nudgeSelected(dx: d.0, dy: d.1)
+            return true
         default: break
         }
         let tools: [String: Annotation.Kind?] = ["v": nil, "a": .arrow, "r": .rectangle, "u": .roundedRectangle, "o": .ellipse,

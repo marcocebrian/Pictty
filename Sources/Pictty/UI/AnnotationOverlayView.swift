@@ -15,7 +15,7 @@ final class AnnotationOverlayView: NSView {
     }
     /// The picture under the marks (any resolution), for blur, censor and the magnifier.
     var base: CGImage? { didSet { if oldValue !== base { needsDisplay = true } } }
-    var items: [Annotation] = [] { didSet { if oldValue != items { needsDisplay = true } } }
+    var items: [Annotation] = [] { didSet { if oldValue != items { needsDisplay = true; restyleEditor() } } }
     var selected: UUID? { didSet { if oldValue != selected { needsDisplay = true } } }
     var interactive = false
     /// nil: select and move.
@@ -36,6 +36,8 @@ final class AnnotationOverlayView: NSView {
     }
     private var drag: Drag?
     private var editor: NSTextField?
+    /// The pill behind the field while typing: rounded and padded like the mark it becomes.
+    private var editorPill: NSView?
     private var editing: UUID?
 
     override init(frame: NSRect) {
@@ -137,6 +139,11 @@ final class AnnotationOverlayView: NSView {
             }
             return
         }
+        // The text tool on a text mark: that text, to edit, not a new one on top of it.
+        if tool == .text, let item = items.reversed().first(where: { $0.kind == .text && $0.hit(p, in: space, slop: slop) }) {
+            select?(item.id)
+            return beginEditing(item.id)
+        }
         guard let kind = tool else { return }
         let u = space.unit(p)
         var item = Annotation(kind: kind, a: u)
@@ -165,6 +172,8 @@ final class AnnotationOverlayView: NSView {
                 item.radius = max(0.02, hypot(p.x - c.x, p.y - c.y) / space.minSide)
                 let m = item.magnifier(in: space)
                 item.b = space.unit(CGPoint(x: min(c.x + m.R * 2.2, space.size.width - m.R), y: max(c.y - m.R * 1.6, m.R)))
+            case .arrow:
+                item.b = event.modifierFlags.contains(.shift) ? snapped(from: item.a, to: u) : u
             default:
                 item.b = event.modifierFlags.contains(.shift) && item.isBox ? square(from: item.a, to: u) : u
             }
@@ -182,7 +191,8 @@ final class AnnotationOverlayView: NSView {
             item.id = id
             switch item.kind {
             case .arrow:
-                if h == 0 { item.a = u } else if h == 1 { item.b = u } else {
+                let shift = event.modifierFlags.contains(.shift)
+                if h == 0 { item.a = shift ? snapped(from: item.b, to: u) : u } else if h == 1 { item.b = shift ? snapped(from: item.a, to: u) : u } else {
                     // The middle: how far it is pulled aside, in lengths of the arrow.
                     let a = space.pixel(item.a), b = space.pixel(item.b)
                     let dx = b.x - a.x, dy = b.y - a.y, len = max(hypot(dx, dy), 1e-6)
@@ -220,6 +230,27 @@ final class AnnotationOverlayView: NSView {
         }
     }
 
+    /// `b` turned about `a` to the nearest 45° on the finished picture (⇧ with the arrow).
+    private func snapped(from a: CGPoint, to b: CGPoint) -> CGPoint {
+        let pa = space.pixel(a), pb = space.pixel(b)
+        let len = hypot(pb.x - pa.x, pb.y - pa.y), step = CGFloat.pi / 4
+        let ang = (atan2(pb.y - pa.y, pb.x - pa.x) / step).rounded() * step
+        return space.unit(CGPoint(x: pa.x + cos(ang) * len, y: pa.y + sin(ang) * len))
+    }
+
+    /// The selected mark moved by `dx`, `dy` screen points (the arrow keys), whatever the zoom or turn.
+    func nudgeSelected(dx: CGFloat, dy: CGFloat) {
+        guard let id = selected, var item = items.first(where: { $0.id == id }) else { return }
+        let inv = toView.inverted()
+        let o = CGPoint.zero.applying(inv), v = CGPoint(x: dx, y: dy).applying(inv)
+        let d = CGPoint(x: (v.x - o.x) / space.size.width * space.crop.width, y: (v.y - o.y) / space.size.height * space.crop.height)
+        willChange?()
+        item.a = CGPoint(x: item.a.x + d.x, y: item.a.y + d.y)
+        item.b = CGPoint(x: item.b.x + d.x, y: item.b.y + d.y)
+        item.points = item.points.map { CGPoint(x: $0.x + d.x, y: $0.y + d.y) }
+        changed?(item)
+    }
+
     /// `b` moved so the box from `a` is square on the finished picture.
     private func square(from a: CGPoint, to b: CGPoint) -> CGPoint {
         let pa = space.pixel(a), pb = space.pixel(b)
@@ -233,37 +264,73 @@ final class AnnotationOverlayView: NSView {
         guard let item = items.first(where: { $0.id == id }) else { return }
         finishEditing()
         editing = id
-        let frame = item.textFrame(in: space).applying(toView)
         let size = item.style.textSize(space.minSide) / pixelsPerPoint
         let field = NSTextField(string: item.text)
         field.font = NSFont.systemFont(ofSize: max(size, 9), weight: .bold)
         field.isBordered = false
-        field.drawsBackground = true
-        field.backgroundColor = NSColor(cgColor: item.style.colour.cgColor) ?? .systemRed
+        field.drawsBackground = false
         field.textColor = item.style.colour.isLight ? .black : .white
         field.focusRingType = .none
         field.placeholderString = L("Text")
-        field.frame = CGRect(x: frame.minX, y: frame.minY, width: max(frame.width, size * 8), height: frame.height)
-        field.target = self
-        field.action = #selector(fieldDone(_:))
-        addSubview(field)
-        window?.makeFirstResponder(field)
+        // Several lines: Return starts a new one (see the delegate below), the field grows to fit.
+        field.usesSingleLineMode = false
+        field.maximumNumberOfLines = 0
+        field.cell?.wraps = false
+        field.cell?.isScrollable = false
+        field.lineBreakMode = .byClipping
+        field.delegate = self
+        let pill = FlippedView()
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = item.style.colour.cgColor
+        pill.addSubview(field)
+        addSubview(pill)
+        editorPill = pill
         editor = field
+        fitEditor()
+        window?.makeFirstResponder(field)
+        // A text opened again: the caret at its end, to add to it, not everything selected to be typed over.
+        if let text = field.currentEditor() as? NSTextView {
+            text.setSelectedRange(NSRange(location: (field.stringValue as NSString).length, length: 0))
+        }
         needsDisplay = true
     }
 
-    @objc private func fieldDone(_ sender: NSTextField) { finishEditing() }
+    /// The field takes the mark's colour and size when they change while it is typed.
+    private func restyleEditor() {
+        guard let field = editor, let id = editing, let item = items.first(where: { $0.id == id }) else { return }
+        editorPill?.layer?.backgroundColor = item.style.colour.cgColor
+        field.textColor = item.style.colour.isLight ? .black : .white
+        field.font = NSFont.systemFont(ofSize: max(item.style.textSize(space.minSide) / pixelsPerPoint, 9), weight: .bold)
+        fitEditor()
+    }
+
+    /// The pill over the mark's, as large as the text typed so far, the field inset the way the
+    /// text is drawn (a little room on the right for the next letter).
+    private func fitEditor() {
+        guard let field = editor, let pill = editorPill, let id = editing, var item = items.first(where: { $0.id == id }) else { return }
+        item.text = field.stringValue
+        let frame = item.textFrame(in: space).applying(toView)
+        let size = field.font?.pointSize ?? 12
+        let fits = field.cell?.cellSize(forBounds: CGRect(x: 0, y: 0, width: 100_000, height: 100_000)) ?? .zero
+        let padX = size * 0.4, padY = size * 0.18
+        let width = max(frame.width, fits.width + 2 * padX + size * 0.5, size * 6)
+        pill.frame = CGRect(x: frame.minX, y: frame.minY, width: width, height: max(frame.height, fits.height + 2 * padY))
+        pill.layer?.cornerRadius = size * 0.4
+        field.frame = CGRect(x: padX - 2, y: padY - 1, width: width - padX * 2 + 4, height: fits.height)
+    }
 
     /// The text typed becomes the mark's; empty, the mark goes.
     func finishEditing() {
         guard let field = editor, let id = editing else { return }
         editor = nil
         editing = nil
-        let text = field.stringValue
-        field.removeFromSuperview()
+        var text = field.stringValue
+        while text.hasSuffix("\n") { text.removeLast() }
+        editorPill?.removeFromSuperview()
+        editorPill = nil
         if var item = items.first(where: { $0.id == id }) {
             let isNew = item.text.isEmpty
-            if text.trimmingCharacters(in: .whitespaces).isEmpty { if isNew { removeIfEmpty?(id) } else { willChange?(); removeIfEmpty?(id) } }
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { if isNew { removeIfEmpty?(id) } else { willChange?(); removeIfEmpty?(id) } }
             else if isNew { item.text = text; changed?(item); committed?(id) }
             else if item.text != text { willChange?(); item.text = text; changed?(item) }
         }
@@ -272,4 +339,31 @@ final class AnnotationOverlayView: NSView {
     }
 
     var isEditingText: Bool { editor != nil }
+}
+
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+extension AnnotationOverlayView: NSTextFieldDelegate {
+    func controlTextDidChange(_ obj: Notification) { fitEditor() }
+
+    /// Return: a new line. Esc, Tab or ⌘Return: done. A click outside is done too (mouseDown).
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        let command = NSApp.currentEvent?.modifierFlags.contains(.command) == true
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)) where command,
+             #selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.insertTab(_:)),
+             #selector(NSResponder.insertBacktab(_:)):
+            finishEditing()
+        case #selector(NSResponder.insertNewline(_:)):
+            textView.insertNewlineIgnoringFieldEditor(nil)
+            fitEditor()
+        case Selector(("noop:")) where command && [36, 76].contains(NSApp.currentEvent?.keyCode ?? 0):
+            finishEditing()
+        default:
+            return false
+        }
+        return true
+    }
 }

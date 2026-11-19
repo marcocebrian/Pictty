@@ -15,12 +15,11 @@ Pictty always draws your picture with the best possible algorithm: the GPU while
   <a href="https://apps.apple.com/app/id6824167658?mt=12"><img src="https://www.noxdrop.com/img/badges/mac-app-store-black.svg" height="64" alt="Download on the Mac App Store"></a>
 </p>
 
-<p align="center"><b>Pictty is free and open source (GPL-3.0).</b> If it earns a place on your Mac, the Mac App Store version costs less than a coffee, and buying it supports its development. Thank you.<br>
-Prefer not to buy? <a href="https://www.noxdrop.com/pictty.html#download">Download it free from noxdrop.com</a>.</p>
+<p align="center"><b>Pictty is free and open source (GPL-3.0).</b> Get it from the Mac App Store, or <a href="https://www.noxdrop.com/pictty.html#download">download it from noxdrop.com</a>.</p>
 
 <p align="center">macOS 15+ · Liquid Glass · <a href="https://www.noxdrop.com/pictty.html">noxdrop.com/pictty</a></p>
 
-<p align="center"><b>New in 1.6:</b> AI Enlarge for real texture at 2× and 4×, Remove Background, Annotate (arrows, shapes, text, numbered steps, blur, censor, magnifier, spotlight, smart redact), Resize, and an Edit menu with Undo.</p>
+<p align="center"><b>New in 1.7:</b> Annotate, reworked: text on several lines, a tidier colour row, several spotlights at once, a magnifier that never shows what is hidden, ⇧ for 45° arrows and the arrow keys to nudge. Since 1.6: AI Enlarge 2× and 4×, Remove Background, Annotate, Resize, and an Edit menu with Undo.</p>
 
 ---
 

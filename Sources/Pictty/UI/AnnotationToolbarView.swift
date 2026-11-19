@@ -14,7 +14,7 @@ struct AnnotationToolbarView: View {
         (.rectangle, "rectangle", "Rectangle (R) · ⇧ for a square"),
         (.roundedRectangle, "app", "Rounded rectangle (U)"),
         (.ellipse, "circle", "Circle (O) · ⇧ for a round one"),
-        (.text, "textformat", "Text (T)"),
+        (.text, "textformat", "Text (T) · Return for a new line, Esc to finish"),
         (.step, "1.circle", "Steps (N) · ① ② ③, renumbered on delete"),
         (.highlighter, "highlighter", "Highlighter (H)"),
         (.blur, "drop", "Blur (B)"),
@@ -91,41 +91,83 @@ struct AnnotationToolbarView: View {
         .bottomBarTooltips()
     }
 
-    /// Auto, the six colours, and any other.
+    private static let rainbow = AngularGradient(colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red], center: .center)
+
+    /// Auto, the eight colours, and any other: all the same circle, the chosen one ringed in white.
     private var colours: some View {
-        HStack(spacing: 4) {
+        let current = model.annotationStyle.colour
+        let custom = !model.autoColour && !AnnotationStyle.palette.contains(current)
+        return HStack(spacing: 4) {
             Button { controller.setAnnotationColour(nil) } label: {
-                Image(systemName: "wand.and.rays")
-                    .font(.system(size: 10, weight: .bold))
-                    .frame(width: 20, height: 20)
-                    .background(Circle().fill(AngularGradient(colors: [.red, .yellow, .green, .blue, .red], center: .center)).opacity(0.85))
-                    .overlay(Circle().stroke(.white, lineWidth: model.autoColour ? 2 : 0))
+                swatch(Circle().fill(Self.rainbow).overlay(
+                    Image(systemName: "wand.and.rays").font(.system(size: 8, weight: .bold)).foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.5), radius: 1)), chosen: model.autoColour)
             }
             .buttonStyle(.plain)
             .quickTip("Auto: the colour that stands out against the picture")
             ForEach(AnnotationStyle.palette.indices, id: \.self) { i in
                 let c = AnnotationStyle.palette[i]
                 Button { controller.setAnnotationColour(c) } label: {
-                    Circle().fill(Color(cgColor: c.cgColor))
-                        .frame(width: 16, height: 16)
-                        .overlay(Circle().stroke(.white.opacity(0.5), lineWidth: 0.5))
-                        .overlay(Circle().stroke(.white, lineWidth: !model.autoColour && model.annotationStyle.colour == c ? 2 : 0).padding(-2.5))
-                        .frame(width: 20, height: 20)
+                    swatch(Circle().fill(Color(cgColor: c.cgColor)), chosen: !model.autoColour && current == c)
                 }
                 .buttonStyle(.plain)
                 .quickTip(["Red", "Yellow", "Green", "Blue", "Purple", "Orange", "White", "Black"][i])
             }
-            ColorPicker("", selection: Binding(get: { Color(cgColor: model.annotationStyle.colour.cgColor) }, set: { color in
-                guard let c = NSColor(color).usingColorSpace(.sRGB) else { return }
-                controller.setAnnotationColour(.init(Double(c.redComponent), Double(c.greenComponent), Double(c.blueComponent)))
-            }), supportsOpacity: false)
-            .labelsHidden()
-            .frame(width: 26)
+            // The system colour panel, behind a circle like the others (SwiftUI's ColorPicker draws a
+            // square well showing the current colour, which read as a second, odd selection).
+            Button {
+                let owner = controller
+                ColourPanel.shared.open(current) { [weak owner] c in
+                    guard let owner, owner.model.annotating else { return }
+                    owner.setAnnotationColour(c)
+                }
+            } label: {
+                swatch(ZStack {
+                    Circle().fill(Self.rainbow)
+                    Circle().fill(custom ? Color(cgColor: current.cgColor) : Color(white: 0.16)).padding(3)
+                    if !custom { Image(systemName: "plus").font(.system(size: 7, weight: .bold)).foregroundStyle(.white) }
+                }, chosen: custom)
+            }
+            .buttonStyle(.plain)
             .quickTip("Another colour")
         }
     }
 
+    /// One colour: a 16-point circle, ringed in white when it is the one in use.
+    private func swatch(_ content: some View, chosen: Bool) -> some View {
+        content
+            .frame(width: 16, height: 16)
+            .overlay(Circle().stroke(.white.opacity(0.4), lineWidth: 0.5))
+            .overlay(Circle().stroke(.white, lineWidth: 2).padding(-3).opacity(chosen ? 1 : 0))
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
+    }
+
     private var separator: some View {
         Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 16).padding(.horizontal, 4)
+    }
+}
+
+/// The shared colour panel, feeding whichever annotation bar opened it last.
+@MainActor
+final class ColourPanel: NSObject {
+    static let shared = ColourPanel()
+    private var apply: ((AnnotationStyle.RGBA) -> Void)?
+
+    func open(_ colour: AnnotationStyle.RGBA, apply: @escaping (AnnotationStyle.RGBA) -> Void) {
+        let panel = NSColorPanel.shared
+        panel.setTarget(nil)
+        panel.setAction(nil)
+        panel.showsAlpha = false
+        panel.color = NSColor(cgColor: colour.cgColor) ?? .systemRed
+        self.apply = apply
+        panel.setTarget(self)
+        panel.setAction(#selector(changed(_:)))
+        panel.orderFront(nil)
+    }
+
+    @objc private func changed(_ panel: NSColorPanel) {
+        guard let c = panel.color.usingColorSpace(.sRGB) else { return }
+        apply?(.init(Double(c.redComponent), Double(c.greenComponent), Double(c.blueComponent)))
     }
 }

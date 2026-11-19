@@ -91,4 +91,35 @@ final class AnnotationTests: XCTestCase {
         XCTAssertEqual(rgb(lit, 100, 50), [128, 128, 128], "inside the spotlight unchanged")
         XCTAssertLessThan(rgb(lit, 10, 10)[0], 90, "outside dimmed")
     }
+
+    func testTwoSpotlightsLightBothAndDimOnce() throws {
+        let left = Annotation(kind: .spotlight, a: CGPoint(x: 0.05, y: 0.2), b: CGPoint(x: 0.3, y: 0.8))
+        let right = Annotation(kind: .spotlight, a: CGPoint(x: 0.7, y: 0.2), b: CGPoint(x: 0.95, y: 0.8))
+        let lit = try XCTUnwrap(AnnotationRenderer.render([left, right], over: grey(200, 100), crop: whole))
+        XCTAssertEqual(rgb(lit, 35, 50), [128, 128, 128], "the first one's light is not dimmed by the second")
+        XCTAssertEqual(rgb(lit, 165, 50), [128, 128, 128])
+        let once = try XCTUnwrap(AnnotationRenderer.render([left], over: grey(200, 100), crop: whole))
+        XCTAssertEqual(rgb(lit, 100, 50), rgb(once, 100, 50), "outside both, dimmed once, not twice")
+    }
+
+    func testMagnifierShowsWhatIsHidden() throws {
+        // A solid censor over the middle, and a magnifier on it: the loupe shows the bar, not the grey under it.
+        var bar = Annotation(kind: .censor, a: CGPoint(x: 0.4, y: 0.4), b: CGPoint(x: 0.6, y: 0.6))
+        bar.solid = true
+        var magnifier = Annotation(kind: .magnifier, a: CGPoint(x: 0.5, y: 0.5), b: CGPoint(x: 0.2, y: 0.25))
+        magnifier.radius = 0.05
+        magnifier.style.shadow = false
+        let out = try XCTUnwrap(AnnotationRenderer.render([bar, magnifier], over: grey(400, 400), crop: whole))
+        XCTAssertEqual(rgb(out, 80, 100), [0, 0, 0], "the loupe's middle is the black bar")
+    }
+
+    func testBlurPastTheEdgeIsNotStretched() throws {
+        // Half the box is off the picture: the half on it is blurred in place, the stripes keep their spacing.
+        let base = grey(200, 100, stripes: true)
+        let blur = Annotation(kind: .blur, a: CGPoint(x: 0.75, y: -0.5), b: CGPoint(x: 1.25, y: 1.5))
+        let out = try XCTUnwrap(AnnotationRenderer.render([blur], over: base, crop: whole))
+        XCTAssertEqual(rgb(out, 140, 50), rgb(base, 140, 50), "left of the box untouched")
+        let inside = (180..<188).map { rgb(out, $0, 50)[0] }
+        XCTAssertLessThan(inside.max()! - inside.min()!, 60, "smoothed where it is")
+    }
 }
